@@ -1,0 +1,188 @@
+#include "fixtures.hpp"
+#include "model/edit.hpp"
+#include "render/image.hpp"
+#include "session/commands.hpp"
+
+#include <SDL3/SDL.h>
+#include <gtest/gtest.h>
+
+#include <filesystem>
+
+using namespace mf;
+
+namespace {
+
+json ok(Commands& c, const std::vector<std::string>& words) {
+    json r = c.runSync(Commands::requestFromWords(words, fixtures::dir().string()));
+    EXPECT_TRUE(r["ok"].get<bool>()) << r.dump();
+    return r["result"];
+}
+
+std::string fails(Commands& c, const std::vector<std::string>& words) {
+    json r = c.runSync(Commands::requestFromWords(words, fixtures::dir().string()));
+    EXPECT_FALSE(r["ok"].get<bool>()) << r.dump();
+    return r.value("error", "");
+}
+
+}  // namespace
+
+TEST(Session, ApplyUndoAndGestures) {
+    Session s;
+    size_t tracks = s.project().tracks.size();
+    s.apply("add track", [](Project& p) { edit::addTrack(p, TrackKind::Video, "V4"); });
+    EXPECT_EQ(s.project().tracks.size(), tracks + 1);
+    EXPECT_TRUE(s.dirty());
+
+    // A failed edit leaves the project and history unchanged.
+    EXPECT_THROW(s.apply("bad", [](Project& p) { edit::removeTrack(p, 999); }), EditError);
+    EXPECT_EQ(s.history().undoLabels().size(), 1u);
+
+    Id clip = 0;
+    s.apply("add clip", [&](Project& p) {
+        Clip c;
+        c.kind = ClipKind::Solid;
+        c.track = p.findTrackByName("V1")->id;
+        c.duration = 2;
+        clip = edit::addClip(p, c);
+    });
+    // A drag is many updates but one undo step.
+    s.beginGesture("drag");
+    for (int i = 1; i <= 5; ++i) s.updateGesture([&](Project& p) { edit::moveClip(p, clip, i * 0.5); });
+    s.endGesture();
+    EXPECT_DOUBLE_EQ(s.project().findClip(clip)->start, 2.5);
+    EXPECT_EQ(s.history().undoLabels().back(), "drag");
+    ASSERT_TRUE(s.undo());
+    EXPECT_DOUBLE_EQ(s.project().findClip(clip)->start, 0);
+    ASSERT_TRUE(s.redo());
+    EXPECT_DOUBLE_EQ(s.project().findClip(clip)->start, 2.5);
+
+    // The evaluator follows edits.
+    EXPECT_NE(s.evaluator().project().findClip(clip), nullptr);
+    s.undo();
+    s.undo();
+    EXPECT_EQ(s.evaluator().project().findClip(clip), nullptr);
+}
+
+TEST(Commands, ArgumentsAndErrors) {
+    Session s;
+    Commands c(s);
+    json help = ok(c, {"help"});
+    EXPECT_GT(help.size(), 40u);
+    EXPECT_EQ(ok(c, {"help", "clip.add"})["usage"], "clip.add <kind> <track> <start> <duration> [name] [props]");
+
+    EXPECT_NE(fails(c, {"nope"}).find("unknown command"), std::string::npos);
+    EXPECT_NE(fails(c, {"clip.add", "text"}).find("missing argument 'track'"), std::string::npos);
+    EXPECT_NE(fails(c, {"seek", "abc"}).find("expected number"), std::string::npos);
+    EXPECT_NE(fails(c, {"seek", "1", "2"}).find("too many"), std::string::npos);
+    EXPECT_NE(fails(c, {"clip.add", "text", "V9", "0", "1"}).find("no track named 'V9'"), std::string::npos);
+
+    // Positional and key=value words mix; JSON requests take typed args.
+    json clip = ok(c, {"clip.add", "text", "V1", "duration=4", "1", "name=title", R"(props={"text":"Hi","size":40})"});
+    EXPECT_EQ(clip["start"], 1.0);
+    EXPECT_EQ(clip["duration"], 4.0);
+    EXPECT_EQ(clip["props"]["text"], "Hi");
+    json r = c.runSync({{"cmd", "clip.move"}, {"args", {{"clip", "title"}, {"start", 2}}}});
+    ASSERT_TRUE(r["ok"]) << r.dump();
+    EXPECT_EQ(r["result"]["start"], 2.0);
+
+    // A rejected edit adds no undo step.
+    size_t steps = s.history().undoLabels().size();
+    fails(c, {"clip.trim", "title", "2", "-1"});
+    EXPECT_EQ(s.history().undoLabels().size(), steps);
+}
+
+TEST(Commands, EditPropertiesAndInspect) {
+    Session s;
+    Commands c(s);
+    Id solid = ok(c, {"clip.add", "solid", "V1", "0", "4", "bg"})["id"];
+    ok(c, {"prop.set", "bg", "color", "#ff0000"});
+    EXPECT_EQ(ok(c, {"prop.get", "bg", "color"})["value"], "#ff0000");
+
+    ok(c, {"prop.key", "bg", "opacity", "0", "0"});
+    json prop = ok(c, {"prop.key", "bg", "opacity", "2", "1", "ease-in"});
+    ASSERT_EQ(prop["curve"].size(), 2u);
+    EXPECT_NEAR(ok(c, {"prop.get", "bg", "opacity", "time=1"})["value"].get<double>(), 0.5, 1e-9);
+    // A key's ease shapes the segment that starts at it.
+    ok(c, {"prop.key", "bg", "opacity", "0", "0", "ease-in"});
+    EXPECT_LT(ok(c, {"prop.get", "bg", "opacity", "time=1"})["value"].get<double>(), 0.4);
+
+    ok(c, {"signal.set", "level", "value=0.25"});
+    ok(c, {"prop.expr", "bg", "scale", "1 + sig.level"});
+    EXPECT_DOUBLE_EQ(ok(c, {"clip.get", "bg"})["values"]["scale"].get<double>(), 1.25);
+    EXPECT_DOUBLE_EQ(ok(c, {"eval", "sig.level * 4"}).get<double>(), 1.0);
+
+    json fx = ok(c, {"effect.add", "bg", "blur"});
+    ok(c, {"prop.set", std::to_string(fx["id"].get<Id>()), "radius", "9"});
+    EXPECT_EQ(ok(c, {"prop.get", std::to_string(fx["id"].get<Id>()), "radius"})["value"], 9.0);
+    json master = ok(c, {"effect.add", "master", "compressor"});
+    EXPECT_EQ(s.project().masterAudio.at(0).id, master["id"].get<Id>());
+    EXPECT_NE(fails(c, {"effect.add", "bg", "fuzz"}).find("unknown effect"), std::string::npos);
+
+    json right = ok(c, {"clip.split", "bg", "3"});
+    ASSERT_EQ(right.size(), 1u);
+    ok(c, {"clip.rename", right[0].dump(), "bg2"});
+    json tr = ok(c, {"transition.add", std::to_string(solid), right[0].dump(), "type=dip", "duration=0.5"});
+    ok(c, {"transition.curve", tr["id"].dump(), "linear"});
+    EXPECT_EQ(s.project().transitions.at(0).type, "dip");
+
+    json graph = ok(c, {"graph"});
+    bool sawSignal = false;
+    for (const auto& n : graph) sawSignal |= n["key"] == "signal:level";
+    EXPECT_TRUE(sawSignal) << graph.dump();
+    EXPECT_TRUE(ok(c, {"errors"}).empty());
+    ok(c, {"prop.expr", "bg", "x", "nil + 1"});
+    s.renderFrame(0.5, 32, 18);
+    EXPECT_FALSE(ok(c, {"errors"}).empty());
+
+    json summary = ok(c, {"show"});
+    EXPECT_EQ(summary[2]["name"], "V1");  // top track first: V3, V2, V1
+    EXPECT_EQ(summary[2]["clips"].size(), 2u);
+
+    ok(c, {"select", "clips=bg", "prop=opacity"});
+    EXPECT_EQ(s.selection.primaryClip(), solid);
+    EXPECT_EQ(s.selection.prop, "opacity");
+
+    EXPECT_TRUE(ok(c, {"undo"}).get<bool>());
+    EXPECT_EQ(ok(c, {"history"})["redo"].size(), 1u);
+}
+
+TEST(Commands, FilesFramesAndExport) {
+    Session s;
+    Commands c(s);
+    auto dir = fixtures::dir() / "session";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    ok(c, {"settings", "width=64", "height=36", "fps=10"});
+    ok(c, {"clip.add", "solid", "V1", "0", "1", R"(props={"color":[0,0,1]})"});
+    // Relative paths resolve against the client's working directory.
+    json frame = ok(c, {"frame", "session/f.png", "time=0.5", "width=32"});
+    EXPECT_EQ(frame["height"], 18);
+    EXPECT_EQ(frame["path"], (dir / "f.png").string());
+    SDL_Surface* png = SDL_LoadPNG((dir / "f.png").c_str());
+    ASSERT_NE(png, nullptr);
+    EXPECT_EQ(png->w, 32);
+    SDL_DestroySurface(png);
+
+    ok(c, {"save", "session/p.mfproj"});
+    EXPECT_FALSE(s.dirty());
+    ok(c, {"new"});
+    EXPECT_TRUE(s.project().clips.empty());
+    ok(c, {"open", "session/p.mfproj"});
+    EXPECT_EQ(s.project().clips.size(), 1u);
+    EXPECT_EQ(s.project().settings.width, 64);
+
+    // wait=true defers the reply until the background export finishes.
+    json done = ok(c, {"export", "session/out.wav", "wait=true"});
+    EXPECT_TRUE(done["finished"].get<bool>());
+    EXPECT_TRUE(std::filesystem::exists(dir / "out.wav"));
+    EXPECT_NE(fails(c, {"export", "session/out.mov", "wait=true"}).find(".mp4"), std::string::npos);
+
+    if (fixtures::haveFfmpeg()) {
+        json m = ok(c, {"media.import", fixtures::videoWithAudio()});
+        json ids = ok(c, {"clip.media", m["name"], "start=1"});
+        EXPECT_EQ(ids.size(), 2u);
+        EXPECT_EQ(ok(c, {"media.list"}).size(), 1u);
+    }
+    EXPECT_NE(fails(c, {"media.import", "missing.mp4"}).size(), 0u);
+}
