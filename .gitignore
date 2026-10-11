@@ -4,3 +4,4 @@
 *.mp4
 *.wav
 !tests/fixtures/**
+/demo-out/
