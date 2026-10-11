@@ -64,5 +64,7 @@ void drawChevronDown(Context& ui, Vec center, float size, const Color& c);
 
 // Formats a number with a fixed count of decimals, trimming trailing zeros.
 std::string formatNumber(double v, int decimals);
+// "00:01:02:15" (hours, minutes, seconds, frames).
+std::string formatTimecode(double seconds, double fps);
 
 }  // namespace mf::ui
