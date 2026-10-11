@@ -322,7 +322,12 @@ json selectionJson(const Selection& sel) {
             {"track", sel.track}, {"media", sel.media},   {"prop", sel.prop}};
 }
 
-json errorsJson(Evaluator& ev) {
+// Errors after evaluating the frame at time t, so expression errors on
+// visible clips are current.
+json errorsJson(Session& s, double t) {
+    Evaluator& ev = s.evaluator();
+    ev.setTime(t);
+    ev.refreshOutputs();
     json out = json::array();
     for (const auto& e : ev.errors()) {
         json j = {{"node", e.key}, {"message", e.message}};
@@ -353,6 +358,21 @@ Value evaluatedProp(Session& s, Id target, const std::string& name, double t) {
         return ev.effectParams(*e, audio)(name);
     }
     return {};
+}
+
+// The session time if the target is active then, otherwise the start of the
+// span where it is: its clip's, or its transition's window.
+double activeTime(Session& s, Id target) {
+    const Project& ep = s.evaluator().project();
+    double t = s.time();
+    const Clip* owner = ep.findClip(target);
+    if (!owner) findEffectIn(ep, target, &owner);
+    if (owner) return t >= owner->start && t < owner->end() ? t : owner->start;
+    if (const Transition* tr = ep.findTransition(target)) {
+        auto [ws, we] = Evaluator::window(ep, *tr);
+        return t >= ws && t < we ? t : ws;
+    }
+    return t;
 }
 
 const Property& propOf(const Project& p, Id target, const std::string& name) {
@@ -406,7 +426,7 @@ void Commands::registerBuiltins() {
                      {"scriptClips", ev.project().clips.size() - p.clips.size()},
                      {"media", p.media.size()},
                      {"transitions", p.transitions.size()},
-                     {"errors", errorsJson(ev)},
+                     {"errors", errorsJson(s, s.time())},
                      {"undo", s.history().undoLabels().empty() ? json() : json(s.history().undoLabels().back())},
                      {"export", exportStatus(s)}};
          }});
@@ -617,12 +637,13 @@ void Commands::registerBuiltins() {
                   [&](Project& p) { edit::setPropConstant(p, id, a["name"], valueFromJson(a["value"])); });
              return propertyToJson(propOf(c.session.project(), id, a["name"]));
          }});
-    add({"prop.expr", "Set a property to a Lua expression (t, lt, progress, sig.*, clip(name).prop)",
+    add({"prop.expr", "Set a property to a Lua expression (t, lt, progress, sig.*, prop(clip, name))",
          {req("target", "id"), req("name", "string"), req("expr", "string")}, [edit](A a, C c) -> json {
              Id id = resolveTarget(c.session.project(), a["target"]);
              edit(c.session, "expression " + a["name"].get<std::string>(), [&](Project& p) { edit::setPropExpr(p, id, a["name"], a["expr"]); });
-             auto errs = errorsJson(c.session.evaluator());
-             return {{"errors", errs}};
+             // Evaluate the new expression once while its clip is active, so errors show now.
+             evaluatedProp(c.session, id, a["name"], activeTime(c.session, id));
+             return {{"errors", errorsJson(c.session, c.session.time())}};
          }});
     add({"prop.key", "Add or replace a keyframe at clip-local time",
          {req("target", "id"), req("name", "string"), req("time", "number"), req("value", "number"),
@@ -731,7 +752,7 @@ void Commands::registerBuiltins() {
              if (a.contains("value") == a.contains("expr")) throw EditError("give exactly one of value or expr");
              Property prop = a.contains("expr") ? Property::expression(a["expr"]) : Property::of(valueFromJson(a["value"]));
              edit(c.session, "signal " + a["name"].get<std::string>(), [&](Project& p) { edit::setSignal(p, a["name"], prop); });
-             return {{"errors", errorsJson(c.session.evaluator())}};
+             return {{"errors", errorsJson(c.session, c.session.time())}};
          }});
     add({"signal.remove", "Remove a project signal", {req("name", "string")}, [edit](A a, C c) -> json {
              edit(c.session, "remove signal", [&](Project& p) { edit::removeSignal(p, a["name"]); });
@@ -786,7 +807,7 @@ void Commands::registerBuiltins() {
              }
              return nodes;
          }});
-    add({"errors", "List script, expression, and render errors", {}, [](A, C c) -> json { return errorsJson(c.session.evaluator()); }});
+    add({"errors", "List script, expression, and render errors", {}, [](A, C c) -> json { return errorsJson(c.session, c.session.time()); }});
 
     // ---- transport and output ----
     add({"seek", "Move the playhead", {req("time", "number")}, [](A a, C c) -> json {
@@ -822,7 +843,7 @@ void Commands::registerBuiltins() {
              auto img = s.renderFrame(t, w, h);
              std::string path = a["path"];
              if (!savePng(*img, path.c_str())) throw EditError("cannot write " + path);
-             return {{"path", path}, {"time", t}, {"width", img->w}, {"height", img->h}, {"errors", errorsJson(s.evaluator())}};
+             return {{"path", path}, {"time", t}, {"width", img->w}, {"height", img->h}, {"errors", errorsJson(s, t)}};
          }});
     add({"export", "Export MP4 (H.264 + AAC) or WAV in the background",
          {req("path", "path"), opt("width", "int"), opt("height", "int"), opt("start", "number"), opt("end", "number"),

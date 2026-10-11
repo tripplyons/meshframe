@@ -130,8 +130,10 @@ TEST(Commands, EditPropertiesAndInspect) {
     for (const auto& n : graph) sawSignal |= n["key"] == "signal:level";
     EXPECT_TRUE(sawSignal) << graph.dump();
     EXPECT_TRUE(ok(c, {"errors"}).empty());
-    ok(c, {"prop.expr", "bg", "x", "nil + 1"});
-    s.renderFrame(0.5, 32, 18);
+    // A bad expression is reported at once, even on a clip after the playhead.
+    json reply = ok(c, {"prop.expr", "bg2", "x", "nil + 1"});
+    ASSERT_EQ(reply["errors"].size(), 1u) << reply.dump();
+    EXPECT_NE(reply["errors"][0]["message"].get<std::string>().find("arithmetic"), std::string::npos);
     EXPECT_FALSE(ok(c, {"errors"}).empty());
 
     json summary = ok(c, {"show"});
