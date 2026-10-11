@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -28,5 +29,8 @@ double asNumber(const Value& v, double fallback = 0.0);
 Color asColor(const Value& v, Color fallback = {});
 std::string asString(const Value& v);
 std::string describe(const Value& v);
+
+// Looks up a named parameter of an effect or transition.
+using ParamFn = std::function<Value(std::string_view)>;
 
 }  // namespace mf

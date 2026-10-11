@@ -298,6 +298,27 @@ Value Evaluator::effectProp(const Effect& e, std::string_view name) { return loo
 
 Value Evaluator::transitionProp(const Transition& tr, std::string_view name) { return lookup(tr.id, name, tr.props); }
 
+namespace {
+ParamFn withDefaults(std::function<Value(std::string_view)> lookup, const EffectSpec* spec) {
+    return [lookup = std::move(lookup), spec](std::string_view name) {
+        Value v = lookup(name);
+        if (typeOf(v) == ValueType::None && spec)
+            for (const auto& p : spec->props)
+                if (name == p.name) return p.def;
+        return v;
+    };
+}
+}  // namespace
+
+ParamFn Evaluator::effectParams(const Effect& e, bool audio) {
+    return withDefaults([this, &e](std::string_view n) { return effectProp(e, n); },
+                        audio ? findAudioEffect(e.type) : findVideoEffect(e.type));
+}
+
+ParamFn Evaluator::transitionParams(const Transition& tr) {
+    return withDefaults([this, &tr](std::string_view n) { return transitionProp(tr, n); }, findTransition(tr.type));
+}
+
 double Evaluator::transitionMix(const Transition& tr) {
     auto it = transitionNodes_.find(tr.id);
     if (it == transitionNodes_.end()) return 0;

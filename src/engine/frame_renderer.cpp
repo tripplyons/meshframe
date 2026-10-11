@@ -1,6 +1,5 @@
 #include "engine/frame_renderer.hpp"
 
-#include "model/schema.hpp"
 #include "render/compositor.hpp"
 #include "render/font.hpp"
 #include "render/raster.hpp"
@@ -15,16 +14,6 @@
 namespace mf {
 
 namespace {
-
-ParamFn paramsOf(const std::function<Value(std::string_view)>& lookup, const EffectSpec* spec) {
-    return [lookup, spec](std::string_view name) {
-        Value v = lookup(name);
-        if (typeOf(v) == ValueType::None && spec)
-            for (const auto& p : spec->props)
-                if (name == p.name) return p.def;
-        return v;
-    };
-}
 
 std::shared_ptr<Image> renderTextBlock(Font& font, const std::string& text, float px, Color color) {
     std::vector<std::string> lines;
@@ -114,8 +103,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
     double toDisplay = layer.displayW / layer.image->w;
     for (const auto& e : c.videoEffects) {
         if (!e.enabled) continue;
-        auto lookup = [&ev, &e](std::string_view n) { return ev.effectProp(e, n); };
-        applyEffect(*layer.image, e.type, paramsOf(lookup, findVideoEffect(e.type)), unit / toDisplay);
+        applyEffect(*layer.image, e.type, ev.effectParams(e, false), unit / toDisplay);
     }
     double scale = ev.num(c, "scale", 1);
     Placement at;
@@ -163,9 +151,7 @@ std::shared_ptr<Image> FrameRenderer::render(Evaluator& ev, double t, int w, int
             Image bufA(w, h), bufB(w, h), mixed;
             drawClip(ev, bufA, *a, t, unit, false);
             drawClip(ev, bufB, *b, t, unit, false);
-            auto lookup = [&ev, active](std::string_view n) { return ev.transitionProp(*active, n); };
-            mixTransition(mixed, bufA, bufB, active->type, ev.transitionMix(*active),
-                          paramsOf(lookup, findTransition(active->type)));
+            mixTransition(mixed, bufA, bufB, active->type, ev.transitionMix(*active), ev.transitionParams(*active));
             drawLayer(*canvas, mixed, Placement{w / 2.0, h / 2.0}, 1, parseBlend(ev.str(*b, "blend")));
             done.push_back(a->id);
             done.push_back(b->id);

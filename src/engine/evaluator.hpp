@@ -39,6 +39,9 @@ public:
     std::string str(const Clip& c, std::string_view name);
     Value effectProp(const Effect& e, std::string_view name);
     Value transitionProp(const Transition& tr, std::string_view name);
+    // Parameter lookups that fall back to the spec default for unset names.
+    ParamFn effectParams(const Effect& e, bool audio);
+    ParamFn transitionParams(const Transition& tr);
     // Eased 0..1 mix of a transition at the current time.
     double transitionMix(const Transition& tr);
     Value signal(std::string_view name);

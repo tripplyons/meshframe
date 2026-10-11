@@ -3,7 +3,6 @@
 #include "core/value.hpp"
 #include "render/image.hpp"
 
-#include <functional>
 #include <string_view>
 
 namespace mf {
@@ -23,9 +22,6 @@ struct Placement {
 void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity, Blend blend);
 
 void fill(Image& img, Color c);
-
-// Looks up an effect or transition parameter; returns the spec default when unset.
-using ParamFn = std::function<Value(std::string_view)>;
 
 // Applies a video effect in place. `unit` converts project pixels to image pixels.
 // Unknown types are ignored.
