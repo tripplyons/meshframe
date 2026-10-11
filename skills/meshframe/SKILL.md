@@ -14,15 +14,27 @@ editor, with undo.
 
 ## Setup
 
-Build from the repository root (macOS; dependencies come from Homebrew):
+The installed app holds both programs:
+
+- `/Applications/meshframe.app/Contents/MacOS/meshframe` (the editor)
+- `/Applications/meshframe.app/Contents/MacOS/meshframe-cli`
+
+The examples below call both programs by name. If they are not on `PATH`, add
+the app's `MacOS` directory first:
 
 ```sh
-brew install cmake ninja sdl3 luajit ffmpeg freetype nlohmann-json fmt googletest pkgconf
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+export PATH="/Applications/meshframe.app/Contents/MacOS:$PATH"
 ```
 
-This produces `build/meshframe` (the editor) and `build/meshframe-cli`.
+If the app is not installed, build it from the repository root (macOS;
+dependencies come from Homebrew, plus `librsvg` for the icon), then copy it
+to `/Applications`:
+
+```sh
+brew install cmake ninja sdl3 luajit ffmpeg freetype nlohmann-json fmt googletest pkgconf librsvg
+scripts/build-macos-app.sh
+ditto build-app/meshframe.app /Applications/meshframe.app
+```
 
 ## Choose a session
 
@@ -33,8 +45,8 @@ This produces `build/meshframe` (the editor) and `build/meshframe-cli`.
 - With no editor open, work headless: `meshframe-cli --project FILE.mfproj CMD`.
   The file is created if missing and saved after each change (`--no-save`
   prevents this). GUI commands (`ui.*`) need a running editor.
-- To start an editor yourself, run `build/meshframe FILE.mfproj &`, then wait
-  until `meshframe-cli sessions` lists it. Stop only editors you started, with
+- To start an editor yourself, run `meshframe FILE.mfproj &`, then wait until
+  `meshframe-cli sessions` lists it. Stop only editors you started, with
   `meshframe-cli ui.action app.quit`. Save first if the user should keep the
   changes.
 
