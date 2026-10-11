@@ -525,6 +525,7 @@ nlohmann::json Shell::state() const {
 }
 
 void Shell::registerCommands(Commands& commands) {
+    commands_ = &commands;
     using A = const json&;
     using C = CommandContext&;
     commands.add({"ui.state", "Show spaces, layouts, pane views, and the window size", {}, [this](A, C) -> json { return state(); }});

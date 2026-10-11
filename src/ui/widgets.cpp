@@ -350,7 +350,8 @@ FieldResult textField(Context& ui, const Rect& r, std::string_view label, std::s
         res.committed = true;
     }
     TextState& ts = ui.text();
-    if (h.pressed && ts.id != id) startEditing(ui, id, value, false);
+    // A press, or focus given with ui.focus(id), starts editing.
+    if ((h.pressed || ui.hasFocus(id)) && ts.id != id) startEditing(ui, id, value, false);
     if (ui.hasFocus(id) && ts.id == id) {
         ui.setTyping();
         FieldResult e = editLine(ui, id, r, h, role);

@@ -79,6 +79,8 @@ public:
     // ui.actions, ui.action, ui.bind, ui.theme, ui.settings, ui.screenshot.
     void registerCommands(Commands& commands);
     nlohmann::json state() const;
+    // The registered command set, for the console view. Null before registerCommands.
+    Commands* commands() { return commands_; }
 
     // Window size in physical pixels of the last frame.
     Rect screen() const { return screen_; }
@@ -92,6 +94,7 @@ private:
 
     Session& session_;
     Painter& painter_;
+    Commands* commands_ = nullptr;
     Settings settings_;
     std::string settingsPath_;
     Context ui_;
