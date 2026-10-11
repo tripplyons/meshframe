@@ -9,35 +9,6 @@ namespace mf::ui::views {
 
 namespace {
 
-// Splits a command line into words. Single and double quotes group words;
-// a backslash escapes the next character.
-std::vector<std::string> splitWords(std::string_view line) {
-    std::vector<std::string> out;
-    std::string cur;
-    bool inWord = false;
-    char quote = 0;
-    for (size_t i = 0; i < line.size(); ++i) {
-        char c = line[i];
-        if (c == '\\' && i + 1 < line.size() && quote != '\'') {
-            cur += line[++i];
-            inWord = true;
-        } else if (quote) {
-            if (c == quote) quote = 0;
-            else cur += c;
-        } else if (c == '"' || c == '\'') {
-            quote = c;
-            inWord = true;
-        } else if (std::isspace(uint8_t(c))) {
-            if (inWord) out.push_back(std::move(cur)), cur.clear(), inWord = false;
-        } else {
-            cur += c;
-            inWord = true;
-        }
-    }
-    if (inWord) out.push_back(std::move(cur));
-    return out;
-}
-
 // The session log, a Lua prompt, and CLI commands after ":".
 class ConsoleView : public View {
 public:
@@ -98,7 +69,7 @@ private:
         if (line.starts_with(":")) {
             Commands* commands = env.shell.commands();
             if (!commands) return s.log(LogLine::Level::Error, "commands are not available");
-            std::vector<std::string> words = splitWords(std::string_view(line).substr(1));
+            std::vector<std::string> words = Commands::splitWords(std::string_view(line).substr(1));
             if (words.empty()) return;
             json request;
             try {

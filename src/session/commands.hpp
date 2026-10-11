@@ -47,9 +47,10 @@ struct CommandSpec {
     Handler fn;
 };
 
-// Named commands over a Session. Requests are {"cmd", "args", "argv", "cwd"};
+// Named commands over a Session. Requests are {"cmd", "args", "argv", "cwd", "id"};
 // positional argv strings fill declared args in order. Replies are
-// {"ok": true, "result": ...} or {"ok": false, "error": "..."}.
+// {"ok": true, "result": ...} or {"ok": false, "error": "..."}, plus the
+// request's "id" when it has one.
 class Commands {
 public:
     explicit Commands(Session& s);
@@ -63,6 +64,9 @@ public:
 
     // Builds a request from CLI-style words: name, positional values, key=value pairs.
     static json requestFromWords(const std::vector<std::string>& words, const std::string& cwd);
+    // Splits a command line into words. Single and double quotes group words;
+    // a backslash escapes the next character outside single quotes.
+    static std::vector<std::string> splitWords(std::string_view line);
 
 private:
     json normalize(const CommandSpec& spec, const json& request) const;

@@ -8,8 +8,10 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 namespace mf {
 
@@ -170,6 +172,33 @@ json Commands::requestFromWords(const std::vector<std::string>& words, const std
     return r;
 }
 
+std::vector<std::string> Commands::splitWords(std::string_view line) {
+    std::vector<std::string> out;
+    std::string cur;
+    bool inWord = false;
+    char quote = 0;
+    for (size_t i = 0; i < line.size(); ++i) {
+        char c = line[i];
+        if (c == '\\' && i + 1 < line.size() && quote != '\'') {
+            cur += line[++i];
+            inWord = true;
+        } else if (quote) {
+            if (c == quote) quote = 0;
+            else cur += c;
+        } else if (c == '"' || c == '\'') {
+            quote = c;
+            inWord = true;
+        } else if (std::isspace(uint8_t(c))) {
+            if (inWord) out.push_back(std::move(cur)), cur.clear(), inWord = false;
+        } else {
+            cur += c;
+            inWord = true;
+        }
+    }
+    if (inWord) out.push_back(std::move(cur));
+    return out;
+}
+
 json Commands::normalize(const CommandSpec& spec, const json& request) const {
     std::string cwd = request.value("cwd", "");
     json raw = json::object();
@@ -208,6 +237,13 @@ json Commands::normalize(const CommandSpec& spec, const json& request) const {
 }
 
 void Commands::run(const json& request, Reply reply) {
+    // A request "id" is copied to its reply so clients can match them.
+    if (request.is_object() && request.contains("id") && !request["id"].is_null()) {
+        reply = [inner = std::move(reply), id = request["id"]](json r) {
+            r["id"] = id;
+            inner(std::move(r));
+        };
+    }
     auto fail = [&](const std::string& msg) { reply({{"ok", false}, {"error", msg}}); };
     if (!request.is_object() || !request.contains("cmd") || !request["cmd"].is_string()) {
         fail("request needs a string 'cmd'");
@@ -238,7 +274,10 @@ void Commands::run(const json& request, Reply reply) {
 json Commands::runSync(const json& request) {
     std::optional<json> out;
     run(request, [&](json r) { out = std::move(r); });
-    while (!out) session_.tick();
+    while (!out) {
+        session_.tick();
+        if (!out) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
     return *out;
 }
 

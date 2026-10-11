@@ -53,6 +53,8 @@ if(MESHFRAME_TESTS)
   add_executable(meshframe_tests ${MF_TEST_SOURCES})
   target_compile_options(meshframe_tests PRIVATE ${MF_WARNINGS})
   target_link_libraries(meshframe_tests PRIVATE meshframe_ui GTest::gtest_main)
+  # The bridge tests run the CLI binary.
+  add_dependencies(meshframe_tests meshframe-cli)
   target_compile_definitions(meshframe_tests PRIVATE
     MF_TEST_BIN_DIR="$<TARGET_FILE_DIR:meshframe-cli>")
   include(GoogleTest)

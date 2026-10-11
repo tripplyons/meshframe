@@ -1,5 +1,6 @@
 #include "audio/audio_sink.hpp"
 #include "session/commands.hpp"
+#include "session/server.hpp"
 #include "ui/shell.hpp"
 
 #include <SDL3/SDL.h>
@@ -57,6 +58,7 @@ private:
     SDL_Renderer* renderer_ = nullptr;
     std::unique_ptr<Session> session_;
     std::unique_ptr<Commands> commands_;
+    std::unique_ptr<CommandServer> server_;
     std::unique_ptr<Painter> painter_;
     std::unique_ptr<Shell> shell_;
 
@@ -72,12 +74,16 @@ private:
 };
 
 int App::run(int argc, char** argv) {
-    std::string projectPath, settingsPath = Settings::defaultPath();
+    std::string projectPath, socketPath, settingsPath = Settings::defaultPath();
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--settings" && i + 1 < argc) settingsPath = argv[++i];
+        else if (a == "--socket" && i + 1 < argc) socketPath = argv[++i];
         else if (a == "--help" || a == "-h") {
-            fmt::print("usage: meshframe [--settings FILE] [PROJECT.mfproj]\n");
+            fmt::print("usage: meshframe [--settings FILE] [--socket PATH] [PROJECT.mfproj]\n\n"
+                       "meshframe-cli controls the session through a Unix socket, by default\n"
+                       "{}/<pid>.sock.\n",
+                       runtimeDir());
             return 0;
         } else projectPath = a;
     }
@@ -109,6 +115,10 @@ int App::run(int argc, char** argv) {
     shell_ = std::make_unique<Shell>(*session_, *painter_, std::move(settings), settingsPath);
     commands_ = std::make_unique<Commands>(*session_);
     shell_->registerCommands(*commands_);
+    server_ = std::make_unique<CommandServer>(*commands_, wake);
+    if (!(socketPath.empty() ? server_->startDefault(&err) : server_->start(socketPath, true, &err)))
+        session_->log(LogLine::Level::Error, "No CLI bridge: " + err);
+    else session_->log(LogLine::Level::Info, "CLI bridge: " + server_->path());
     shell_->hooks.fileDialog = [this](bool save, const std::string& title, const std::vector<std::string>& exts,
                                       std::function<void(std::string)> done) {
         auto* req = new DialogRequest{nextDialog_++, {}, {}};
@@ -139,6 +149,7 @@ int App::run(int argc, char** argv) {
             while (SDL_PollEvent(&e)) pending_.push_back(e);
         }
         takeDialogResults();
+        server_->poll();
         buildInput();
 
         int w = 0, h = 0;
@@ -152,6 +163,7 @@ int App::run(int argc, char** argv) {
         updateTitle();
     }
 
+    server_.reset();
     shell_.reset();
     commands_.reset();
     painter_.reset();
