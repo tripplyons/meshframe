@@ -1,0 +1,348 @@
+#include "exporter/exporter.hpp"
+
+#include "audio/mixer.hpp"
+#include "engine/frame_renderer.hpp"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/opt.h>
+#include <libswscale/swscale.h>
+}
+
+#include <fmt/format.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+
+namespace mf {
+
+namespace {
+
+std::string avError(int code) {
+    char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(code, buf, sizeof buf);
+    return buf;
+}
+
+struct Range {
+    double start, end;
+};
+
+Range rangeOf(const Project& p, const ExportOptions& o) {
+    double end = o.end < 0 ? p.duration() : o.end;
+    return {std::max(0.0, o.start), end};
+}
+
+bool writeWav(Evaluator& ev, AudioMixer& mixer, Range r, const std::string& path, ExportProgress* prog,
+              std::string* err) {
+    int sr = ev.project().settings.sampleRate;
+    int64_t total = int64_t(std::llround((r.end - r.start) * sr));
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) {
+        *err = "cannot write " + path;
+        return false;
+    }
+    auto u32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
+    auto u16 = [&](uint16_t v) { std::fwrite(&v, 2, 1, f); };
+    uint32_t dataBytes = uint32_t(total * 4);
+    std::fwrite("RIFF", 1, 4, f);
+    u32(36 + dataBytes);
+    std::fwrite("WAVEfmt ", 1, 8, f);
+    u32(16);
+    u16(1);  // PCM
+    u16(2);
+    u32(uint32_t(sr));
+    u32(uint32_t(sr * 4));
+    u16(4);
+    u16(16);
+    std::fwrite("data", 1, 4, f);
+    u32(dataBytes);
+    constexpr int kChunk = 4096;
+    std::vector<float> buf(kChunk * 2);
+    std::vector<int16_t> pcm(kChunk * 2);
+    for (int64_t done = 0; done < total; done += kChunk) {
+        if (prog && prog->cancel) {
+            std::fclose(f);
+            *err = "export canceled";
+            return false;
+        }
+        int n = int(std::min<int64_t>(kChunk, total - done));
+        mixer.render(ev, r.start + double(done) / sr, n, buf.data(), true);
+        for (int i = 0; i < n * 2; ++i) pcm[i] = int16_t(std::lround(std::clamp(buf[i], -1.0f, 1.0f) * 32767));
+        std::fwrite(pcm.data(), 2, size_t(n) * 2, f);
+        if (prog) prog->fraction = double(done + n) / std::max<int64_t>(1, total);
+    }
+    bool ok = std::fclose(f) == 0;
+    if (!ok) *err = "error writing " + path;
+    return ok;
+}
+
+class Mp4Writer {
+public:
+    ~Mp4Writer() {
+        sws_freeContext(sws_);
+        av_frame_free(&vframe_);
+        av_frame_free(&aframe_);
+        av_packet_free(&pkt_);
+        avcodec_free_context(&venc_);
+        avcodec_free_context(&aenc_);
+        if (oc_) {
+            if (opened_) avio_closep(&oc_->pb);
+            avformat_free_context(oc_);
+        }
+    }
+
+    bool open(const std::string& path, int w, int h, double fps, int sampleRate, const ExportOptions& o,
+              std::string* err) {
+        int rc = avformat_alloc_output_context2(&oc_, nullptr, "mp4", path.c_str());
+        if (rc < 0 || !oc_) return fail(err, "cannot create mp4 container", rc);
+        pkt_ = av_packet_alloc();
+
+        const AVCodec* vc = avcodec_find_encoder_by_name("libx264");
+        if (!vc) vc = avcodec_find_encoder_by_name("h264_videotoolbox");
+        if (!vc) vc = avcodec_find_encoder(AV_CODEC_ID_H264);
+        if (!vc) vc = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+        if (!vc) return fail(err, "no H.264 or MPEG-4 encoder available", 0);
+        vst_ = avformat_new_stream(oc_, nullptr);
+        venc_ = avcodec_alloc_context3(vc);
+        venc_->width = w;
+        venc_->height = h;
+        AVRational rate = av_d2q(fps, 100000);
+        venc_->time_base = av_inv_q(rate);
+        venc_->framerate = rate;
+        venc_->pix_fmt = AV_PIX_FMT_YUV420P;
+        venc_->gop_size = std::max(1, int(fps * 2));
+        venc_->max_b_frames = 2;
+        venc_->color_range = AVCOL_RANGE_MPEG;
+        venc_->colorspace = AVCOL_SPC_BT709;
+        venc_->color_primaries = AVCOL_PRI_BT709;
+        venc_->color_trc = AVCOL_TRC_BT709;
+        if (std::string_view(vc->name) == "libx264") {
+            av_opt_set(venc_->priv_data, "preset", "medium", 0);
+            av_opt_set_int(venc_->priv_data, "crf", o.crf, 0);
+        } else {
+            venc_->bit_rate = int64_t(w) * h * fps * 0.15;
+        }
+        if (oc_->oformat->flags & AVFMT_GLOBALHEADER) venc_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        if ((rc = avcodec_open2(venc_, vc, nullptr)) < 0) return fail(err, "cannot open video encoder", rc);
+        avcodec_parameters_from_context(vst_->codecpar, venc_);
+        vst_->time_base = venc_->time_base;
+        vst_->avg_frame_rate = rate;
+
+        const AVCodec* ac = avcodec_find_encoder(AV_CODEC_ID_AAC);
+        if (!ac) return fail(err, "no AAC encoder available", 0);
+        ast_ = avformat_new_stream(oc_, nullptr);
+        aenc_ = avcodec_alloc_context3(ac);
+        aenc_->sample_fmt = AV_SAMPLE_FMT_FLTP;
+        aenc_->sample_rate = sampleRate;
+        aenc_->ch_layout = AV_CHANNEL_LAYOUT_STEREO;
+        aenc_->bit_rate = o.audioBitrate;
+        aenc_->time_base = AVRational{1, sampleRate};
+        if (oc_->oformat->flags & AVFMT_GLOBALHEADER) aenc_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        if ((rc = avcodec_open2(aenc_, ac, nullptr)) < 0) return fail(err, "cannot open audio encoder", rc);
+        avcodec_parameters_from_context(ast_->codecpar, aenc_);
+        ast_->time_base = aenc_->time_base;
+        audioFrameSize_ = aenc_->frame_size > 0 ? aenc_->frame_size : 1024;
+
+        if ((rc = avio_open(&oc_->pb, path.c_str(), AVIO_FLAG_WRITE)) < 0) return fail(err, "cannot write " + path, rc);
+        opened_ = true;
+        if ((rc = avformat_write_header(oc_, nullptr)) < 0) return fail(err, "cannot write mp4 header", rc);
+
+        vframe_ = av_frame_alloc();
+        vframe_->format = venc_->pix_fmt;
+        vframe_->width = w;
+        vframe_->height = h;
+        av_frame_get_buffer(vframe_, 0);
+        aframe_ = av_frame_alloc();
+        aframe_->format = AV_SAMPLE_FMT_FLTP;
+        aframe_->sample_rate = sampleRate;
+        av_channel_layout_copy(&aframe_->ch_layout, &aenc_->ch_layout);
+        aframe_->nb_samples = audioFrameSize_;
+        av_frame_get_buffer(aframe_, 0);
+        sws_ = sws_getContext(w, h, AV_PIX_FMT_RGBA, w, h, AV_PIX_FMT_YUV420P, SWS_BICUBIC, nullptr, nullptr, nullptr);
+        // Full-range RGB in, limited-range BT.709 out.
+        const int* coeffs = sws_getCoefficients(SWS_CS_ITU709);
+        sws_setColorspaceDetails(sws_, coeffs, 1, coeffs, 0, 0, 1 << 16, 1 << 16);
+        return true;
+    }
+
+    int audioFrameSize() const { return audioFrameSize_; }
+
+    bool video(const Image& img, int64_t index, std::string* err) {
+        av_frame_make_writable(vframe_);
+        const uint8_t* src[1] = {img.px.data()};
+        int stride[1] = {img.w * 4};
+        sws_scale(sws_, src, stride, 0, img.h, vframe_->data, vframe_->linesize);
+        vframe_->pts = index;
+        return send(venc_, vst_, vframe_, err);
+    }
+
+    bool audio(const float* stereo, int frames, std::string* err) {
+        av_frame_make_writable(aframe_);
+        aframe_->nb_samples = frames;
+        auto* l = reinterpret_cast<float*>(aframe_->data[0]);
+        auto* r = reinterpret_cast<float*>(aframe_->data[1]);
+        for (int i = 0; i < frames; ++i) {
+            l[i] = stereo[i * 2];
+            r[i] = stereo[i * 2 + 1];
+        }
+        aframe_->pts = audioPts_;
+        audioPts_ += frames;
+        return send(aenc_, ast_, aframe_, err);
+    }
+
+    bool finish(std::string* err) {
+        if (!send(venc_, vst_, nullptr, err) || !send(aenc_, ast_, nullptr, err)) return false;
+        int rc = av_write_trailer(oc_);
+        if (rc < 0) return fail(err, "cannot finish mp4", rc);
+        return true;
+    }
+
+private:
+    bool fail(std::string* err, const std::string& what, int rc) {
+        *err = rc ? fmt::format("{}: {}", what, avError(rc)) : what;
+        return false;
+    }
+
+    bool send(AVCodecContext* enc, AVStream* st, AVFrame* frame, std::string* err) {
+        int rc = avcodec_send_frame(enc, frame);
+        if (rc < 0 && rc != AVERROR_EOF) return fail(err, "encode failed", rc);
+        for (;;) {
+            rc = avcodec_receive_packet(enc, pkt_);
+            if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) return true;
+            if (rc < 0) return fail(err, "encode failed", rc);
+            av_packet_rescale_ts(pkt_, enc->time_base, st->time_base);
+            pkt_->stream_index = st->index;
+            rc = av_interleaved_write_frame(oc_, pkt_);
+            if (rc < 0) return fail(err, "cannot write packet", rc);
+        }
+    }
+
+    AVFormatContext* oc_ = nullptr;
+    AVCodecContext *venc_ = nullptr, *aenc_ = nullptr;
+    AVStream *vst_ = nullptr, *ast_ = nullptr;
+    AVFrame *vframe_ = nullptr, *aframe_ = nullptr;
+    AVPacket* pkt_ = nullptr;
+    SwsContext* sws_ = nullptr;
+    bool opened_ = false;
+    int audioFrameSize_ = 1024;
+    int64_t audioPts_ = 0;
+};
+
+bool writeMp4(Evaluator& ev, MediaCache& cache, AudioMixer& mixer, Range r, const ExportOptions& o,
+              ExportProgress* prog, std::string* err) {
+    const Project& p = ev.project();
+    int w = o.width > 0 ? o.width : p.settings.width;
+    int h = o.height > 0 ? o.height : p.settings.height;
+    w &= ~1;
+    h &= ~1;
+    double fps = p.settings.fps;
+    int sr = p.settings.sampleRate;
+    Mp4Writer out;
+    if (!out.open(o.path, w, h, fps, sr, o, err)) return false;
+    FrameRenderer renderer(cache);
+    int64_t frames = std::max<int64_t>(1, int64_t(std::llround((r.end - r.start) * fps)));
+    int64_t audioTotal = int64_t(std::llround(double(frames) / fps * sr));
+    int64_t audioDone = 0;
+    int afs = out.audioFrameSize();
+    std::vector<float> abuf(size_t(afs) * 2);
+    for (int64_t n = 0; n < frames; ++n) {
+        if (prog && prog->cancel) {
+            *err = "export canceled";
+            return false;
+        }
+        auto img = renderer.render(ev, r.start + n / fps, w, h);
+        if (!out.video(*img, n, err)) return false;
+        // Keep audio up to the end of this video frame.
+        int64_t audioTarget = std::min(audioTotal, int64_t(std::llround(double(n + 1) / fps * sr)));
+        while (audioDone < audioTarget) {
+            int len = int(std::min<int64_t>(afs, audioTotal - audioDone));
+            std::fill(abuf.begin(), abuf.end(), 0.0f);
+            mixer.render(ev, r.start + double(audioDone) / sr, len, abuf.data(), true);
+            if (!out.audio(abuf.data(), len, err)) return false;
+            audioDone += len;
+        }
+        if (prog) prog->fraction = double(n + 1) / frames;
+    }
+    return out.finish(err);
+}
+
+}  // namespace
+
+bool exportProject(const Project& p, const ExportOptions& opts, ExportProgress* progress, std::string* err) {
+    std::string localErr;
+    if (!err) err = &localErr;
+    Range r = rangeOf(p, opts);
+    if (r.end <= r.start) {
+        *err = "nothing to export: the range is empty";
+        return false;
+    }
+    std::string ext = std::filesystem::path(opts.path).extension().string();
+    std::ranges::transform(ext, ext.begin(), ::tolower);
+    if (ext != ".mp4" && ext != ".wav") {
+        *err = "export path must end in .mp4 or .wav";
+        return false;
+    }
+    av_log_set_level(AV_LOG_ERROR);
+    MediaCache cache(size_t(256) << 20);
+    AudioMixer mixer(cache);
+    Evaluator ev;
+    ev.setProject(p);
+    if (progress) progress->fraction = 0;
+    bool ok = ext == ".wav" ? writeWav(ev, mixer, r, opts.path, progress, err)
+                            : writeMp4(ev, cache, mixer, r, opts, progress, err);
+    if (!ok) {
+        std::error_code ec;
+        std::filesystem::remove(opts.path, ec);
+    }
+    return ok;
+}
+
+ExportJob::~ExportJob() {
+    cancel();
+    wait();
+}
+
+bool ExportJob::start(const Project& p, ExportOptions opts, std::string* err) {
+    if (running_) {
+        if (err) *err = "an export is already running";
+        return false;
+    }
+    wait();
+    opts_ = opts;
+    progress_.fraction = 0;
+    progress_.cancel = false;
+    finished_ = false;
+    running_ = true;
+    {
+        std::lock_guard lock(mu_);
+        error_.clear();
+    }
+    thread_ = std::thread([this, p, opts = std::move(opts)] {
+        std::string e;
+        bool ok = exportProject(p, opts, &progress_, &e);
+        {
+            std::lock_guard lock(mu_);
+            error_ = ok ? "" : e;
+        }
+        finished_ = true;
+        running_ = false;
+    });
+    return true;
+}
+
+void ExportJob::cancel() { progress_.cancel = true; }
+
+void ExportJob::wait() {
+    if (thread_.joinable()) thread_.join();
+}
+
+std::string ExportJob::error() const {
+    std::lock_guard lock(mu_);
+    return error_;
+}
+
+}  // namespace mf

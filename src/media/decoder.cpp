@@ -314,13 +314,29 @@ ImagePtr VideoDecoder::convert(AVFrame* f) {
     sws_ = sws_getCachedContext(sws_, f->width, f->height, AVPixelFormat(f->format), outW_, outH_, AV_PIX_FMT_RGBA,
                                 SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!sws_) return nullptr;
+    // Honor the frame's matrix and range; untagged HD is almost always BT.709.
+    int cs = SWS_CS_DEFAULT;
+    switch (f->colorspace) {
+        case AVCOL_SPC_BT709: cs = SWS_CS_ITU709; break;
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL: cs = SWS_CS_BT2020; break;
+        case AVCOL_SPC_SMPTE170M:
+        case AVCOL_SPC_BT470BG: cs = SWS_CS_ITU601; break;
+        default: cs = f->height >= 720 ? SWS_CS_ITU709 : SWS_CS_DEFAULT;
+    }
+    const AVPixFmtDescriptor* fd = av_pix_fmt_desc_get(AVPixelFormat(f->format));
+    bool rgb = fd && (fd->flags & AV_PIX_FMT_FLAG_RGB);
+    if (!rgb) {
+        int srcFull = f->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
+        sws_setColorspaceDetails(sws_, sws_getCoefficients(cs), srcFull, sws_getCoefficients(SWS_CS_DEFAULT), 1, 0,
+                                 1 << 16, 1 << 16);
+    }
     auto img = std::make_shared<Image>(outW_, outH_);
     uint8_t* dst[4] = {img->px.data(), nullptr, nullptr, nullptr};
     int stride[4] = {outW_ * 4, 0, 0, 0};
     sws_scale(sws_, f->data, f->linesize, 0, f->height, dst, stride);
     // Sources with alpha arrive straight; the compositor wants premultiplied.
-    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(AVPixelFormat(f->format));
-    if (desc && (desc->flags & AV_PIX_FMT_FLAG_ALPHA)) {
+    if (fd && (fd->flags & AV_PIX_FMT_FLAG_ALPHA)) {
         for (size_t i = 0; i < img->px.size(); i += 4) {
             unsigned a = img->px[i + 3];
             for (int c = 0; c < 3; ++c) img->px[i + c] = uint8_t((img->px[i + c] * a + 127) / 255);
