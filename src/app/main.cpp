@@ -223,9 +223,10 @@ void App::processEvent(const SDL_Event& e) {
         if (!in_.down[0] && !in_.down[1]) in_.mouse = {-1, -1};
         break;
     case SDL_EVENT_MOUSE_WHEEL: {
-        float flip = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
-        in_.wheelX += e.wheel.x * flip;
-        in_.wheelY += e.wheel.y * flip;
+        // SDL already applies the system's natural-scrolling setting, and its
+        // positive x scrolls right, which moves content left.
+        in_.wheelX -= e.wheel.x;
+        in_.wheelY += e.wheel.y;
         break;
     }
     case SDL_EVENT_KEY_DOWN: {

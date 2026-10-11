@@ -116,10 +116,12 @@ WidgetId Context::id(uint64_t n) const {
 }
 
 bool Context::mouseIn(const Rect& r) const {
-    if (!r.contains(in_.mouse) || !painter.clip().contains(in_.mouse)) return false;
-    if (!inOverlay_)
-        for (const auto& b : blockers_)
-            if (b.contains(in_.mouse)) return false;
+    if (!r.contains(in_.mouse)) return false;
+    // Overlays draw after the frame, outside the clip of the code that opened them.
+    if (inOverlay_) return true;
+    if (!painter.clip().contains(in_.mouse)) return false;
+    for (const auto& b : blockers_)
+        if (b.contains(in_.mouse)) return false;
     return true;
 }
 

@@ -94,6 +94,25 @@ TEST(Views, HistoryClickUndoesOrRedoesToThatEntry) {
     EXPECT_TRUE(h.session.history().redoLabels().empty());
 }
 
+TEST(Views, EffectsAddMenuAddsTheClickedEffect) {
+    ShellHarness h;
+    Id bg = ok(h, {"clip.add", "solid", "V1", "0", "4", "bg"})["id"];
+    ok(h, {"select", "clips=" + std::to_string(bg)});
+    ok(h, {"ui.layout", "single"});
+    ok(h, {"ui.pane", "1", "video-effects"});
+    h.frame();
+    Rect a = h.paneArea();
+    Context& ui = h.shell->ui();
+    float row = ui.rowHeight();
+    // The menu opens below the header's Add button and extends past the header.
+    h.click(a.r() - ui.dp(30), a.y + row / 2);
+    h.click(a.r() - ui.dp(100), a.y + row + ui.dp(4) + row / 2);
+    const Clip* c = h.session.project().findClip(bg);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->videoEffects.size(), 1u);
+    EXPECT_EQ(c->videoEffects[0].type, videoEffectSpecs()[0].type);
+}
+
 TEST(Views, ConsoleEvaluatesLuaAndRunsCommands) {
     ShellHarness h;
     ok(h, {"ui.layout", "single"});

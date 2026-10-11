@@ -22,6 +22,7 @@ struct Input {
     bool pressed[3] = {};
     bool released[3] = {};
     int clicks = 0;         // click count of the latest left press (2 = double click)
+    // Wheel steps in the system scroll direction: positive moves content right or down.
     float wheelX = 0, wheelY = 0;
     std::vector<KeyChord> keys;  // presses and repeats not taken by actions
     std::string text;            // typed text
