@@ -245,9 +245,13 @@ void App::processEvent(const SDL_Event& e) {
         if (dropText_) dropText_ = false;
         else in_.text += e.text.text;
         break;
+    // Files dropped on the window and files macOS asks the app to open both
+    // arrive here; projects open and anything else imports as media.
     case SDL_EVENT_DROP_FILE: {
+        if (!e.drop.data) break;
         std::string err;
-        if (e.drop.data && !session_->importMedia(e.drop.data, &err)) shell_->notify(err, true);
+        if (std::filesystem::path(e.drop.data).extension() == ".mfproj") shell_->openProjectFile(e.drop.data);
+        else if (!session_->importMedia(e.drop.data, &err)) shell_->notify(err, true);
         break;
     }
     default: break;

@@ -29,6 +29,19 @@ cmake --build build
 
 The build produces `build/meshframe` and `build/meshframe-cli`.
 
+To build a self-contained `meshframe.app` that runs without Homebrew:
+
+```sh
+brew install librsvg
+scripts/build-macos-app.sh
+```
+
+The script writes `build-app/meshframe.app`. The bundle holds the editor,
+`Contents/MacOS/meshframe-cli`, the icon, and copies of the libraries both
+programs load. It registers itself as the editor for `.mfproj` files. It has an
+ad-hoc signature, so other Macs need a Developer ID signature and notarization
+before Gatekeeper will open it.
+
 ## Run
 
 ```sh

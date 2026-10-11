@@ -145,11 +145,14 @@ void Shell::newProject() {
 void Shell::openProject() {
     if (!hooks.fileDialog) return notify("No file dialog available; use the CLI open command", true);
     hooks.fileDialog(false, "Open project", {"mfproj"}, [this](std::string path) {
-        if (path.empty()) return;
-        std::string err;
-        if (session_.open(path, &err)) notify("Opened " + path);
-        else notify(err, true);
+        if (!path.empty()) openProjectFile(path);
     });
+}
+
+void Shell::openProjectFile(const std::string& path) {
+    std::string err;
+    if (session_.open(path, &err)) notify("Opened " + path);
+    else notify(err, true);
 }
 
 void Shell::saveProject(bool saveAs) {

@@ -80,6 +80,7 @@ public:
     // File operations that may show a dialog.
     void newProject();
     void openProject();
+    void openProjectFile(const std::string& path);
     void saveProject(bool saveAs);
     void importMedia();
 
