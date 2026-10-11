@@ -166,6 +166,7 @@ TEST(Commands, FilesFramesAndExport) {
     EXPECT_EQ(png->w, 32);
     SDL_DestroySurface(png);
 
+    ok(c, {"script.set", "mf.log('script ran')"});
     ok(c, {"save", "session/p.mfproj"});
     EXPECT_FALSE(s.dirty());
     ok(c, {"new"});
@@ -173,6 +174,15 @@ TEST(Commands, FilesFramesAndExport) {
     ok(c, {"open", "session/p.mfproj"});
     EXPECT_EQ(s.project().clips.size(), 1u);
     EXPECT_EQ(s.project().settings.width, 64);
+    {
+        // A new session's log includes the opened script's lines before anything else evaluates it.
+        Session fresh;
+        Commands fc(fresh);
+        ok(fc, {"open", "session/p.mfproj"});
+        json log = ok(fc, {"log"});
+        ASSERT_FALSE(log.empty());
+        EXPECT_EQ(log.back()["text"], "script ran") << log.dump();
+    }
 
     // wait=true defers the reply until the background export finishes.
     json done = ok(c, {"export", "session/out.wav", "wait=true"});

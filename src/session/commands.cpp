@@ -906,6 +906,7 @@ void Commands::registerBuiltins() {
              return selectionJson(s.selection);
          }});
     add({"log", "Show log lines after a sequence number", {opt("since", "int")}, [](A a, C c) -> json {
+             c.session.evaluator();  // run a pending script so its log lines are included
              const auto& lines = c.session.logLines();
              uint64_t first = c.session.logCount() - lines.size();
              uint64_t since = get<uint64_t>(a, "since", 0);
