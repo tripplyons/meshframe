@@ -46,7 +46,7 @@ const std::vector<ViewType>& viewTypes() {
         add("console", "Console", views::console);
         add("history", "History", views::history);
         add("export", "Export", views::exportView);
-        add("settings", "Settings");
+        add("settings", "Settings", views::settings);
         return t;
     }();
     return types;

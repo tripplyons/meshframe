@@ -23,5 +23,6 @@ std::unique_ptr<View> scopes();
 std::unique_ptr<View> console();
 std::unique_ptr<View> history();
 std::unique_ptr<View> exportView();
+std::unique_ptr<View> settings();
 
 }  // namespace mf::ui::views

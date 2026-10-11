@@ -8,6 +8,7 @@
 #include "ui/workspace.hpp"
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,7 +34,8 @@ public:
     void frame(const Input& in, Rect screen, float displayScale, double now);
     // Call after frame() and before presenting: saves requested screenshots.
     void afterDraw();
-    // Runs the action bound to a key. Returns true when one ran.
+    // Runs the action bound to a key. Returns true when one ran, or when the
+    // key was taken by a binding capture.
     bool handleKey(const KeyChord& c);
     // True while something animates or waits on the next frame.
     bool wantsFrame() const;
@@ -52,6 +54,21 @@ public:
     void settingsChanged();
     // Saves settings now when they have a path.
     void saveSettings();
+    const std::string& settingsPath() const { return settingsPath_; }
+
+    // Rebinding by key press: the next key binds `action` instead of running
+    // an action. `index` replaces that chord; -1 appends one. Escape or a
+    // mouse press cancels.
+    struct BindingCapture {
+        std::string action;
+        int index = -1;
+    };
+    void captureBinding(std::string action, int index);
+    void cancelCapture() { capture_.reset(); }
+    const std::optional<BindingCapture>& capture() const { return capture_; }
+    // Binds a chord to an action and removes it from any other action, so one
+    // chord runs one action. Saves the bindings.
+    void bindChord(const std::string& action, const KeyChord& c, int index = -1);
     // Marks the workspace changed so it is saved with the settings.
     void workspaceChanged();
 
@@ -118,6 +135,7 @@ private:
         Reply reply;
     };
     std::vector<Screenshot> screenshots_;
+    std::optional<BindingCapture> capture_;
 };
 
 }  // namespace mf::ui

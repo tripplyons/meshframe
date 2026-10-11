@@ -121,3 +121,96 @@ TEST(Views, ConsoleEvaluatesLuaAndRunsCommands) {
     key(h, SDL_SCANCODE_RETURN);
     EXPECT_EQ(h.session.logLines().back().level, LogLine::Level::Error);
 }
+
+namespace {
+
+// Opens the settings view in a single pane and filters it by typing in the header.
+void openSettings(ShellHarness& h, const std::string& filter) {
+    ok(h, {"ui.layout", "single"});
+    ok(h, {"ui.pane", "1", "settings"});
+    h.frame();
+    float row = h.shell->ui().rowHeight();
+    h.click(float(h.w) - 60, row / 2);
+    h.in.text = filter;
+    h.frame();
+    key(h, SDL_SCANCODE_RETURN);
+}
+
+}  // namespace
+
+TEST(Views, SettingsRebindsByCaptureAndPersists) {
+    auto path = (fixtures::dir() / "ui" / "settings-view.json").string();
+    std::filesystem::create_directories(fixtures::dir() / "ui");
+    std::filesystem::remove(path);
+    const KeyChord cmdK{SDL_SCANCODE_K, ModGui}, redo{SDL_SCANCODE_Z, ModGui | ModShift};
+    {
+        ShellHarness h({}, path);
+        openSettings(h, "edit.undo");
+        // Rows: three section headers with their borders, the hint, the group, then Undo.
+        Rect body = singleBody(h);
+        float row = h.shell->ui().rowHeight(), rowH = row + 2;
+        float y = body.y + 3 * (row + 1) + rowH + row + rowH / 2;
+        float chordX = body.x + std::min(170.0f, body.w * 0.4f) + 6;
+        h.click(chordX, y);
+        ASSERT_TRUE(h.shell->capture());
+        EXPECT_EQ(h.shell->capture()->action, "edit.undo");
+
+        // Escape cancels; the binding stays.
+        EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_ESCAPE, 0}));
+        EXPECT_FALSE(h.shell->capture());
+        EXPECT_EQ(h.shell->actions().bindings("edit.undo")[0], (KeyChord{SDL_SCANCODE_Z, ModGui}));
+
+        // A captured key replaces the chord and does not run an action.
+        h.click(chordX, y);
+        ASSERT_TRUE(h.shell->capture());
+        EXPECT_TRUE(h.shell->handleKey(cmdK));
+        EXPECT_EQ(h.shell->actions().bindings("edit.undo"), std::vector<KeyChord>{cmdK});
+        h.frame();
+
+        // Binding a chord that another action uses moves it.
+        h.click(chordX, y);
+        EXPECT_TRUE(h.shell->handleKey(redo));
+        EXPECT_EQ(h.shell->actions().bindings("edit.undo"), std::vector<KeyChord>{redo});
+        EXPECT_TRUE(h.shell->actions().bindings("edit.redo").empty());
+
+        // A mouse press elsewhere cancels a capture.
+        h.click(chordX, y);
+        ASSERT_TRUE(h.shell->capture());
+        h.click(body.x + body.w - 10, body.b() - 10);
+        EXPECT_FALSE(h.shell->capture());
+    }  // saved on destruction
+    ShellHarness h(Settings::load(path), path);
+    EXPECT_EQ(h.shell->actions().bindings("edit.undo"), std::vector<KeyChord>{redo});
+    EXPECT_TRUE(h.shell->actions().bindings("edit.redo").empty());
+}
+
+TEST(Views, SettingsColorEditsApplyLiveAndPersist) {
+    auto path = (fixtures::dir() / "ui" / "settings-colors.json").string();
+    std::filesystem::create_directories(fixtures::dir() / "ui");
+    std::filesystem::remove(path);
+    {
+        ShellHarness h({}, path);
+        openSettings(h, "panel");
+        Rect body = singleBody(h);
+        float row = h.shell->ui().rowHeight(), rowH = row + 2;
+        // The panel color row follows the Interface and Colors section headers.
+        float y = body.y + 2 * (row + 1) + rowH / 2;
+        float hexX = body.x + std::min(170.0f, body.w * 0.4f) + rowH + 20;
+        h.click(hexX, y);
+        h.in.keys.push_back({SDL_SCANCODE_A, ModGui});
+        h.frame();
+        h.in.text = "#204060";
+        h.frame();
+        key(h, SDL_SCANCODE_RETURN);
+        Color want = *parseColor("#204060");
+        EXPECT_EQ(h.shell->settings().theme[Slot::Panel], want);
+        // The pane header uses the panel color on the next frame.
+        h.frame();
+        SDL_Color px = h.pixel(int(body.x) + 200, int(row / 2));
+        EXPECT_EQ(px.r, 0x20);
+        EXPECT_EQ(px.g, 0x40);
+        EXPECT_EQ(px.b, 0x60);
+    }
+    Settings loaded = Settings::load(path);
+    EXPECT_EQ(loaded.theme[Slot::Panel], *parseColor("#204060"));
+}

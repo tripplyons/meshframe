@@ -226,6 +226,7 @@ void Shell::frame(const Input& in, Rect screen, float displayScale, double now) 
     painter_.begin(int(screen.w), int(screen.h));
     ui_.beginFrame(in, screen, scale, now);
     session_.tick();
+    if (capture_ && (in.pressed[0] || in.pressed[1] || in.pressed[2])) capture_.reset();
 
     painter_.fill(screen, ui_.col(Slot::Background));
     Rect area = screen;
@@ -374,7 +375,51 @@ void Shell::drawFileMenu(WidgetId id) {
     endMenu(ui_);
 }
 
-bool Shell::handleKey(const KeyChord& c) { return actions_.dispatch(c, ui_.typing()); }
+bool Shell::handleKey(const KeyChord& c) {
+    if (capture_) {
+        BindingCapture cap = std::move(*capture_);
+        capture_.reset();
+        ui_.requestFrame();
+        if (c.key != SDL_SCANCODE_ESCAPE || c.mods != 0) bindChord(cap.action, c, cap.index);
+        return true;
+    }
+    return actions_.dispatch(c, ui_.typing());
+}
+
+void Shell::captureBinding(std::string action, int index) {
+    if (!actions_.find(action)) return;
+    ui_.blur();  // the captured key must not also type into a field
+    capture_ = BindingCapture{std::move(action), index};
+}
+
+void Shell::bindChord(const std::string& action, const KeyChord& c, int index) {
+    const Action* target = actions_.find(action);
+    if (!target || !c.valid()) return;
+    std::vector<std::string> taken;
+    for (const Action& other : actions_.all()) {
+        if (other.id == action) continue;
+        std::vector<KeyChord> chords = actions_.bindings(other.id);
+        if (std::erase(chords, c) == 0) continue;
+        actions_.setBindings(other.id, std::move(chords));
+        taken.push_back(other.label);
+    }
+    std::vector<KeyChord> chords = actions_.bindings(action);
+    if (index >= 0 && size_t(index) < chords.size()) chords[size_t(index)] = c;
+    else chords.push_back(c);
+    // Keep the first copy if the chord was already bound to this action.
+    auto first = std::find(chords.begin(), chords.end(), c);
+    chords.erase(std::remove(first + 1, chords.end(), c), chords.end());
+    actions_.setBindings(action, std::move(chords));
+    settings_.bindings = actions_.overridesJson();
+    settingsChanged();
+    std::string text = fmt::format("Bound {} to {}", formatChord(c), target->label);
+    if (!taken.empty()) {
+        std::string names;
+        for (const auto& t : taken) names += (names.empty() ? "" : ", ") + t;
+        text += fmt::format(" (removed from {})", names);
+    }
+    notify(text);
+}
 
 bool Shell::wantsFrame() const {
     return ui_.wantsFrame() || session_.player().playing() || session_.exportJob().running() || !screenshots_.empty() ||
