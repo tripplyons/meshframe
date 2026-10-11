@@ -2,6 +2,7 @@
 
 #include "core/value.hpp"
 #include "model/project.hpp"
+#include "render/draw_list.hpp"
 
 #include <map>
 #include <optional>
@@ -13,19 +14,6 @@
 struct lua_State;
 
 namespace mf {
-
-// Vector drawing produced by script generators, rasterized by the compositor.
-struct DrawCmd {
-    enum class Type { Clear, Rect, Circle, Line, Text, Poly } type;
-    float a = 0, b = 0, c = 0, d = 0, e = 0;
-    Color color;
-    std::string text;
-    std::vector<float> points;
-};
-
-struct DrawList {
-    std::vector<DrawCmd> cmds;
-};
 
 struct ScriptError {
     int line = 0;

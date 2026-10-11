@@ -306,6 +306,29 @@ double Evaluator::transitionMix(const Transition& tr) {
 
 Value Evaluator::signal(std::string_view name) { return hostSignal(name); }
 
+bool Evaluator::drawGenerator(const Clip& c, DrawList& out, std::string* err) {
+    std::string name = str(c, "generator");
+    if (name.empty()) return true;
+    ctx_.push_back({c.start, c.duration});
+    double lt = time_ - c.start;
+    bool ok = lua_.draw(name, out, time_, lt, lt / std::max(1e-9, c.duration), effective_.settings.width,
+                        effective_.settings.height, err);
+    ctx_.pop_back();
+    return ok;
+}
+
+bool Evaluator::renderSynth(const Clip& c, double t0, int frames, float* stereo, std::string* err) {
+    std::string name = str(c, "synth");
+    if (name.empty()) {
+        std::fill_n(stereo, size_t(frames) * 2, 0.0f);
+        return true;
+    }
+    ctx_.push_back({c.start, c.duration});
+    bool ok = lua_.synth(name, t0, effective_.settings.sampleRate, frames, stereo, err);
+    ctx_.pop_back();
+    return ok;
+}
+
 void Evaluator::refreshOutputs() {
     if (outVideo_ != Graph::kNone) graph_.get(outVideo_);
     if (outAudio_ != Graph::kNone) graph_.get(outAudio_);

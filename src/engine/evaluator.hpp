@@ -43,6 +43,11 @@ public:
     double transitionMix(const Transition& tr);
     Value signal(std::string_view name);
 
+    // Runs a generator clip's script at the current time in project pixels.
+    bool drawGenerator(const Clip& c, DrawList& out, std::string* err);
+    // Runs a synth clip's script for `frames` stereo samples from timeline time t0.
+    bool renderSynth(const Clip& c, double t0, int frames, float* stereo, std::string* err);
+
     // Time window of a transition: centered on clip B's start.
     static std::pair<double, double> window(const Project& p, const Transition& tr);
     // Whether a clip contributes at time t, including transition overhang.
