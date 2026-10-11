@@ -106,8 +106,9 @@ meshframe-cli help clip.add     # one command's arguments
   - `solid`: `color`.
   - `generator`: `generator`, the name of a script generator.
   - `synth` (audio track): `synth`, the name of a script synth.
-  - `media`: placed with `clip.media`. Video and audio stay linked as a pair
-    until `clip.unlink`. Use `clip.speed` to change playback speed.
+  - `media`: placed with `clip.media`. `media.import` names media by file
+    name, extension included (`clip.mp4`). Video and audio stay linked as a
+    pair until `clip.unlink`. Use `clip.speed` to change playback speed.
   - Every video clip also has `x`, `y` (pixels from the frame center; +y is
     down), `scale`, `rotation` (degrees), `opacity`, and `blend` (`normal`,
     `add`, `multiply`, `screen`).
