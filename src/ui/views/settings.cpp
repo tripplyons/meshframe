@@ -125,11 +125,6 @@ private:
             Rect r = row;
             Rect label = cutLeft(r, labelW_);
             ui.painter.textIn(label.inset(ui.dp(8), 0), slotName(slot), ui.col(Slot::TextDim), Align::Left, FontRole::Mono);
-            bool custom = c != defaultColor(slot);
-            if (button(ui, cutRight(r, ui.dp(26)), "x##reset", false, custom)) {
-                c = defaultColor(slot);
-                shell.settingsChanged();
-            }
             Rect swatch = cutLeft(r, r.h).inset(ui.dp(3), ui.dp(3));
             ui.painter.fill(swatch, c);
             ui.painter.outline(swatch, ui.col(Slot::Border));
@@ -140,7 +135,8 @@ private:
                     shell.settingsChanged();
                 } else shell.notify(fmt::format("Cannot parse color \"{}\"", hex), true);
             }
-            float channelW = std::max(0.0f, r.w / 3);
+            float resetW = std::min(r.w, ui.dp(26));
+            float channelW = std::clamp((r.w - resetW) / 3, 0.0f, ui.dp(64));
             float* channels[] = {&c.r, &c.g, &c.b};
             const char* ids[] = {"##r", "##g", "##b"};
             for (int k = 0; k < 3; ++k) {
@@ -150,6 +146,10 @@ private:
                     *channels[k] = float(v / 255);
                     shell.settingsChanged();
                 }
+            }
+            if (button(ui, cutLeft(r, resetW), "x##reset", false, c != defaultColor(slot))) {
+                c = defaultColor(slot);
+                shell.settingsChanged();
             }
             ui.popId();
         }

@@ -112,10 +112,10 @@ public:
             if (!match) fill.a *= 0.4f;
             ui.painter.fill(r, fill);
             ui.painter.outline(r, ui.col(!n.error.empty() ? Slot::Error : hi ? Slot::GraphActive : Slot::Border));
+            Color tc = ui.col(match ? Slot::Text : Slot::TextFaint);
+            std::string label = n.label.empty() ? n.key : n.label;
             if (zoom_ >= 0.7f) {
                 Rect top{r.x, r.y, r.w, r.h / 2}, bottom{r.x, r.y + r.h / 2, r.w, r.h / 2};
-                Color tc = ui.col(match ? Slot::Text : Slot::TextFaint);
-                std::string label = n.label.empty() ? n.key : n.label;
                 ui.painter.textIn(top.inset(ui.dp(6), 0), label, tc);
                 std::string value = n.error.empty() ? describe(n.value) : n.error;
                 std::string count = fmt::format("{}x", n.evalCount);
@@ -123,6 +123,9 @@ public:
                 Rect b = bottom.inset(ui.dp(6), 0);
                 ui.painter.textIn(cutRight(b, cw), count, ui.col(Slot::TextFaint), Align::Right, FontRole::Mono);
                 ui.painter.textIn(b, value, ui.col(n.error.empty() ? Slot::TextDim : Slot::Error), Align::Left, FontRole::Mono);
+            } else if (r.h >= ui.rowHeight() * 0.9f) {
+                // Too small for the value: the label alone, which is what Fit usually needs.
+                ui.painter.textIn(r.inset(ui.dp(4), 0), label, ui.col(!n.error.empty() ? Slot::Error : match ? Slot::Text : Slot::TextFaint));
             }
             ui.pushId(uint64_t(i));
             Hit h = ui.interact(ui.id("node"), r);
