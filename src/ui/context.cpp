@@ -1,10 +1,13 @@
 #include "ui/context.hpp"
 
+#include <algorithm>
 #include <cctype>
 
 namespace mf::ui {
 
 namespace {
+
+constexpr double kTooltipDelay = 0.5;
 
 uint64_t mix(uint64_t h, uint64_t v) {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
@@ -34,7 +37,13 @@ void Context::beginFrame(const Input& in, Rect screen, float scale, double now) 
     typing_ = typingNext_;
     typingNext_ = false;
     inOverlay_ = false;
+    inModal_ = false;
     overlays_.clear();
+    lastItem_ = 0;
+    lastHovered_ = false;
+    tipNext_ = 0;
+    tipShown_.clear();
+    if (in_.pressed[0] || in_.pressed[1] || in_.pressed[2]) tipMuted_ = tipId_;
 
     // A press outside every overlay closes the open popup and is swallowed.
     if (popup_ && (in_.pressed[0] || in_.pressed[1])) {
@@ -79,6 +88,43 @@ void Context::endFrame() {
     overlays_.clear();
     // Popup overlays block the pointer for widgets underneath on the next frame.
     blockers_ = popup_ ? std::move(next) : std::vector<Rect>{};
+    drawTooltip();
+}
+
+void Context::drawTooltip() {
+    if (tipNext_ != tipId_) {
+        tipId_ = tipNext_;
+        tipSince_ = now_;
+    }
+    bool held = in_.down[0] || in_.down[1] || in_.down[2];
+    if (tipMuted_ && tipId_ != tipMuted_ && !held) tipMuted_ = 0;
+    if (!tipId_ || tipId_ == tipMuted_) return;
+    if (now_ - tipSince_ < kTooltipDelay) {
+        wantsFrame_ = true;
+        return;
+    }
+    tipShown_ = tipText_;
+    float margin = dp(4);
+    float w = std::min(painter.measure(tipShown_) + dp(16), screen_.w - 2 * margin);
+    Rect r{in_.mouse.x + dp(10), in_.mouse.y + dp(18), w, rowHeight_};
+    // Above the pointer when there is no room below, as in the status bar.
+    if (r.b() > screen_.b() - margin) r.y = in_.mouse.y - r.h - dp(6);
+    r.x = std::clamp(r.x, screen_.x + margin, std::max(screen_.x + margin, screen_.r() - margin - r.w));
+    r.y = std::max(r.y, screen_.y + margin);
+    painter.fill(r, col(Slot::Panel));
+    painter.outline(r, col(Slot::Border));
+    painter.textIn(r.inset(dp(8), 0), tipShown_, col(Slot::Text));
+}
+
+void Context::markItem(WidgetId id, const Rect& r) {
+    lastItem_ = id;
+    lastHovered_ = !active_ && mouseIn(r);
+}
+
+void Context::tooltip(std::string_view text) {
+    if (!lastHovered_ || text.empty()) return;
+    tipNext_ = lastItem_;
+    tipText_ = text;
 }
 
 void Context::focus(WidgetId id) {
@@ -117,6 +163,7 @@ WidgetId Context::id(uint64_t n) const {
 
 bool Context::mouseIn(const Rect& r) const {
     if (!r.contains(in_.mouse)) return false;
+    if (modal_ && !inModal_) return false;
     // Overlays draw after the frame, outside the clip of the code that opened them.
     if (inOverlay_) return true;
     if (!painter.clip().contains(in_.mouse)) return false;
@@ -152,6 +199,8 @@ Hit Context::interact(WidgetId id, const Rect& r, bool rightButton) {
             active_ = 0;
         }
     }
+    lastItem_ = id;
+    lastHovered_ = h.hovered && !h.held;
     return h;
 }
 

@@ -25,11 +25,20 @@ public:
     void header(ViewEnv& env, const Rect& area) override {
         Context& ui = env.ui;
         Rect r = area;
+        Shell& shell = env.shell;
         float b = ui.dp(44);
-        if (button(ui, cutRight(r, b), "Snap", snap_)) snap_ = !snap_;
-        if (button(ui, cutRight(r, b), "Fit")) fit(env);
-        if (button(ui, cutRight(r, ui.dp(26)), "+")) zoomAround(zoom_ * 1.5f, lanes_.x + lanes_.w / 2);
-        if (button(ui, cutRight(r, ui.dp(26)), "-")) zoomAround(zoom_ / 1.5f, lanes_.x + lanes_.w / 2);
+        bool snap = button(ui, cutRight(r, b), "Snap", snap_);
+        ui.tooltip("Snap to clip edges and the playhead. Hold Option while dragging to skip snapping.");
+        if (snap) snap_ = !snap_;
+        bool fitAll = button(ui, cutRight(r, b), "Fit");
+        ui.tooltip(shell.withShortcut("Fit the project in view", "timeline.zoom-fit"));
+        if (fitAll) fit(env);
+        bool in = button(ui, cutRight(r, ui.dp(26)), "+");
+        ui.tooltip(shell.withShortcut("Zoom in", "timeline.zoom-in"));
+        if (in) zoomAround(zoom_ * 1.5f, lanes_.x + lanes_.w / 2);
+        bool out = button(ui, cutRight(r, ui.dp(26)), "-");
+        ui.tooltip(shell.withShortcut("Zoom out", "timeline.zoom-out"));
+        if (out) zoomAround(zoom_ / 1.5f, lanes_.x + lanes_.w / 2);
     }
 
     bool command(ViewEnv& env, std::string_view action) override {
@@ -186,13 +195,16 @@ private:
             Rect flags = row.inset(ui.dp(4), ui.dp(2));
             float fb = ui.dp(22);
             Id id = t.id;
-            auto flag = [&](const char* label, bool on, auto set) {
-                if (button(ui, cutLeft(flags, fb), label, on))
+            auto flag = [&](const char* label, bool on, const char* tip, auto set) {
+                bool clicked = button(ui, cutLeft(flags, fb), label, on);
+                ui.tooltip(tip);
+                if (clicked)
                     env.shell.edit(fmt::format("{} {}", on ? "Clear" : "Set", label), [&](Project& pr) { edit::setTrack(pr, id, set(!on)); });
             };
-            if (t.kind == TrackKind::Audio) flag("M", t.muted, [](bool v) { return edit::TrackFlags{.muted = v}; });
-            else flag("H", t.hidden, [](bool v) { return edit::TrackFlags{.hidden = v}; });
-            flag("L", t.locked, [](bool v) { return edit::TrackFlags{.locked = v}; });
+            if (t.kind == TrackKind::Audio)
+                flag("M", t.muted, t.muted ? "Unmute track" : "Mute track", [](bool v) { return edit::TrackFlags{.muted = v}; });
+            else flag("H", t.hidden, t.hidden ? "Show track" : "Hide track", [](bool v) { return edit::TrackFlags{.hidden = v}; });
+            flag("L", t.locked, t.locked ? "Unlock track" : "Lock track", [](bool v) { return edit::TrackFlags{.locked = v}; });
             ui.popId();
         }
         ui.painter.popClip();
@@ -248,7 +260,42 @@ private:
         }
         for (const Placed& pl : placed) drawClip(env, p, pl.clip, pl.rect);
         drawTransitions(env, p);
+        drawDragFeedback(env);
         drawDrop(env, p);
+    }
+
+    // While a clip drag runs: a guide where it snapped, and a readout of
+    // where the clip is, with the reason when it cannot go further.
+    void drawDragFeedback(ViewEnv& env) {
+        Context& ui = env.ui;
+        Session& s = env.session;
+        if (!drag_.started || drag_.mode == DragMode::None) return;
+        if (drag_.snap) ui.painter.vline(std::round(xAt(*drag_.snap)), lanes_.y, lanes_.b(), ui.col(Slot::Accent));
+        const Clip* c = s.project().findClip(drag_.clip);
+        if (!c) return;
+        double fps = s.project().settings.fps;
+        std::string text;
+        if (drag_.mode == DragMode::Move) {
+            double delta = c->start - drag_.origStart;
+            text = fmt::format("Start {}   {}{} s", formatTimecode(c->start, fps), delta < 0 ? "-" : "+", formatNumber(std::abs(delta), 2));
+        } else {
+            double edge = drag_.mode == DragMode::TrimStart ? c->start : c->end();
+            text = fmt::format("{} {}   Duration {}", drag_.mode == DragMode::TrimStart ? "Start" : "End", formatTimecode(edge, fps),
+                               formatTimecode(c->duration, fps));
+        }
+        std::string limit = drag_.limit;
+        float w = std::max(ui.painter.measure(text), ui.painter.measure(limit)) + ui.dp(16);
+        float h = ui.rowHeight() * (limit.empty() ? 1 : 2);
+        Rect r{ui.mouse().x + ui.dp(12), ui.mouse().y - h - ui.dp(8), w, h};
+        r.x = std::max(lanes_.x, std::min(r.x, lanes_.r() - r.w));
+        r.y = std::max(ui.screen().y, r.y);
+        ui.overlay(r, [&ui, r, text, limit] {
+            ui.painter.fill(r, ui.col(Slot::Panel));
+            ui.painter.outline(r, ui.col(Slot::Border));
+            Rect t = r.inset(ui.dp(8), 0);
+            ui.painter.textIn(cutTop(t, ui.rowHeight()), text, ui.col(Slot::Text), Align::Left, FontRole::Mono);
+            if (!limit.empty()) ui.painter.textIn(cutTop(t, ui.rowHeight()), limit, ui.col(Slot::Error));
+        });
     }
 
     void drawClip(ViewEnv& env, const Project& p, const Clip& c, const Rect& r) {
@@ -348,13 +395,11 @@ private:
         Context& ui = env.ui;
         const Payload* payload = ui.dragging();
         if (!payload || payload->kind != "media") return;
-        if (ui.mouseIn(lanes_)) {
-            float x = ui.mouse().x;
-            ui.painter.vline(x, lanes_.y, lanes_.b(), ui.col(Slot::Accent));
-        }
+        // The line shows where the clip will start, after snapping.
+        double t = std::max(0.0, snapTime(env, p, timeAt(ui.mouse().x), {}));
+        if (ui.mouseIn(lanes_)) ui.painter.vline(std::round(xAt(t)), lanes_.y, lanes_.b(), ui.col(Slot::Accent));
         auto dropped = ui.drop(lanes_);
         if (!dropped) return;
-        double t = std::max(0.0, snapTime(env, p, timeAt(ui.mouse().x), {}));
         Id media = dropped->id;
         Id vtrack = 0, atrack = 0;
         int lane = laneAt(p, ui.mouse().y);
@@ -424,6 +469,9 @@ private:
             drag_.started = true;
             s.beginGesture(drag_.mode == DragMode::Move ? "Move clips" : "Trim clip");
         }
+        drag_.snap.reset();
+        drag_.limit.clear();
+        double frame = 1.0 / p.settings.fps;
         std::set<Id> moving;
         for (const auto& o : drag_.origin) {
             moving.insert(o.id);
@@ -440,11 +488,20 @@ private:
                 double start = drag_.origStart + dt;
                 double snappedStart = snapTime(env, p, start, moving);
                 double snappedEnd = snapTime(env, p, start + drag_.origDuration, moving);
-                if (snappedStart != start) dt += snappedStart - start;
-                else if (snappedEnd != start + drag_.origDuration) dt += snappedEnd - (start + drag_.origDuration);
+                if (snappedStart != start) {
+                    dt += snappedStart - start;
+                    drag_.snap = snappedStart;
+                } else if (snappedEnd != start + drag_.origDuration) {
+                    dt += snappedEnd - (start + drag_.origDuration);
+                    drag_.snap = snappedEnd;
+                }
                 double minStart = 1e300;
                 for (const auto& o : drag_.origin) minStart = std::min(minStart, o.start);
-                dt = std::max(dt, -minStart);
+                if (dt < -minStart) {
+                    dt = -minStart;
+                    drag_.snap.reset();
+                    drag_.limit = "Reached the start of the timeline";
+                }
                 int laneDelta = drag_.pressLane >= 0 ? laneAt(p, ui.mouse().y) - drag_.pressLane : 0;
                 if (laneAt(p, ui.mouse().y) < 0) laneDelta = 0;
                 auto origin = drag_.origin;
@@ -461,14 +518,26 @@ private:
                 });
             } else if (drag_.mode == DragMode::TrimStart) {
                 double end = drag_.origStart + drag_.origDuration;
-                double start = std::clamp(snapTime(env, p, drag_.origStart + dt, moving), 0.0, end - 1.0 / p.settings.fps);
+                double raw = drag_.origStart + dt;
+                double snapped = snapTime(env, p, raw, moving);
+                double start = std::clamp(snapped, 0.0, end - frame);
+                if (start != snapped) drag_.limit = start == 0 ? "Reached the start of the timeline" : "A clip is at least one frame long";
+                else if (snapped != raw) drag_.snap = snapped;
                 s.updateGesture([&](Project& pr) { edit::trimClip(pr, clip, start, end - start); });
             } else {
-                double end = std::max(drag_.origStart + 1.0 / p.settings.fps, snapTime(env, p, drag_.origStart + drag_.origDuration + dt, moving));
+                double raw = drag_.origStart + drag_.origDuration + dt;
+                double snapped = snapTime(env, p, raw, moving);
+                double end = std::max(drag_.origStart + frame, snapped);
+                if (end != snapped) drag_.limit = "A clip is at least one frame long";
+                else if (snapped != raw) drag_.snap = snapped;
                 s.updateGesture([&](Project& pr) { edit::trimClip(pr, clip, drag_.origStart, end - drag_.origStart); });
             }
-        } catch (const EditError&) {
-            // Keep the last valid position, such as when a trim passes the source start.
+        } catch (const EditError& e) {
+            // Keep the last valid position, such as when a trim passes the
+            // source start, and say why the clip stopped.
+            drag_.snap.reset();
+            drag_.limit = e.what();
+            if (!drag_.limit.empty()) drag_.limit[0] = char(std::toupper(uint8_t(drag_.limit[0])));
         }
     }
 
@@ -619,6 +688,8 @@ private:
         int pressLane = -1;
         double origStart = 0, origDuration = 0;
         std::vector<Origin> origin;
+        std::optional<double> snap;  // where the last update snapped
+        std::string limit;           // why the last update stopped short
     };
 
     float zoom_ = kDefaultZoom;

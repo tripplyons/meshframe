@@ -41,7 +41,9 @@ void drawChevronDown(Context& ui, Vec c, float size, const Color& col) {
 
 bool button(Context& ui, const Rect& r, std::string_view label, bool selected, bool enabled) {
     WidgetId id = ui.id(label);
-    Hit h = enabled ? ui.interact(id, r) : Hit{};
+    Hit h;
+    if (enabled) h = ui.interact(id, r);
+    else ui.markItem(id, r);
     Color bg = selected ? ui.col(Slot::Selection) : ui.col(Slot::Panel);
     if (h.held) bg = ui.col(Slot::Pressed);
     else if (h.hovered) bg = selected ? ui.col(Slot::Selection) : ui.col(Slot::Hover);
@@ -441,6 +443,7 @@ DragResult numberField(Context& ui, const Rect& r, std::string_view label, doubl
         else if (dragging != 0) res.ended = true;
         dragging = 0;
     }
+    ui.tooltip("Drag to change, with Shift for fine steps. Click to type a value.");
     ui.painter.fill(r, h.held ? ui.col(Slot::Pressed) : h.hovered ? ui.col(Slot::Hover) : ui.col(Slot::Field));
     std::string text = formatNumber(value, st.decimals);
     if (!st.unit.empty()) text += fmt::format(" {}", st.unit);

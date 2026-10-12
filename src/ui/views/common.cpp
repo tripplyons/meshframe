@@ -121,15 +121,15 @@ void propertyRow(ViewEnv& env, const Rect& rowIn, Id target, const PropSpec& spe
     Rect label = cutLeft(row, labelWidth);
     bool selected = s.selection.prop == name && (s.selection.primaryClip() == target || s.selection.effect == target ||
                                                  s.selection.transition == target);
+    bool number = spec.type == ValueType::Number;
+    bool canKey = number && spec.animatable && !readOnly;
     Hit lh = ui.interact(ui.id("label"), label);
+    if (!error.empty()) ui.tooltip(error);
+    else if (canKey) ui.tooltip("Click to edit this property in the curves view");
     if (selected) ui.painter.fill(label, ui.col(Slot::Selection));
     else if (lh.hovered) ui.painter.fill(label, ui.col(Slot::Hover));
     ui.painter.textIn(label.inset(ui.dp(8), 0), name, error.empty() ? ui.col(Slot::TextDim) : ui.col(Slot::Error));
     if (lh.clicked) s.selection.prop = name;
-    if (lh.hovered && !error.empty()) shell.notify(name + ": " + error, false);
-
-    bool number = spec.type == ValueType::Number;
-    bool canKey = number && spec.animatable && !readOnly;
     Rect key = cutRight(row, ui.dp(22));
     Rect mode = cutLeft(row, ui.dp(26));
     Rect editor = row.inset(0, ui.dp(2));
@@ -144,8 +144,13 @@ void propertyRow(ViewEnv& env, const Rect& rowIn, Id target, const PropSpec& spe
     // Mode menu.
     const char* modeText = prop->mode == PropMode::Constant ? "=" : prop->mode == PropMode::Curve ? "K" : "fx";
     WidgetId menu = ui.id("mode-menu");
-    if (button(ui, mode.inset(ui.dp(2)), fmt::format("{}##mode", modeText), prop->mode != PropMode::Constant))
-        ui.openPopup(menu, {mode.x, mode.b()});
+    bool openMode = button(ui, mode.inset(ui.dp(2)), fmt::format("{}##mode", modeText), prop->mode != PropMode::Constant);
+    if (prop->mode == PropMode::Curve) ui.tooltip("Keyframes. Click to change the mode or edit the curve.");
+    else if (prop->mode == PropMode::Expression) ui.tooltip("Lua expression. Click to change the mode.");
+    else if (canKey) ui.tooltip("Constant. Click to use keyframes or an expression.");
+    else if (spec.animatable) ui.tooltip("Constant. Click to use an expression.");
+    else ui.tooltip("Constant. Click to reset to the default.");
+    if (openMode) ui.openPopup(menu, {mode.x, mode.b()});
     if (beginMenu(ui, menu, ui.dp(170))) {
         if (menuItem(ui, "Constant", {}, true, prop->mode == PropMode::Constant) && prop->mode != PropMode::Constant)
             shell.edit("Set " + name + " constant", [&](Project& p) { edit::setPropConstant(p, target, name, current); });
@@ -217,6 +222,7 @@ void propertyRow(ViewEnv& env, const Rect& rowIn, Id target, const PropSpec& spe
         if (prop->mode == PropMode::Curve)
             for (const auto& k : prop->curve.keys) atKey |= std::abs(k.t - localT) < 0.5 / fps;
         Hit kh = ui.interact(ui.id("key"), key);
+        ui.tooltip(atKey ? "Remove the keyframe at the playhead" : "Add a keyframe at the playhead");
         Vec center{key.x + key.w / 2, key.y + key.h / 2};
         if (prop->mode == PropMode::Curve || kh.hovered) keyDiamond(ui, center, ui.dp(5), atKey, kh.hovered);
         if (kh.clicked) {

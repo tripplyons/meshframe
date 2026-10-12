@@ -40,7 +40,7 @@ public:
     // True while something animates or waits on the next frame.
     bool wantsFrame() const;
     bool quitRequested() const { return quit_; }
-    // Asks to quit; a dirty project needs a second request.
+    // Quits, after asking to save unsaved changes.
     void requestQuit();
 
     Session& session() { return session_; }
@@ -77,12 +77,26 @@ public:
     // Runs a project edit and reports an EditError in the status bar.
     bool edit(const std::string& label, const std::function<void(Project&)>& fn);
 
-    // File operations that may show a dialog.
+    // File operations that may show a dialog. New and open ask to save
+    // unsaved changes first. `then` runs after a successful save.
     void newProject();
     void openProject();
     void openProjectFile(const std::string& path);
-    void saveProject(bool saveAs);
+    void saveProject(bool saveAs, std::function<void()> then = {});
     void importMedia();
+
+    // Runs `next` now when the project has no unsaved changes. Otherwise a
+    // dialog asks to save them, discard them, or cancel; `next` runs after
+    // a save or a discard. `action` completes "before ...", as in "quitting".
+    void confirmUnsaved(std::string action, std::function<void()> next);
+    enum class Answer { Save, Discard, Cancel };
+    void answerDialog(Answer a);
+    bool dialogOpen() const { return confirm_.has_value(); }
+
+    // "Cmd+E" for the first key bound to an action, or "".
+    std::string shortcutText(std::string_view action) const;
+    // "Export (Cmd+E)", or text alone when the action has no key.
+    std::string withShortcut(std::string_view text, std::string_view action) const;
 
     int focusedPane() const { return focusedPane_; }
     // The view in a pane of the active space, created on demand.
@@ -94,7 +108,7 @@ public:
     void showView(const std::string& type);
 
     // GUI commands for the CLI: ui.state, ui.space, ui.swap, ui.layout, ui.pane,
-    // ui.actions, ui.action, ui.bind, ui.theme, ui.settings, ui.screenshot.
+    // ui.actions, ui.action, ui.bind, ui.theme, ui.settings, ui.dialog, ui.screenshot.
     void registerCommands(Commands& commands);
     nlohmann::json state() const;
     // The registered command set, for the console view. Null before registerCommands.
@@ -109,6 +123,10 @@ private:
     void drawPanes(const Rect& area);
     void drawStatus(const Rect& bar);
     void drawFileMenu(WidgetId id);
+    void drawDialog();
+    std::string dialogQuestion() const;
+    // The project's file name, or its name before the first save.
+    std::string projectTitle() const;
 
     Session& session_;
     Painter& painter_;
@@ -124,7 +142,11 @@ private:
     bool fontsDirty_ = true;
     int focusedPane_ = 0;
     bool quit_ = false;
-    double quitAskedAt_ = -10;
+    struct Confirm {
+        std::string action;
+        std::function<void()> next;
+    };
+    std::optional<Confirm> confirm_;
     std::string notice_;
     bool noticeError_ = false;
     double noticeAt_ = -10;

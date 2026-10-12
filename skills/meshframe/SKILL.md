@@ -47,8 +47,9 @@ ditto build-app/meshframe.app /Applications/meshframe.app
   prevents this). GUI commands (`ui.*`) need a running editor.
 - To start an editor yourself, run `meshframe FILE.mfproj &`, then wait until
   `meshframe-cli sessions` lists it. Stop only editors you started, with
-  `meshframe-cli ui.action app.quit`. Save first if the user should keep the
-  changes.
+  `meshframe-cli ui.action app.quit`. With unsaved changes, the editor asks
+  whether to save instead of quitting, and `ui.state` shows the question in
+  `dialog`. Answer with `ui.dialog save` or `ui.dialog discard`.
 
 Each headless invocation is a new session, so `undo` cannot reach changes
 from an earlier invocation. To share one session and history, send many
@@ -164,7 +165,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | History | `undo`, `redo`, `history` |
 | Output | `frame PATH [TIME] [WIDTH] [HEIGHT]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
 | Selection | `select [clips] [track] [media] [effect] [transition] [prop]` |
-| GUI | `ui.state`, `ui.space N`, `ui.swap N`, `ui.layout NAME [space]`, `ui.pane N VIEW [space]`, `ui.actions`, `ui.action ID`, `ui.bind ID [KEYS]`, `ui.theme [SLOT] [COLOR]`, `ui.settings [set]`, `ui.screenshot PATH` |
+| GUI | `ui.state`, `ui.space N`, `ui.swap N`, `ui.layout NAME [space]`, `ui.pane N VIEW [space]`, `ui.actions`, `ui.action ID`, `ui.dialog ANSWER`, `ui.bind ID [KEYS]`, `ui.theme [SLOT] [COLOR]`, `ui.settings [set]`, `ui.screenshot PATH` |
 
 Notes:
 

@@ -145,6 +145,37 @@ TEST(UiWidgets, ButtonClickNeedsPressAndReleaseInside) {
     EXPECT_EQ(over, 1);
 }
 
+TEST(UiWidgets, TooltipsShowAfterHoverAndHideOnPress) {
+    UiHarness h;
+    bool enabled = true;
+    auto draw = [&](Context& ui) {
+        button(ui, {10, 10, 80, 24}, "Go", false, enabled);
+        ui.tooltip(enabled ? "Start" : "Not ready yet");
+        button(ui, {10, 50, 80, 24}, "Other");
+    };
+    h.move(20, 20);
+    h.frame(draw);
+    h.frame(draw);
+    EXPECT_EQ(h.ui->shownTooltip(), "") << "a tooltip waits before it shows";
+    for (int i = 0; i < 40; ++i) h.frame(draw);
+    EXPECT_EQ(h.ui->shownTooltip(), "Start");
+
+    // A press hides it until the pointer moves to another widget.
+    h.press();
+    h.frame(draw);
+    h.release();
+    for (int i = 0; i < 40; ++i) h.frame(draw);
+    EXPECT_EQ(h.ui->shownTooltip(), "");
+
+    // Disabled buttons still explain themselves.
+    enabled = false;
+    h.move(20, 60);
+    h.frame(draw);
+    h.move(20, 20);
+    for (int i = 0; i < 40; ++i) h.frame(draw);
+    EXPECT_EQ(h.ui->shownTooltip(), "Not ready yet");
+}
+
 TEST(UiWidgets, TextFieldEditsCommitsAndCancels) {
     UiHarness h;
     std::string value = "clip";

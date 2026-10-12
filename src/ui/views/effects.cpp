@@ -19,7 +19,15 @@ public:
         WidgetId menu = ui.id("##add-effect");
         Rect add = cutRight(r, std::min(r.w, ui.dp(60)));
         Target t = target(env);
-        if (button(ui, add, "Add", false, t.editable)) ui.openPopup(menu, {add.x, add.b()});
+        bool openAdd = button(ui, add, "Add", false, t.editable);
+        if (t.editable) ui.tooltip("Add an effect to the end of the chain");
+        else if (t.clip) ui.tooltip("Script clips are read-only. Edit them in the script view.");
+        else {
+            std::string why = t.message;
+            std::replace(why.begin(), why.end(), '\n', ' ');
+            ui.tooltip(why);
+        }
+        if (openAdd) ui.openPopup(menu, {add.x, add.b()});
         if (audio_) {
             static const std::vector<std::string> modes = {"Selected clip", "Master"};
             int m = master_ ? 1 : 0;
@@ -73,17 +81,24 @@ public:
             Id id = e.id;
             if (t.editable) {
                 bool enabled = e.enabled;
-                if (toggle(ui, cutLeft(r, ui.dp(24)), "##enabled", enabled))
+                bool toggled = toggle(ui, cutLeft(r, ui.dp(24)), "##enabled", enabled);
+                ui.tooltip(e.enabled ? "Turn this effect off" : "Turn this effect on");
+                if (toggled)
                     env.shell.edit(enabled ? "Enable effect" : "Disable effect", [&](Project& p) { edit::setEffectEnabled(p, id, enabled); });
                 float b = ui.dp(26);
-                if (button(ui, cutRight(r, b), "x##remove")) {
+                bool remove = button(ui, cutRight(r, b), "x##remove");
+                ui.tooltip("Remove this effect");
+                if (remove) {
                     env.shell.edit("Remove effect", [&](Project& p) { edit::removeEffect(p, id); });
                     s.pruneSelection();
                 }
-                if (button(ui, cutRight(r, b), "v##down", false, i + 1 < t.chain.size()))
-                    env.shell.edit("Move effect", [&](Project& p) { edit::moveEffect(p, id, 1); });
-                if (button(ui, cutRight(r, b), "^##up", false, i > 0))
-                    env.shell.edit("Move effect", [&](Project& p) { edit::moveEffect(p, id, -1); });
+                bool last = i + 1 == t.chain.size();
+                bool down = button(ui, cutRight(r, b), "v##down", false, !last);
+                ui.tooltip(last ? "Already last in the chain" : "Move later in the chain");
+                if (down) env.shell.edit("Move effect", [&](Project& p) { edit::moveEffect(p, id, 1); });
+                bool up = button(ui, cutRight(r, b), "^##up", false, i > 0);
+                ui.tooltip(i == 0 ? "Already first in the chain" : "Move earlier in the chain");
+                if (up) env.shell.edit("Move effect", [&](Project& p) { edit::moveEffect(p, id, -1); });
             }
             std::string label = spec ? spec->label : e.type;
             ui.painter.textIn(r.inset(ui.dp(8), 0), e.enabled ? label : label + " (off)", ui.col(e.enabled ? Slot::Text : Slot::TextDim));
@@ -130,6 +145,7 @@ private:
         t.clip = c->id;
         t.editable = !c->scriptOwned();
         t.title = c->scriptOwned() ? c->name + " (script, read-only)" : c->name;
+        if (size_t n = s.selection.clips.size(); n > 1) t.title += fmt::format(", 1 of {} selected clips", n);
         t.chain = audio_ ? c->audioEffects : c->videoEffects;
         return t;
     }

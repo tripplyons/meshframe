@@ -281,3 +281,65 @@ TEST(Shell, WorkspaceAndBindingsPersistInSettings) {
     EXPECT_EQ(st["spaces"][6]["panes"][0], "scopes");
     EXPECT_EQ(h.shell->actions().bindings("transport.toggle")[0], (KeyChord{SDL_SCANCODE_K, 0}));
 }
+
+TEST(Shell, CleanProjectQuitsWithoutAsking) {
+    ShellHarness h;
+    h.frame();
+    EXPECT_TRUE(h.run({"ui.action", "app.quit"})["ok"]);
+    EXPECT_TRUE(h.shell->quitRequested());
+}
+
+TEST(Shell, UnsavedChangesDialogAsksBeforeQuitting) {
+    ShellHarness h;
+    h.frame();
+    ASSERT_TRUE(h.run({"track.add", "video"})["ok"]);
+    h.run({"ui.action", "app.quit"});
+    h.frame();
+    EXPECT_FALSE(h.shell->quitRequested());
+    auto dialog = h.run({"ui.state"})["result"]["dialog"];
+    ASSERT_TRUE(dialog.is_string());
+    EXPECT_NE(dialog.get<std::string>().find("before quitting"), std::string::npos);
+
+    // Clicks under the dialog do nothing: the pane's view picker stays shut.
+    float row = h.shell->ui().rowHeight();
+    std::string view = h.shell->workspace().active().panes[0].view;
+    h.click(20, row / 2);
+    h.click(20, row * 3);
+    EXPECT_EQ(h.shell->workspace().active().panes[0].view, view);
+
+    // Escape cancels and keeps the editor open.
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_ESCAPE, 0}));
+    h.frame();
+    EXPECT_FALSE(h.shell->quitRequested());
+    EXPECT_TRUE(h.run({"ui.state"})["result"]["dialog"].is_null());
+    EXPECT_FALSE(h.run({"ui.dialog", "save"})["ok"]) << "no dialog is open";
+
+    // Discard quits without saving.
+    h.run({"ui.action", "app.quit"});
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_D, ModGui}));
+    EXPECT_TRUE(h.shell->quitRequested());
+    EXPECT_TRUE(h.session.dirty());
+}
+
+TEST(Shell, UnsavedChangesDialogSavesThenContinues) {
+    ShellHarness h;
+    auto path = (fixtures::dir() / "dialog-save.mfproj").string();
+    std::filesystem::remove(path);
+    ASSERT_TRUE(h.run({"save", path})["ok"]);
+    ASSERT_TRUE(h.run({"track.add", "video", "name=Extra"})["ok"]);
+    ASSERT_TRUE(h.session.dirty());
+    size_t tracks = h.session.project().tracks.size();
+
+    h.run({"ui.action", "file.new"});
+    h.frame();
+    EXPECT_EQ(h.session.project().tracks.size(), tracks) << "the project stays until the user answers";
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_RETURN, 0}));
+    EXPECT_TRUE(h.run({"ui.state"})["result"]["dialog"].is_null());
+    EXPECT_FALSE(h.session.dirty());
+    EXPECT_NE(h.session.project().tracks.size(), tracks) << "a new project replaced the saved one";
+
+    // The save wrote the extra track to the file.
+    ASSERT_TRUE(h.run({"open", path})["ok"]);
+    EXPECT_EQ(h.session.project().tracks.size(), tracks);
+    std::filesystem::remove(path);
+}

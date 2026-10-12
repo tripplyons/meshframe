@@ -127,19 +127,71 @@ bool Shell::edit(const std::string& label, const std::function<void(Project&)>& 
 }
 
 void Shell::requestQuit() {
-    if (session_.dirty() && ui_.now() - quitAskedAt_ > 3) {
-        quitAskedAt_ = ui_.now();
-        notify("The project has unsaved changes. Quit again to discard them.");
-        return;
-    }
-    quit_ = true;
+    confirmUnsaved("quitting", [this] { quit_ = true; });
+}
+
+// ---- unsaved changes -------------------------------------------------------------
+
+void Shell::confirmUnsaved(std::string action, std::function<void()> next) {
+    if (!session_.dirty()) return next();
+    confirm_ = Confirm{std::move(action), std::move(next)};
+    ui_.closePopup();
+    ui_.blur();
+    ui_.setModal(true);
+    ui_.requestFrame();
+}
+
+void Shell::answerDialog(Answer a) {
+    if (!confirm_) return;
+    std::function<void()> next = std::move(confirm_->next);
+    confirm_.reset();
+    ui_.setModal(false);
+    ui_.requestFrame();
+    if (a == Answer::Save) saveProject(false, std::move(next));
+    else if (a == Answer::Discard) next();
+}
+
+std::string Shell::dialogQuestion() const {
+    return confirm_ ? fmt::format("Save changes to \"{}\" before {}?", projectTitle(), confirm_->action) : std::string();
+}
+
+void Shell::drawDialog() {
+    painter_.fill(screen_, Color::gray(0, 0.5f));
+    float pad = ui_.dp(16), row = ui_.rowHeight();
+    float w = std::min(screen_.w - ui_.dp(32), ui_.dp(440));
+    float h = pad * 2 + row * 3 + ui_.dp(12);
+    Rect box{std::round(screen_.x + (screen_.w - w) / 2), std::round(screen_.y + (screen_.h - h) / 3), w, h};
+    painter_.fill(box, ui_.col(Slot::Background));
+    painter_.outline(box, ui_.col(Slot::Border));
+    Rect in = box.inset(pad);
+    painter_.textIn(cutTop(in, row), dialogQuestion(), ui_.col(Slot::Text));
+    painter_.textIn(cutTop(in, row), "Unsaved changes are lost if you discard them.", ui_.col(Slot::TextDim));
+    Rect buttons = cutBottom(in, row);
+    float bw = std::min(ui_.dp(84), (buttons.w - ui_.dp(16)) / 3);
+    std::optional<Answer> answer;
+    ui_.beginModal();
+    if (button(ui_, cutRight(buttons, bw), "Save##dialog", true)) answer = Answer::Save;
+    ui_.tooltip("Save (Return)");
+    cutRight(buttons, ui_.dp(8));
+    if (button(ui_, cutRight(buttons, bw), "Cancel##dialog")) answer = Answer::Cancel;
+    ui_.tooltip("Cancel (Escape)");
+    if (button(ui_, cutLeft(buttons, bw), "Discard##dialog")) answer = Answer::Discard;
+    ui_.tooltip("Discard (Cmd+D)");
+    ui_.endModal();
+    if (answer) answerDialog(*answer);
 }
 
 // ---- files -------------------------------------------------------------------------
 
+std::string Shell::projectTitle() const {
+    return session_.path().empty() ? session_.project().name : std::filesystem::path(session_.path()).filename().string();
+}
+
 void Shell::newProject() {
-    session_.newProject();
-    notify("New project");
+    confirmUnsaved("creating a new project", [this] {
+        session_.newProject();
+        notify("New project");
+    });
 }
 
 void Shell::openProject() {
@@ -150,16 +202,20 @@ void Shell::openProject() {
 }
 
 void Shell::openProjectFile(const std::string& path) {
-    std::string err;
-    if (session_.open(path, &err)) notify("Opened " + path);
-    else notify(err, true);
+    std::string name = std::filesystem::path(path).filename().string();
+    confirmUnsaved(fmt::format("opening \"{}\"", name), [this, path] {
+        std::string err;
+        if (session_.open(path, &err)) notify("Opened " + path);
+        else notify(err, true);
+    });
 }
 
-void Shell::saveProject(bool saveAs) {
-    auto write = [this](const std::string& path) {
+void Shell::saveProject(bool saveAs, std::function<void()> then) {
+    auto write = [this, then = std::move(then)](const std::string& path) {
         std::string err;
-        if (session_.save(path, &err)) notify("Saved " + path);
-        else notify(err, true);
+        if (!session_.save(path, &err)) return notify(err, true);
+        notify("Saved " + path);
+        if (then) then();
     };
     if (!saveAs && !session_.path().empty()) return write(session_.path());
     if (!hooks.fileDialog) return notify("No file dialog available; use the CLI save command", true);
@@ -235,8 +291,10 @@ void Shell::frame(const Input& in, Rect screen, float displayScale, double now) 
     Rect area = screen;
     Rect status = cutBottom(area, ui_.rowHeight());
     painter_.fill(cutBottom(area, 1), ui_.col(Slot::Border));
+    ui_.setModal(confirm_.has_value());
     drawPanes(area);
     drawStatus(status);
+    if (confirm_) drawDialog();
     ui_.endFrame();
 
     if (settingsDirty_ && now - settingsDirtyAt_ > kSettingsSaveDelay) saveSettings();
@@ -309,7 +367,9 @@ void Shell::drawStatus(const Rect& bar) {
     float cell = ui_.dp(24);
     for (int i = 0; i < Workspace::kSpaces; ++i) {
         Rect b = cutLeft(r, cell);
-        if (button(ui_, b, fmt::format("{}##space", i + 1), i == workspace_.current())) {
+        bool clicked = button(ui_, b, fmt::format("{}##space", i + 1), i == workspace_.current());
+        ui_.tooltip(withShortcut(fmt::format("Space {}", i + 1), fmt::format("space.{}", i + 1)));
+        if (clicked) {
             workspace_.switchTo(i);
             workspaceChanged();
         }
@@ -319,7 +379,9 @@ void Shell::drawStatus(const Rect& bar) {
     int layout = 0;
     for (size_t k = 0; k < layoutPresets().size(); ++k)
         if (layoutPresets()[k].name == workspace_.active().layout) layout = int(k);
-    if (dropdown(ui_, cutLeft(r, std::min(r.w, ui_.dp(130))), "##layout", layout, layouts)) {
+    bool layoutChanged = dropdown(ui_, cutLeft(r, std::min(r.w, ui_.dp(130))), "##layout", layout, layouts);
+    ui_.tooltip("Pane layout of this space");
+    if (layoutChanged) {
         workspace_.setLayout(workspace_.current(), layoutPresets()[layout].name);
         workspaceChanged();
     }
@@ -330,7 +392,8 @@ void Shell::drawStatus(const Rect& bar) {
     drawFileMenu(menu);
     painter_.fill(cutLeft(r, 1), ui_.col(Slot::Border));
 
-    // Right side: transport time, then export progress or the project name.
+    // Right side: transport time, the project name, then the export button,
+    // which shows progress while an export runs.
     const Project& p = session_.project();
     Rect inner = r.inset(ui_.pad(), 0);
     std::string time = formatTimecode(session_.time(), p.settings.fps);
@@ -338,12 +401,18 @@ void Shell::drawStatus(const Rect& bar) {
     float tw = painter_.measure(time);
     painter_.textIn(cutRight(inner, tw), time, ui_.col(Slot::Text), Align::Right);
     cutRight(inner, ui_.dp(16));
-    std::string right;
+    std::string name = projectTitle() + (session_.dirty() ? " (modified)" : "");
+    float nw = std::min(inner.w / 2, painter_.measure(name));
+    painter_.textIn(cutRight(inner, nw), name, ui_.col(Slot::TextDim), Align::Right);
+    cutRight(inner, ui_.dp(12));
     ExportJob& job = session_.exportJob();
-    if (job.running()) right = fmt::format("Exporting {:.0f}%", job.progress() * 100);
-    else right = (session_.path().empty() ? p.name : std::filesystem::path(session_.path()).filename().string()) + (session_.dirty() ? " (modified)" : "");
-    float rw = std::min(inner.w / 2, painter_.measure(right));
-    painter_.textIn(cutRight(inner, rw), right, ui_.col(Slot::TextDim), Align::Right);
+    std::string exportLabel = job.running() ? fmt::format("Exporting {:.0f}%", job.progress() * 100) : "Export";
+    // A fixed id keeps the button pressable while its label changes.
+    Rect exportButton = cutRight(inner, std::min(inner.w, painter_.measure("Exporting 100%") + ui_.dp(16)));
+    bool showExport = button(ui_, exportButton, "##export", job.running());
+    painter_.textIn(exportButton, exportLabel, ui_.col(Slot::Text), Align::Center);
+    ui_.tooltip(job.running() ? "Show export progress" : withShortcut("Export the project", "file.export"));
+    if (showExport) showView("export");
     cutRight(inner, ui_.dp(16));
     if (!notice_.empty() && ui_.now() - noticeAt_ < kNoticeSeconds)
         painter_.textIn(inner, notice_, noticeError_ ? ui_.col(Slot::Error) : ui_.col(Slot::Text));
@@ -354,17 +423,14 @@ void Shell::drawFileMenu(WidgetId id) {
     float barTop = screen_.b() - ui_.rowHeight();
     if (ui_.popupOpen(id) && ui_.popupHeight(id) > 0) ui_.openPopup(id, {ui_.popupPos().x, barTop - ui_.popupHeight(id)});
     if (!beginMenu(ui_, id, ui_.dp(240))) return;
-    auto shortcut = [&](const char* action) {
-        const auto& b = actions_.bindings(action);
-        return b.empty() ? std::string() : formatChord(b.front());
-    };
     struct Item {
         const char* label;
         const char* action;
     };
     const Item items[] = {
         {"New project", "file.new"},   {"Open project...", "file.open"}, {"Save", "file.save"},
-        {"Save as...", "file.save-as"}, {"Import media...", "file.import"}, {nullptr, nullptr},
+        {"Save as...", "file.save-as"}, {"Import media...", "file.import"}, {"Export...", "file.export"},
+        {nullptr, nullptr},
         {"Undo", "edit.undo"},          {"Redo", "edit.redo"},             {nullptr, nullptr},
         {"Settings", "app.settings"},   {"Quit", "app.quit"},
     };
@@ -373,12 +439,30 @@ void Shell::drawFileMenu(WidgetId id) {
             menuSeparator(ui_);
             continue;
         }
-        if (menuItem(ui_, it.label, shortcut(it.action))) actions_.run(it.action);
+        if (menuItem(ui_, it.label, shortcutText(it.action))) actions_.run(it.action);
     }
     endMenu(ui_);
 }
 
+std::string Shell::shortcutText(std::string_view action) const {
+    const auto& b = actions_.bindings(std::string(action));
+    return b.empty() ? std::string() : formatChord(b.front());
+}
+
+std::string Shell::withShortcut(std::string_view text, std::string_view action) const {
+    std::string keys = shortcutText(action);
+    return keys.empty() ? std::string(text) : fmt::format("{} ({})", text, keys);
+}
+
 bool Shell::handleKey(const KeyChord& c) {
+    // The dialog takes every key while it is open.
+    if (confirm_) {
+        bool enter = c.key == SDL_SCANCODE_RETURN || c.key == SDL_SCANCODE_KP_ENTER;
+        if (enter && c.mods == 0) answerDialog(Answer::Save);
+        else if (c.key == SDL_SCANCODE_ESCAPE && c.mods == 0) answerDialog(Answer::Cancel);
+        else if (c.key == SDL_SCANCODE_D && c.mods == ModGui) answerDialog(Answer::Discard);
+        return true;
+    }
     if (capture_) {
         BindingCapture cap = std::move(*capture_);
         capture_.reset();
@@ -569,7 +653,8 @@ nlohmann::json Shell::state() const {
             {"spaces", spaces},
             {"size", {int(screen_.w), int(screen_.h)}},
             {"scale", ui_.scale()},
-            {"typing", ui_.typing()}};
+            {"typing", ui_.typing()},
+            {"dialog", confirm_ ? json(dialogQuestion()) : json(nullptr)}};
 }
 
 void Shell::registerCommands(Commands& commands) {
@@ -701,6 +786,16 @@ void Shell::registerCommands(Commands& commands) {
                           settingsChanged();
                       }
                       return settings_.toJson();
+                  }});
+    commands.add({"ui.dialog", "Answer the unsaved-changes dialog: save, discard, or cancel", {req("answer", "string")},
+                  [this](A a, C) -> json {
+                      if (!confirm_) throw EditError("no dialog is open");
+                      std::string answer = a["answer"];
+                      if (answer == "save") answerDialog(Answer::Save);
+                      else if (answer == "discard") answerDialog(Answer::Discard);
+                      else if (answer == "cancel") answerDialog(Answer::Cancel);
+                      else throw EditError(fmt::format("unknown answer \"{}\" (save, discard, or cancel)", answer));
+                      return state();
                   }});
     commands.add({"ui.screenshot", "Save the window as a PNG after the next frame", {req("path", "path")}, [this](A a, C c) -> json {
                       std::string path = a["path"];

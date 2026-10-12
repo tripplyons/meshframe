@@ -65,8 +65,11 @@ private:
         ui.pushId(id);
 
         Rect head = section(ui, list, fmt::format("{} clip", clipKindName(c.kind)));
-        if (s.selection.clips.size() > 1)
-            ui.painter.textIn(head, fmt::format("{} selected", s.selection.clips.size()), ui.col(Slot::TextDim), Align::Right);
+        if (size_t n = s.selection.clips.size(); n > 1) {
+            ui.painter.textIn(head, fmt::format("{} clips selected", n), ui.col(Slot::TextDim), Align::Right);
+            Rect r = list.next(rowH_);
+            ui.painter.textIn(r.inset(ui.dp(8), 0), fmt::format("Edits here apply to \"{}\" only.", c.name), ui.col(Slot::TextDim));
+        }
         if (ro) {
             Rect r = list.next(rowH_);
             ui.painter.textIn(r.inset(ui.dp(8), 0), "Defined by the project script. Edit it in the script view.", ui.col(Slot::TextDim));

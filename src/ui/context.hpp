@@ -104,6 +104,21 @@ public:
     Cursor cursor() const { return cursor_; }
     // Wheel movement over r, consumed by the first caller.
     Vec takeWheel(const Rect& r);
+    // Records a widget that takes no input, such as a disabled button, so
+    // tooltip() can describe it.
+    void markItem(WidgetId id, const Rect& r);
+    // Describes the last widget drawn. The text shows near the pointer after
+    // it rests on that widget, and hides on a press until the pointer leaves.
+    void tooltip(std::string_view text);
+    // The tooltip drawn this frame, or "".
+    const std::string& shownTooltip() const { return tipShown_; }
+
+    // A modal dialog: while one is open, only widgets drawn between
+    // beginModal() and endModal() get the pointer and wheel.
+    void setModal(bool open) { modal_ = open; }
+    bool modal() const { return modal_; }
+    void beginModal() { inModal_ = true; }
+    void endModal() { inModal_ = false; }
 
     // Keyboard.
     bool key(SDL_Scancode sc, uint8_t mods = 0) const;  // exact chord pressed this frame
@@ -149,6 +164,8 @@ public:
     std::optional<Payload> drop(const Rect& r);
 
 private:
+    void drawTooltip();
+
     Input in_;
     Rect screen_;
     float scale_ = 1;
@@ -174,6 +191,14 @@ private:
     std::unordered_map<WidgetId, float> floats_;
     std::unordered_map<WidgetId, double> numbers_;
     std::optional<Payload> drag_;
+    bool modal_ = false, inModal_ = false;
+    WidgetId lastItem_ = 0;
+    bool lastHovered_ = false;
+    WidgetId tipId_ = 0, tipNext_ = 0;
+    std::string tipText_;
+    double tipSince_ = 0;
+    WidgetId tipMuted_ = 0;  // pressed; no tooltip until the pointer leaves it
+    std::string tipShown_;
     bool wantsFrame_ = false;
     Vec lastMouse_, prevMouse_;
 };
