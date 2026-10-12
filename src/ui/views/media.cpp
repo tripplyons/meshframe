@@ -20,7 +20,9 @@ class MediaView : public View {
 public:
     void header(ViewEnv& env, const Rect& area) override {
         Rect r = area;
-        if (button(env.ui, cutRight(r, std::min(r.w, env.ui.dp(70))), "Import")) env.shell.importMedia();
+        bool import = button(env.ui, cutRight(r, std::min(r.w, env.ui.dp(70))), "Import");
+        env.ui.tooltip(env.shell.withShortcut("Add video, image, or audio files", "file.import"));
+        if (import) env.shell.importMedia();
     }
 
     void draw(ViewEnv& env, const Rect& body) override {
@@ -28,7 +30,8 @@ public:
         Session& s = env.session;
         const Project& p = s.project();
         if (p.media.empty()) {
-            paragraph(ui, body.inset(ui.pad()), "No media.\nUse Import, or drop files on the window.", Slot::TextFaint);
+            if (!startPanel(env, body, "No media. Import files, or drop them on the window."))
+                paragraph(ui, body.inset(ui.pad()), "No media.\nUse Import, or drop files on the window.", Slot::TextFaint);
             return;
         }
         float rowH = ui.rowHeight() * 2;

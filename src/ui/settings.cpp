@@ -19,6 +19,7 @@ nlohmann::json Settings::toJson() const {
         {"fonts", {{"ui", uiFont}, {"mono", monoFont}, {"uiSize", uiSize}, {"monoSize", monoSize}, {"scale", uiScale}}},
     };
     if (!workspace.is_null()) j["workspace"] = workspace;
+    if (!recent.empty()) j["recent"] = recent;
     return j;
 }
 
@@ -39,7 +40,16 @@ Settings Settings::fromJson(const nlohmann::json& j) {
         s.uiScale = num("scale", 1, 0.5f, 3);
     }
     if (j.contains("workspace")) s.workspace = j["workspace"];
+    if (auto r = j.find("recent"); r != j.end() && r->is_array())
+        for (const auto& p : *r)
+            if (p.is_string() && s.recent.size() < kMaxRecent) s.recent.push_back(p);
     return s;
+}
+
+void Settings::addRecent(const std::string& path) {
+    std::erase(recent, path);
+    recent.insert(recent.begin(), path);
+    if (recent.size() > kMaxRecent) recent.resize(kMaxRecent);
 }
 
 std::string Settings::defaultPath() {

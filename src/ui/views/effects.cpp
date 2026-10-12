@@ -31,7 +31,9 @@ public:
         if (audio_) {
             static const std::vector<std::string> modes = {"Selected clip", "Master"};
             int m = master_ ? 1 : 0;
-            if (dropdown(ui, cutRight(r, std::min(r.w, ui.dp(120))), "##target", m, modes)) master_ = m == 1;
+            bool changed = dropdown(ui, cutRight(r, std::min(r.w, ui.dp(120))), "##target", m, modes);
+            ui.tooltip("Edit the effects of the selected clip, or of the master output");
+            if (changed) master_ = m == 1;
         }
         if (beginMenu(ui, menu, ui.dp(200))) {
             const auto& specs = audio_ ? audioEffectSpecs() : videoEffectSpecs();

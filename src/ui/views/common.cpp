@@ -2,6 +2,9 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <filesystem>
+
 namespace mf::ui::views {
 
 const Property* findProperty(const Project& cp, Id target, const std::string& name) {
@@ -255,6 +258,52 @@ Rect sectionHeader(Context& ui, Rect& area, std::string_view title) {
     float w = ui.painter.measure(title);
     ui.painter.textIn(cutLeft(t, w), title, ui.col(Slot::Text));
     return t;
+}
+
+bool startPanel(ViewEnv& env, const Rect& area, std::string_view title) {
+    constexpr size_t kRecentRows = 5;
+    Context& ui = env.ui;
+    Shell& shell = env.shell;
+    const std::vector<std::string>& recent = shell.recentProjects();
+    size_t rows = std::min(recent.size(), kRecentRows);
+    float row = ui.rowHeight(), pad = ui.dp(16);
+    float w = std::min(area.w - ui.dp(16), ui.dp(400));
+    float h = pad * 2 + row * 2 + ui.dp(8) + (rows > 0 ? row * float(rows + 1) + ui.dp(8) : 0);
+    if (w < ui.dp(160) || h > area.h) return false;
+    Rect box{std::round(area.x + (area.w - w) / 2), std::round(area.y + (area.h - h) / 2), w, h};
+    ui.interact(ui.id("##start"), box);  // the panel covers what is behind it
+    ui.painter.fill(box, ui.col(Slot::Panel));
+    ui.painter.outline(box, ui.col(Slot::Border));
+    Rect in = box.inset(pad);
+    ui.painter.textIn(cutTop(in, row), title, ui.col(Slot::TextDim));
+    cutTop(in, ui.dp(8));
+    Rect buttons = cutTop(in, row);
+    float bw = (buttons.w - ui.dp(8)) / 2;
+    bool import = button(ui, cutLeft(buttons, bw), "Import media...##start", true);
+    ui.tooltip(shell.withShortcut("Add video, image, or audio files to the project", "file.import"));
+    if (import) shell.importMedia();
+    bool open = button(ui, cutRight(buttons, bw), "Open project...##start");
+    ui.tooltip(shell.withShortcut("Open a project file", "file.open"));
+    if (open) shell.openProject();
+    if (rows == 0) return true;
+    cutTop(in, ui.dp(8));
+    ui.painter.textIn(cutTop(in, row), "Recent projects", ui.col(Slot::TextFaint));
+    std::string chosen;
+    for (size_t i = 0; i < rows; ++i) {
+        const std::string& path = recent[i];
+        std::filesystem::path fp(path);
+        Rect r = cutTop(in, row);
+        Hit hit = ui.interact(ui.id("##recent-" + path), r);
+        if (hit.hovered) ui.painter.fill(r, ui.col(Slot::Hover));
+        Rect t = r.inset(ui.dp(6), 0);
+        std::string name = fp.filename().string();
+        ui.painter.textIn(cutLeft(t, std::min(t.w, ui.painter.measure(name) + ui.dp(12))), name, ui.col(Slot::Text));
+        ui.painter.textIn(t, shortPath(fp.parent_path().string()), ui.col(Slot::TextFaint));
+        ui.tooltip("Open " + shortPath(path));
+        if (hit.clicked) chosen = path;
+    }
+    if (!chosen.empty()) shell.openProjectFile(chosen);
+    return true;
 }
 
 float paragraph(Context& ui, const Rect& area, std::string_view text, Slot color) {

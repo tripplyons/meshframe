@@ -121,6 +121,14 @@ bool Session::open(const std::string& path, std::string* err) {
     }
 }
 
+bool Session::recover(const std::string& copy, const std::string& path, std::string* err) {
+    if (!open(copy, err)) return false;
+    path_ = path;
+    savedRevision_ = 0;  // revisions start at 1, so the project stays unsaved
+    log(LogLine::Level::Info, "recovered unsaved changes" + (path.empty() ? std::string() : " to " + path));
+    return true;
+}
+
 bool Session::save(const std::string& path, std::string* err) {
     std::string target = path.empty() ? path_ : path;
     if (target.empty()) {

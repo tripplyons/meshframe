@@ -30,12 +30,16 @@ public:
         Context& ui = env.ui;
         CurveModel m = model(env);
         Rect r = area;
-        if (button(ui, cutRight(r, std::min(r.w, ui.dp(44))), "Fit")) fitPending_ = true;
+        bool fit = button(ui, cutRight(r, std::min(r.w, ui.dp(44))), "Fit");
+        ui.tooltip("Fit the curve in view");
+        if (fit) fitPending_ = true;
         if (m.props.empty()) return;
         int index = 0;
         for (size_t i = 0; i < m.props.size(); ++i)
             if (m.props[i] == m.prop) index = int(i);
-        if (dropdown(ui, cutRight(r, std::min(r.w, ui.dp(140))), "##prop", index, m.props)) {
+        bool changed = dropdown(ui, cutRight(r, std::min(r.w, ui.dp(140))), "##prop", index, m.props);
+        ui.tooltip("Property to edit");
+        if (changed) {
             env.session.selection.prop = m.props[index];
             selectedKey_ = -1;
             fitPending_ = true;

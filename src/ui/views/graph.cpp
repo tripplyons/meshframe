@@ -21,8 +21,11 @@ public:
     void header(ViewEnv& env, const Rect& area) override {
         Context& ui = env.ui;
         Rect r = area;
-        if (button(ui, cutRight(r, std::min(r.w, ui.dp(44))), "Fit")) fitPending_ = true;
+        bool fit = button(ui, cutRight(r, std::min(r.w, ui.dp(44))), "Fit");
+        ui.tooltip("Fit the graph in view");
+        if (fit) fitPending_ = true;
         textField(ui, cutRight(r, std::min(r.w, ui.dp(160))), "##filter", filter_, FontRole::Ui, "Filter");
+        ui.tooltip("Show nodes whose name contains this text");
     }
 
     void draw(ViewEnv& env, const Rect& body) override {

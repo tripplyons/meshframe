@@ -96,6 +96,7 @@ public:
         drawLanes(env);
         ui.painter.popClip();
         drawPlayhead(env);
+        if (p.clips.empty() && !ui.dragging()) startPanel(env, lanes_, "No clips. Drag media here, or import some.");
         drawMenus(env);
     }
 

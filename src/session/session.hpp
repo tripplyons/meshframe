@@ -65,6 +65,9 @@ public:
     void newProject();
     bool open(const std::string& path, std::string* err);
     bool save(const std::string& path, std::string* err);
+    // Opens a recovery copy as unsaved changes to the project at `path`
+    // ("" for a project that was never saved).
+    bool recover(const std::string& copy, const std::string& path, std::string* err);
     const std::string& path() const { return path_; }
     bool dirty() const { return revision_ != savedRevision_; }
 

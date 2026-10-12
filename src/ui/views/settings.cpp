@@ -147,7 +147,9 @@ private:
                     shell.settingsChanged();
                 }
             }
-            if (button(ui, cutLeft(r, resetW), "x##reset", false, c != defaultColor(slot))) {
+            bool reset = button(ui, cutLeft(r, resetW), "x##reset", false, c != defaultColor(slot));
+            ui.tooltip("Reset to the theme color");
+            if (reset) {
                 c = defaultColor(slot);
                 shell.settingsChanged();
             }
@@ -207,7 +209,9 @@ private:
 
         Rect label = cutLeft(r, labelW_);
         ui.painter.textIn(label.inset(ui.dp(8), 0), a.label, ui.col(Slot::Text));
-        if (button(ui, cutRight(r, std::min(r.w, ui.dp(56))), "Reset", false, chords != a.defaults)) {
+        bool reset = button(ui, cutRight(r, std::min(r.w, ui.dp(56))), "Reset", false, chords != a.defaults);
+        ui.tooltip(chords != a.defaults ? "Restore the default keys" : "These are the default keys");
+        if (reset) {
             shell.cancelCapture();
             actions.resetBindings(a.id);
             shell.settings().bindings = actions.overridesJson();
@@ -219,8 +223,12 @@ private:
             float w = ui.painter.measure(text) + ui.dp(16);
             if (w + ui.dp(22) > r.w) break;
             ui.pushId(uint64_t(i));
-            if (button(ui, cutLeft(r, w), text + "##chord", capturing(int(i)))) shell.captureBinding(a.id, int(i));
-            if (button(ui, cutLeft(r, ui.dp(22)), "x##remove")) {
+            bool change = button(ui, cutLeft(r, w), text + "##chord", capturing(int(i)));
+            ui.tooltip("Click, then press a new key. Escape cancels.");
+            if (change) shell.captureBinding(a.id, int(i));
+            bool remove = button(ui, cutLeft(r, ui.dp(22)), "x##remove");
+            ui.tooltip("Remove this key");
+            if (remove) {
                 std::vector<KeyChord> rest = chords;
                 rest.erase(rest.begin() + long(i));
                 shell.cancelCapture();
@@ -233,7 +241,10 @@ private:
         }
         std::string add = capturing(-1) ? "Press a key" : "+";
         float w = capturing(-1) ? ui.painter.measure(add) + ui.dp(16) : ui.dp(26);
-        if (w <= r.w && button(ui, cutLeft(r, w), add + "##add", capturing(-1))) shell.captureBinding(a.id, -1);
+        if (w > r.w) return;
+        bool addKey = button(ui, cutLeft(r, w), add + "##add", capturing(-1));
+        ui.tooltip("Add a key. Click, then press it.");
+        if (addKey) shell.captureBinding(a.id, -1);
     }
 
     std::string filter_;

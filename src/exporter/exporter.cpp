@@ -317,6 +317,7 @@ bool ExportJob::start(const Project& p, ExportOptions opts, std::string* err) {
     progress_.cancel = false;
     finished_ = false;
     running_ = true;
+    ++started_;
     {
         std::lock_guard lock(mu_);
         error_.clear();

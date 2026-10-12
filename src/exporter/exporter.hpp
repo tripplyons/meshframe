@@ -3,6 +3,7 @@
 #include "model/project.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -42,6 +43,8 @@ public:
     std::string error() const;
     const ExportOptions& options() const { return opts_; }
     bool finished() const { return finished_; }
+    // How many exports have started, so a watcher can tell one result from the next.
+    uint64_t started() const { return started_; }
     void wait();
 
 private:
@@ -51,6 +54,7 @@ private:
     std::atomic<bool> running_{false}, finished_{false};
     mutable std::mutex mu_;
     std::string error_;
+    uint64_t started_ = 0;
 };
 
 }  // namespace mf

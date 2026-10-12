@@ -39,6 +39,11 @@ Rect labeled(Context& ui, Rect row, std::string_view label, float labelWidth);
 // A section title row with an optional count; returns the rest of the row.
 Rect sectionHeader(Context& ui, Rect& area, std::string_view title);
 
+// The start panel of an empty project, centered in area: buttons to import
+// media or open a project, and the recent projects. False when area is too
+// small for it.
+bool startPanel(ViewEnv& env, const Rect& area, std::string_view title);
+
 // Draws text lines top to bottom in area; returns the height used.
 float paragraph(Context& ui, const Rect& area, std::string_view text, Slot color);
 

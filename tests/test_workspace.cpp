@@ -1,10 +1,13 @@
 #include "fixtures.hpp"
+#include "model/serialize.hpp"
 #include "shell_harness.hpp"
 #include "ui/workspace.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <fstream>
 
 using namespace mf;
 using namespace mf::ui;
@@ -297,8 +300,10 @@ TEST(Shell, UnsavedChangesDialogAsksBeforeQuitting) {
     h.frame();
     EXPECT_FALSE(h.shell->quitRequested());
     auto dialog = h.run({"ui.state"})["result"]["dialog"];
-    ASSERT_TRUE(dialog.is_string());
-    EXPECT_NE(dialog.get<std::string>().find("before quitting"), std::string::npos);
+    ASSERT_TRUE(dialog.is_object());
+    EXPECT_NE(dialog["text"].get<std::string>().find("before quitting"), std::string::npos);
+    EXPECT_EQ(dialog["choices"], nlohmann::json({"save", "cancel", "discard"}));
+    EXPECT_FALSE(h.run({"ui.dialog", "later"})["ok"]) << "not a choice of this dialog";
 
     // Clicks under the dialog do nothing: the pane's view picker stays shut.
     float row = h.shell->ui().rowHeight();
@@ -342,4 +347,261 @@ TEST(Shell, UnsavedChangesDialogSavesThenContinues) {
     ASSERT_TRUE(h.run({"open", path})["ok"]);
     EXPECT_EQ(h.session.project().tracks.size(), tracks);
     std::filesystem::remove(path);
+}
+
+namespace {
+
+// Leaves the files of an editor that crashed with unsaved changes.
+void leaveCrashCopy(const std::filesystem::path& dir, const std::string& stem, const Project& p, const std::string& path) {
+    std::filesystem::create_directories(dir);
+    saveProject(p, (dir / (stem + ".mfproj")).string());
+    std::ofstream(dir / (stem + ".json")) << nlohmann::json{{"path", path}, {"name", p.name}, {"savedAt", 1700000000}}.dump();
+}
+
+bool hasTrack(const Project& p, const std::string& name) {
+    return std::ranges::any_of(p.tracks, [&](const Track& t) { return t.name == name; });
+}
+
+}  // namespace
+
+TEST(Shell, RecoveryRestoresCopiesOfEditorsThatDidNotQuit) {
+    namespace fs = std::filesystem;
+    fs::path dir = fixtures::dir() / "recovery-restore";
+    fs::remove_all(dir);
+    std::string path = (fixtures::dir() / "recover-me.mfproj").string();
+    fs::remove(path);
+    {
+        ShellHarness a;
+        a.shell->enableRecovery(dir.string());
+        ASSERT_TRUE(a.run({"save", path})["ok"]);
+        ASSERT_TRUE(a.run({"track.add", "video", "name=Unsaved"})["ok"]);
+        a.frame();
+        std::vector<fs::path> files;
+        for (const auto& e : fs::directory_iterator(dir)) files.push_back(e.path());
+        ASSERT_EQ(files.size(), 3u) << "a copy, its details, and a lock";
+
+        // An editor that still runs keeps its copy to itself.
+        ShellHarness b;
+        b.shell->enableRecovery(dir.string());
+        b.frame();
+        EXPECT_FALSE(b.shell->dialogOpen());
+
+        // The same files under a name no editor holds: a crash.
+        for (const fs::path& f : files)
+            if (f.extension() != ".lock") fs::copy_file(f, dir / ("crashed" + f.extension().string()));
+    }
+    EXPECT_FALSE(fs::exists(dir / "crashed.lock"));
+    std::vector<std::string> left;
+    for (const auto& e : fs::directory_iterator(dir)) left.push_back(e.path().filename().string());
+    std::ranges::sort(left);
+    EXPECT_EQ(left, (std::vector<std::string>{"crashed.json", "crashed.mfproj"})) << "editors that quit remove their own files";
+
+    ShellHarness c;
+    c.shell->enableRecovery(dir.string());
+    c.frame();
+    auto dialog = c.run({"ui.state"})["result"]["dialog"];
+    ASSERT_TRUE(dialog.is_object());
+    EXPECT_NE(dialog["text"].get<std::string>().find("recover-me.mfproj"), std::string::npos);
+    EXPECT_EQ(dialog["choices"], nlohmann::json({"restore", "later", "discard"}));
+    EXPECT_TRUE(c.shell->handleKey({SDL_SCANCODE_RETURN, 0}));
+    EXPECT_FALSE(c.shell->dialogOpen());
+    EXPECT_TRUE(hasTrack(c.session.project(), "Unsaved"));
+    EXPECT_TRUE(c.session.dirty()) << "restored changes stay unsaved";
+    EXPECT_EQ(c.session.path(), fs::absolute(path).string());
+    EXPECT_FALSE(fs::exists(dir / "crashed.mfproj"));
+    EXPECT_FALSE(fs::exists(dir / "crashed.json"));
+    c.frame();
+    EXPECT_FALSE(c.shell->dialogOpen()) << "nothing else to restore";
+    fs::remove(path);
+}
+
+TEST(Shell, RecoveryCanWaitOrDiscard) {
+    namespace fs = std::filesystem;
+    fs::path dir = fixtures::dir() / "recovery-later";
+    fs::remove_all(dir);
+    Project p = Project::makeDefault();
+    p.name = "Lost work";
+    leaveCrashCopy(dir, "old", p, "");
+    {
+        ShellHarness h;
+        h.shell->enableRecovery(dir.string());
+        h.frame();
+        ASSERT_TRUE(h.shell->dialogOpen());
+        EXPECT_TRUE(h.run({"ui.dialog", "later"})["ok"]);
+        h.frame();
+        EXPECT_FALSE(h.shell->dialogOpen()) << "one offer per launch";
+        EXPECT_FALSE(h.session.dirty());
+    }
+    EXPECT_TRUE(fs::exists(dir / "old.mfproj")) << "Later keeps the copy for the next launch";
+
+    ShellHarness h;
+    h.shell->enableRecovery(dir.string());
+    h.frame();
+    ASSERT_TRUE(h.shell->dialogOpen());
+    EXPECT_NE(h.run({"ui.state"})["result"]["dialog"]["text"].get<std::string>().find("Lost work"), std::string::npos);
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_D, ModGui}));
+    EXPECT_FALSE(fs::exists(dir / "old.mfproj"));
+    EXPECT_FALSE(fs::exists(dir / "old.json"));
+    EXPECT_FALSE(h.session.dirty());
+}
+
+TEST(Shell, RecoveryKeepsCopiesOfUnsavedWorkOnly) {
+    namespace fs = std::filesystem;
+    fs::path dir = fixtures::dir() / "recovery-copies";
+    fs::remove_all(dir);
+    std::string path = (fixtures::dir() / "recovery-copies.mfproj").string();
+    ShellHarness h;
+    h.shell->enableRecovery(dir.string());
+    auto copies = [&] {
+        int n = 0;
+        for (const auto& e : fs::directory_iterator(dir)) n += e.path().extension() == ".mfproj";
+        return n;
+    };
+    h.frame();
+    EXPECT_EQ(copies(), 0) << "nothing unsaved";
+    ASSERT_TRUE(h.run({"track.add", "video", "name=First"})["ok"]);
+    h.frame();
+    ASSERT_EQ(copies(), 1);
+
+    // Later edits wait for the interval.
+    ASSERT_TRUE(h.run({"track.add", "video", "name=Second"})["ok"]);
+    h.frame();
+    auto copy = [&] {
+        for (const auto& e : fs::directory_iterator(dir))
+            if (e.path().extension() == ".mfproj") return loadProject(e.path().string());
+        return Project{};
+    };
+    EXPECT_FALSE(hasTrack(copy(), "Second"));
+    h.now += Recovery::kInterval;
+    h.frame();
+    EXPECT_TRUE(hasTrack(copy(), "Second"));
+
+    // Saving removes the copy.
+    ASSERT_TRUE(h.run({"save", path})["ok"]);
+    h.frame();
+    EXPECT_EQ(copies(), 0);
+    fs::remove(path);
+}
+
+TEST(Shell, CommandPaletteFindsAndRunsActions) {
+    ShellHarness h;
+    h.frame();
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_K, ModGui}));
+    EXPECT_TRUE(h.shell->paletteOpen());
+
+    // Keys type into the search instead of running their actions.
+    EXPECT_FALSE(h.shell->handleKey({SDL_SCANCODE_SPACE, 0}));
+    h.frame();
+    h.frame();
+    EXPECT_TRUE(h.run({"ui.state"})["result"]["typing"]) << "the search field has focus";
+    EXPECT_FALSE(h.session.player().playing());
+    bool loop = h.session.player().loop();
+    h.in.text = "loop";
+    h.frame();
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_RETURN, 0}));
+    EXPECT_FALSE(h.shell->paletteOpen());
+    EXPECT_NE(h.session.player().loop(), loop) << "Return ran Toggle loop";
+    h.frame();
+    h.frame();
+    EXPECT_FALSE(h.run({"ui.state"})["result"]["typing"]);
+
+    // Escape closes it without running anything, and so does Cmd+K.
+    h.shell->openPalette();
+    h.frame();
+    h.in.text = "loop";
+    h.frame();
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_ESCAPE, 0}));
+    EXPECT_FALSE(h.shell->paletteOpen());
+    h.shell->openPalette();
+    h.frame();
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_K, ModGui}));
+    EXPECT_FALSE(h.shell->paletteOpen());
+    h.frame();
+    EXPECT_NE(h.session.player().loop(), loop);
+
+    // Return with no match runs nothing and leaves the search open.
+    h.shell->openPalette();
+    h.frame();
+    h.in.text = "no such action";
+    h.frame();
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_RETURN, 0}));
+    EXPECT_TRUE(h.shell->paletteOpen());
+    EXPECT_NE(h.session.player().loop(), loop);
+}
+
+TEST(Shell, CommandPaletteRunsAClickedRow) {
+    ShellHarness h;
+    h.frame();
+    h.shell->openPalette();
+    h.frame();
+    h.in.text = "settings";
+    h.frame();
+    // The first row sits under the search field, near the top center.
+    float row = h.shell->ui().rowHeight();
+    float top = std::round(h.h * 0.12f) + h.shell->ui().dp(4) + row + 1;
+    h.click(h.w / 2.0f, top + row / 2);
+    EXPECT_FALSE(h.shell->paletteOpen());
+    EXPECT_EQ(h.shell->workspace().active().panes[size_t(h.shell->focusedPane())].view, "settings");
+
+    // A press outside closes it.
+    h.shell->openPalette();
+    h.frame();
+    h.click(10, h.h - row * 3);
+    EXPECT_FALSE(h.shell->paletteOpen());
+}
+
+TEST(Shell, RecentProjectsFollowOpenAndSave) {
+    namespace fs = std::filesystem;
+    std::string a = fs::absolute(fixtures::dir() / "recent-a.mfproj").string();
+    std::string b = fs::absolute(fixtures::dir() / "recent-b.mfproj").string();
+    ShellHarness h;
+    ASSERT_TRUE(h.run({"save", a})["ok"]);
+    h.frame();
+    ASSERT_TRUE(h.run({"save", b})["ok"]);
+    h.frame();
+    EXPECT_EQ(h.shell->recentProjects(), (std::vector<std::string>{b, a}));
+    ASSERT_TRUE(h.run({"open", a})["ok"]);
+    h.frame();
+    EXPECT_EQ(h.shell->recentProjects(), (std::vector<std::string>{a, b}));
+    EXPECT_EQ(Settings::fromJson(h.shell->settings().toJson()).recent, h.shell->recentProjects());
+
+    // A project that is gone leaves the list when it fails to open.
+    fs::remove(b);
+    h.shell->openProjectFile(b);
+    h.frame();
+    EXPECT_EQ(h.shell->recentProjects(), (std::vector<std::string>{a}));
+    EXPECT_TRUE(h.run({"ui.state"})["result"]["notice"]["error"]);
+
+    h.shell->clearRecentProjects();
+    EXPECT_TRUE(h.shell->recentProjects().empty());
+    fs::remove(a);
+}
+
+TEST(Shell, FinishedExportOffersToShowTheFile) {
+    std::string out = (fixtures::dir() / "notice.wav").string();
+    std::filesystem::remove(out);
+    ShellHarness h;
+    std::string revealed;
+    h.shell->hooks.reveal = [&](const std::string& path) { revealed = path; };
+    h.shell->hooks.revealLabel = "Reveal";
+    h.frame();
+    ASSERT_TRUE(h.run({"export", out, "end=0.1"})["ok"]);
+    h.session.exportJob().wait();
+    h.frame();
+    auto notice = h.run({"ui.state"})["result"]["notice"];
+    ASSERT_TRUE(notice.is_object());
+    EXPECT_EQ(notice["text"], "Exported notice.wav");
+    EXPECT_EQ(notice["action"], "Reveal");
+
+    EXPECT_TRUE(revealed.empty());
+
+    // Each export reports once, even one that ends before the next frame.
+    ASSERT_TRUE(h.run({"export", (fixtures::dir() / "notice.mov").string()})["ok"]);
+    h.session.exportJob().wait();
+    h.frame();
+    notice = h.run({"ui.state"})["result"]["notice"];
+    EXPECT_TRUE(notice["error"]);
+    EXPECT_NE(notice["text"].get<std::string>().find("Export failed"), std::string::npos);
+    EXPECT_FALSE(notice.contains("action"));
+    std::filesystem::remove(out);
 }

@@ -10,6 +10,12 @@
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <thread>
+
+#include <spawn.h>
+#include <sys/wait.h>
+
+extern char** environ;
 
 namespace {
 
@@ -119,6 +125,21 @@ int App::run(int argc, char** argv) {
     if (!(socketPath.empty() ? server_->startDefault(&err) : server_->start(socketPath, true, &err)))
         session_->log(LogLine::Level::Error, "No CLI bridge: " + err);
     else session_->log(LogLine::Level::Info, "CLI bridge: " + server_->path());
+    if (!settingsPath.empty())
+        shell_->enableRecovery((std::filesystem::path(settingsPath).parent_path() / "recovery").string());
+#ifdef __APPLE__
+    shell_->hooks.revealLabel = "Reveal in Finder";
+    shell_->hooks.reveal = [](const std::string& path) {
+        const char* args[] = {"open", "-R", path.c_str(), nullptr};
+        pid_t pid = 0;
+        if (posix_spawnp(&pid, "open", nullptr, nullptr, const_cast<char* const*>(args), environ) == 0)
+            std::thread([pid] { waitpid(pid, nullptr, 0); }).detach();  // reap it
+    };
+#else
+    shell_->hooks.reveal = [](const std::string& path) {
+        SDL_OpenURL(("file://" + std::filesystem::path(path).parent_path().string()).c_str());
+    };
+#endif
     shell_->hooks.fileDialog = [this](bool save, const std::string& title, const std::vector<std::string>& exts,
                                       std::function<void(std::string)> done) {
         auto* req = new DialogRequest{nextDialog_++, {}, {}};

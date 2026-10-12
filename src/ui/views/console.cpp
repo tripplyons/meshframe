@@ -14,7 +14,9 @@ class ConsoleView : public View {
 public:
     void header(ViewEnv& env, const Rect& area) override {
         Rect r = area;
-        if (button(env.ui, cutRight(r, std::min(r.w, env.ui.dp(56))), "Clear")) clearedAt_ = env.session.logCount();
+        bool clear = button(env.ui, cutRight(r, std::min(r.w, env.ui.dp(56))), "Clear");
+        env.ui.tooltip("Hide the log lines shown so far");
+        if (clear) clearedAt_ = env.session.logCount();
     }
 
     void draw(ViewEnv& env, const Rect& body) override {

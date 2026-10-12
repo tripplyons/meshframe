@@ -6,13 +6,20 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <ctime>
 #include <filesystem>
+#include <tuple>
 
 namespace mf::ui {
 
 namespace {
 
 constexpr double kNoticeSeconds = 4;
+constexpr double kActionNoticeSeconds = 10;  // notices with a button
+constexpr int kPaletteRows = 12;
 constexpr double kSettingsSaveDelay = 1;
 
 SDL_Scancode digitKey(int n) { return n == 10 ? SDL_SCANCODE_0 : SDL_Scancode(SDL_SCANCODE_1 + n - 1); }
@@ -44,6 +51,55 @@ std::vector<std::string> layoutLabels() {
 ArgSpec req(std::string name, std::string type, std::string help = {}) { return {std::move(name), std::move(type), true, std::move(help)}; }
 ArgSpec opt(std::string name, std::string type, std::string help = {}) { return {std::move(name), std::move(type), false, std::move(help)}; }
 
+std::string lower(std::string_view s) {
+    std::string out(s);
+    for (char& c : out) c = char(std::tolower(uint8_t(c)));
+    return out;
+}
+
+// Actions whose label, group, or id contain every word of the query. Labels
+// that start with the first word come first, then labels with a word that
+// starts with it. Within each rank, actions sort by group.
+std::vector<std::string> matchActions(const Actions& actions, std::string_view query) {
+    std::vector<std::string> words;
+    std::string q = lower(query);
+    for (size_t i = 0; i < q.size();) {
+        size_t end = std::min(q.find(' ', i), q.size());
+        if (end > i) words.push_back(q.substr(i, end - i));
+        i = end + 1;
+    }
+    struct Ranked {
+        int rank;
+        std::string group, id;
+    };
+    std::vector<Ranked> ranked;
+    for (const Action& a : actions.all()) {
+        if (a.id == "app.palette") continue;
+        std::string label = lower(a.label), hay = label + " " + lower(a.group) + " " + a.id;
+        if (!std::ranges::all_of(words, [&](const std::string& w) { return hay.find(w) != std::string::npos; })) continue;
+        int rank = words.empty() || label.starts_with(words[0]) ? 0 : label.find(" " + words[0]) != std::string::npos ? 1 : 2;
+        ranked.push_back({rank, a.group, a.id});
+    }
+    std::ranges::stable_sort(ranked, [](const Ranked& a, const Ranked& b) { return std::tie(a.rank, a.group) < std::tie(b.rank, b.group); });
+    std::vector<std::string> out;
+    for (Ranked& r : ranked) out.push_back(std::move(r.id));
+    return out;
+}
+
+// Status bar menus open upward once their height is known.
+bool beginStatusMenu(Context& ui, WidgetId id, float barTop, float width) {
+    if (ui.popupOpen(id) && ui.popupHeight(id) > 0) ui.openPopup(id, {ui.popupPos().x, barTop - ui.popupHeight(id)});
+    return beginMenu(ui, id, width);
+}
+
+std::string formatDay(std::time_t t) {
+    std::tm tm{};
+    localtime_r(&t, &tm);
+    char buf[64];
+    std::strftime(buf, sizeof buf, "%b %e at %H:%M", &tm);
+    return buf;
+}
+
 int spaceArg(const json& args, const char* name, int current) {
     if (!args.contains(name) || args[name].is_null()) return current;
     int n = args[name].get<int>();
@@ -52,6 +108,13 @@ int spaceArg(const json& args, const char* name, int current) {
 }
 
 }  // namespace
+
+std::string shortPath(const std::string& path) {
+    const char* home = std::getenv("HOME");
+    std::string h = home ? home : "";
+    if (!h.empty() && path.starts_with(h + "/")) return "~" + path.substr(h.size());
+    return path;
+}
 
 Shell::Shell(Session& session, Painter& painter, Settings settings, std::string settingsPath)
     : session_(session),
@@ -92,7 +155,9 @@ void Shell::settingsChanged() {
     settingsDirtyAt_ = ui_.now();
 }
 
-void Shell::workspaceChanged() {
+void Shell::workspaceChanged() { markSettingsDirty(); }
+
+void Shell::markSettingsDirty() {
     settingsDirty_ = true;
     settingsDirtyAt_ = ui_.now();
 }
@@ -113,7 +178,15 @@ void Shell::notify(std::string text, bool error) {
     notice_ = std::move(text);
     noticeError_ = error;
     noticeAt_ = ui_.now();
+    noticeActionLabel_.clear();
+    noticeAction_ = nullptr;
     ui_.requestFrame();
+}
+
+void Shell::notify(std::string text, std::string actionLabel, std::function<void()> action) {
+    notify(std::move(text));
+    noticeActionLabel_ = std::move(actionLabel);
+    noticeAction_ = std::move(action);
 }
 
 bool Shell::edit(const std::string& label, const std::function<void(Project&)>& fn) {
@@ -134,51 +207,166 @@ void Shell::requestQuit() {
 
 void Shell::confirmUnsaved(std::string action, std::function<void()> next) {
     if (!session_.dirty()) return next();
-    confirm_ = Confirm{std::move(action), std::move(next)};
+    showDialog({fmt::format("Save changes to \"{}\" before {}?", projectTitle(), action),
+                "Unsaved changes are lost if you discard them.",
+                {{"save", "Save", {SDL_SCANCODE_RETURN, 0}, [this, next] { saveProject(false, next); }},
+                 {"cancel", "Cancel", {SDL_SCANCODE_ESCAPE, 0}, {}},
+                 {"discard", "Discard", {SDL_SCANCODE_D, ModGui}, next, true}}});
+}
+
+void Shell::showDialog(Dialog d) {
+    closePalette();
+    dialog_ = std::move(d);
     ui_.closePopup();
     ui_.blur();
     ui_.setModal(true);
     ui_.requestFrame();
 }
 
-void Shell::answerDialog(Answer a) {
-    if (!confirm_) return;
-    std::function<void()> next = std::move(confirm_->next);
-    confirm_.reset();
-    ui_.setModal(false);
-    ui_.requestFrame();
-    if (a == Answer::Save) saveProject(false, std::move(next));
-    else if (a == Answer::Discard) next();
-}
-
-std::string Shell::dialogQuestion() const {
-    return confirm_ ? fmt::format("Save changes to \"{}\" before {}?", projectTitle(), confirm_->action) : std::string();
+bool Shell::answerDialog(std::string_view choice) {
+    if (!dialog_) return false;
+    for (Choice& c : dialog_->choices) {
+        if (c.id != choice) continue;
+        std::function<void()> run = std::move(c.run);
+        dialog_.reset();
+        ui_.setModal(palette_.has_value());
+        ui_.requestFrame();
+        if (run) run();
+        return true;
+    }
+    return false;
 }
 
 void Shell::drawDialog() {
+    const Dialog& d = *dialog_;
     painter_.fill(screen_, Color::gray(0, 0.5f));
     float pad = ui_.dp(16), row = ui_.rowHeight();
-    float w = std::min(screen_.w - ui_.dp(32), ui_.dp(440));
-    float h = pad * 2 + row * 3 + ui_.dp(12);
+    float w = std::min(screen_.w - ui_.dp(32), ui_.dp(480));
+    float h = pad * 2 + row * (d.detail.empty() ? 2 : 3) + ui_.dp(12);
     Rect box{std::round(screen_.x + (screen_.w - w) / 2), std::round(screen_.y + (screen_.h - h) / 3), w, h};
     painter_.fill(box, ui_.col(Slot::Background));
     painter_.outline(box, ui_.col(Slot::Border));
     Rect in = box.inset(pad);
-    painter_.textIn(cutTop(in, row), dialogQuestion(), ui_.col(Slot::Text));
-    painter_.textIn(cutTop(in, row), "Unsaved changes are lost if you discard them.", ui_.col(Slot::TextDim));
+    painter_.textIn(cutTop(in, row), d.text, ui_.col(Slot::Text));
+    if (!d.detail.empty()) painter_.textIn(cutTop(in, row), d.detail, ui_.col(Slot::TextDim));
     Rect buttons = cutBottom(in, row);
-    float bw = std::min(ui_.dp(84), (buttons.w - ui_.dp(16)) / 3);
-    std::optional<Answer> answer;
+    float bw = std::min(ui_.dp(84), (buttons.w - ui_.dp(16)) / float(std::max<size_t>(1, d.choices.size())));
+    std::string answer;
     ui_.beginModal();
-    if (button(ui_, cutRight(buttons, bw), "Save##dialog", true)) answer = Answer::Save;
-    ui_.tooltip("Save (Return)");
-    cutRight(buttons, ui_.dp(8));
-    if (button(ui_, cutRight(buttons, bw), "Cancel##dialog")) answer = Answer::Cancel;
-    ui_.tooltip("Cancel (Escape)");
-    if (button(ui_, cutLeft(buttons, bw), "Discard##dialog")) answer = Answer::Discard;
-    ui_.tooltip("Discard (Cmd+D)");
+    for (size_t i = 0; i < d.choices.size(); ++i) {
+        const Choice& c = d.choices[i];
+        Rect b = c.left ? cutLeft(buttons, bw) : cutRight(buttons, bw);
+        if (!c.left) cutRight(buttons, ui_.dp(8));
+        if (button(ui_, b, c.label + "##dialog", i == 0)) answer = c.id;
+        ui_.tooltip(fmt::format("{} ({})", c.label, formatChord(c.key)));
+    }
     ui_.endModal();
-    if (answer) answerDialog(*answer);
+    if (!answer.empty()) answerDialog(answer);
+}
+
+// ---- crash recovery ------------------------------------------------------------------
+
+void Shell::enableRecovery(std::string dir) {
+    recovery_ = std::make_unique<Recovery>(std::move(dir));
+    orphans_ = recovery_->orphans();
+}
+
+void Shell::offerRecovery() {
+    Recovery::Copy copy = orphans_.front();
+    orphans_.erase(orphans_.begin());
+    std::string name = copy.path.empty() ? copy.name : std::filesystem::path(copy.path).filename().string();
+    auto restore = [this, copy, name] {
+        std::string err;
+        if (!session_.recover(copy.file, copy.path, &err)) return notify(err, true);
+        Recovery::remove(copy);
+        notify(fmt::format("Restored unsaved changes to \"{}\"", name));
+    };
+    showDialog({fmt::format("Restore unsaved changes to \"{}\"?", name),
+                fmt::format("meshframe closed without saving them. Copied {}.", formatDay(copy.savedAt)),
+                {{"restore", "Restore", {SDL_SCANCODE_RETURN, 0}, [this, restore] { confirmUnsaved("restoring", restore); }},
+                 {"later", "Later", {SDL_SCANCODE_ESCAPE, 0}, {}},
+                 {"discard", "Discard", {SDL_SCANCODE_D, ModGui}, [copy] { Recovery::remove(copy); }, true}}});
+}
+
+// ---- command palette -----------------------------------------------------------------
+
+void Shell::openPalette() {
+    if (dialog_) return;
+    palette_ = Palette{};
+    palette_->matches = matchActions(actions_, "");
+    ui_.closePopup();
+    ui_.setModal(true);
+    ui_.requestFrame();
+}
+
+void Shell::closePalette() {
+    if (!palette_) return;
+    // Drop the search text instead of committing it to a field that is gone.
+    if (ui_.text().id == palette_->field) ui_.text().id = 0;
+    if (ui_.focused() == palette_->field) ui_.blur();
+    palette_.reset();
+    ui_.setModal(dialog_.has_value());
+    ui_.requestFrame();
+}
+
+void Shell::runPaletteItem(int index) {
+    if (!palette_ || index < 0 || index >= int(palette_->matches.size())) return;
+    std::string id = palette_->matches[size_t(index)];
+    closePalette();
+    actions_.run(id);
+}
+
+void Shell::drawPalette() {
+    Palette& p = *palette_;
+    float row = ui_.rowHeight();
+    int count = int(p.matches.size());
+    int shown = std::clamp(count, 1, kPaletteRows);
+    float w = std::min(screen_.w - ui_.dp(32), ui_.dp(520));
+    Rect box{std::round(screen_.x + (screen_.w - w) / 2), std::round(screen_.y + screen_.h * 0.12f), w,
+             row * float(shown + 1) + ui_.dp(9)};
+    painter_.fill(box, ui_.col(Slot::Panel));
+    painter_.outline(box, ui_.col(Slot::Border));
+    ui_.beginModal();
+    if (ui_.input().pressed[0] && !box.contains(ui_.mouse())) {
+        ui_.endModal();
+        return closePalette();
+    }
+    Rect in = box.inset(ui_.dp(4));
+    p.field = ui_.id("##palette");
+    if (p.focus) {
+        ui_.focus(p.field);
+        p.focus = false;
+    }
+    textField(ui_, cutTop(in, row), "##palette", p.query, FontRole::Ui, "Search actions");
+    std::string query = ui_.text().id == p.field ? ui_.text().buf : p.query;
+    if (query != p.searched) {
+        p.searched = query;
+        p.matches = matchActions(actions_, query);
+        p.selected = 0;
+        count = int(p.matches.size());
+    }
+    p.selected = std::clamp(p.selected, 0, std::max(0, count - 1));
+    cutTop(in, ui_.dp(1));
+    if (count == 0) painter_.textIn(cutTop(in, row).inset(ui_.dp(8), 0), "No matching actions", ui_.col(Slot::TextFaint));
+    int first = std::clamp(p.selected - kPaletteRows + 1, 0, std::max(0, count - kPaletteRows));
+    int run = -1;
+    for (int i = first; i < std::min(count, first + kPaletteRows); ++i) {
+        Rect r = cutTop(in, row);
+        const Action* a = actions_.find(p.matches[size_t(i)]);
+        Hit h = ui_.interact(ui_.id(a->id), r);
+        if (i == p.selected) painter_.fill(r, ui_.col(Slot::Selection));
+        else if (h.hovered) painter_.fill(r, ui_.col(Slot::Hover));
+        Rect t = r.inset(ui_.dp(8), 0);
+        std::string keys = shortcutText(a->id);
+        if (!keys.empty()) painter_.textIn(cutRight(t, painter_.measure(keys)), keys, ui_.col(Slot::TextDim), Align::Right);
+        cutRight(t, ui_.dp(12));
+        float gw = std::min(t.w / 2, painter_.measure(a->group));
+        painter_.textIn(cutRight(t, gw), a->group, ui_.col(Slot::TextFaint), Align::Right);
+        painter_.textIn(t, a->label, ui_.col(Slot::Text));
+        if (h.clicked) run = i;
+    }
+    ui_.endModal();
+    if (run >= 0) runPaletteItem(run);
 }
 
 // ---- files -------------------------------------------------------------------------
@@ -205,9 +393,17 @@ void Shell::openProjectFile(const std::string& path) {
     std::string name = std::filesystem::path(path).filename().string();
     confirmUnsaved(fmt::format("opening \"{}\"", name), [this, path] {
         std::string err;
-        if (session_.open(path, &err)) notify("Opened " + path);
-        else notify(err, true);
+        if (session_.open(path, &err)) return notify("Opened " + path);
+        notify(err, true);
+        // A recent project that moved or was deleted leaves the list.
+        std::string abs = std::filesystem::absolute(path).string();
+        if (std::erase(settings_.recent, abs) > 0) markSettingsDirty();
     });
+}
+
+void Shell::clearRecentProjects() {
+    settings_.recent.clear();
+    markSettingsDirty();
 }
 
 void Shell::saveProject(bool saveAs, std::function<void()> then) {
@@ -285,19 +481,48 @@ void Shell::frame(const Input& in, Rect screen, float displayScale, double now) 
     painter_.begin(int(screen.w), int(screen.h));
     ui_.beginFrame(in, screen, scale, now);
     session_.tick();
+    watchSession();
+    if (recovery_) recovery_->update(session_, now);
+    if (!dialog_ && !orphans_.empty()) offerRecovery();
     if (capture_ && (in.pressed[0] || in.pressed[1] || in.pressed[2])) capture_.reset();
 
     painter_.fill(screen, ui_.col(Slot::Background));
     Rect area = screen;
     Rect status = cutBottom(area, ui_.rowHeight());
     painter_.fill(cutBottom(area, 1), ui_.col(Slot::Border));
-    ui_.setModal(confirm_.has_value());
+    ui_.setModal(dialog_ || palette_);
     drawPanes(area);
     drawStatus(status);
-    if (confirm_) drawDialog();
+    if (palette_) drawPalette();
+    if (dialog_) drawDialog();
     ui_.endFrame();
 
     if (settingsDirty_ && now - settingsDirtyAt_ > kSettingsSaveDelay) saveSettings();
+}
+
+void Shell::watchSession() {
+    if (session_.path() != watchedPath_) {
+        watchedPath_ = session_.path();
+        if (!watchedPath_.empty()) {
+            settings_.addRecent(watchedPath_);
+            markSettingsDirty();
+        }
+    }
+    ExportJob& job = session_.exportJob();
+    if (job.finished() && job.started() != exportsSeen_) {
+        exportsSeen_ = job.started();
+        std::string path = job.options().path, err = job.error();
+        std::string name = std::filesystem::path(path).filename().string();
+        if (err == "export canceled") {
+            notify("Export canceled");
+        } else if (!err.empty()) {
+            notify("Export failed: " + err, true);
+        } else {
+            exportedAt_ = ui_.now();
+            if (hooks.reveal) notify("Exported " + name, hooks.revealLabel, [this, path] { hooks.reveal(path); });
+            else notify("Exported " + name);
+        }
+    }
 }
 
 void Shell::drawPanes(const Rect& area) {
@@ -322,7 +547,9 @@ void Shell::drawPanes(const Rect& area) {
         for (size_t k = 0; k < viewTypes().size(); ++k)
             if (viewTypes()[k].id == s.panes[i].view) index = int(k);
         Rect selector = cutLeft(header, std::min(header.w, ui_.dp(130)));
-        if (dropdown(ui_, selector, "##view", index, labels)) {
+        bool viewChanged = dropdown(ui_, selector, "##view", index, labels);
+        ui_.tooltip("View in this pane");
+        if (viewChanged) {
             workspace_.setPaneView(spaceIndex, i, viewTypes()[index].id);
             workspaceChanged();
             view = paneView(i);
@@ -390,6 +617,7 @@ void Shell::drawStatus(const Rect& bar) {
     Rect fileButton = cutLeft(r, std::min(r.w, ui_.dp(56)));
     if (button(ui_, fileButton, "Menu##file")) ui_.openPopup(menu, {fileButton.x, fileButton.y});
     drawFileMenu(menu);
+    drawRecentMenu(ui_.id("##recent-menu"));
     painter_.fill(cutLeft(r, 1), ui_.col(Slot::Border));
 
     // Right side: transport time, the project name, then the export button,
@@ -406,7 +634,8 @@ void Shell::drawStatus(const Rect& bar) {
     painter_.textIn(cutRight(inner, nw), name, ui_.col(Slot::TextDim), Align::Right);
     cutRight(inner, ui_.dp(12));
     ExportJob& job = session_.exportJob();
-    std::string exportLabel = job.running() ? fmt::format("Exporting {:.0f}%", job.progress() * 100) : "Export";
+    bool exported = !job.running() && ui_.now() - exportedAt_ < kActionNoticeSeconds;
+    std::string exportLabel = job.running() ? fmt::format("Exporting {:.0f}%", job.progress() * 100) : exported ? "Exported" : "Export";
     // A fixed id keeps the button pressable while its label changes.
     Rect exportButton = cutRight(inner, std::min(inner.w, painter_.measure("Exporting 100%") + ui_.dp(16)));
     bool showExport = button(ui_, exportButton, "##export", job.running());
@@ -414,34 +643,57 @@ void Shell::drawStatus(const Rect& bar) {
     ui_.tooltip(job.running() ? "Show export progress" : withShortcut("Export the project", "file.export"));
     if (showExport) showView("export");
     cutRight(inner, ui_.dp(16));
-    if (!notice_.empty() && ui_.now() - noticeAt_ < kNoticeSeconds)
-        painter_.textIn(inner, notice_, noticeError_ ? ui_.col(Slot::Error) : ui_.col(Slot::Text));
+    drawNotice(inner);
+}
+
+void Shell::drawNotice(Rect area) {
+    if (!noticeShown()) return;
+    Color c = noticeError_ ? ui_.col(Slot::Error) : ui_.col(Slot::Text);
+    if (!noticeAction_) return painter_.textIn(area, notice_, c);
+    float bw = std::min(area.w, painter_.measure(noticeActionLabel_) + ui_.dp(16));
+    float tw = std::min(std::max(0.0f, area.w - bw - ui_.dp(8)), painter_.measure(notice_));
+    painter_.textIn(cutLeft(area, tw), notice_, c);
+    cutLeft(area, ui_.dp(8));
+    if (button(ui_, cutLeft(area, bw), noticeActionLabel_ + "##notice")) {
+        std::function<void()> action = noticeAction_;
+        action();
+    }
 }
 
 void Shell::drawFileMenu(WidgetId id) {
-    // Opens upward from the status bar once its height is known.
     float barTop = screen_.b() - ui_.rowHeight();
-    if (ui_.popupOpen(id) && ui_.popupHeight(id) > 0) ui_.openPopup(id, {ui_.popupPos().x, barTop - ui_.popupHeight(id)});
-    if (!beginMenu(ui_, id, ui_.dp(240))) return;
-    struct Item {
-        const char* label;
-        const char* action;
+    if (!beginStatusMenu(ui_, id, barTop, ui_.dp(240))) return;
+    auto item = [&](const char* label, const char* action) {
+        if (menuItem(ui_, label, shortcutText(action))) actions_.run(action);
     };
-    const Item items[] = {
-        {"New project", "file.new"},   {"Open project...", "file.open"}, {"Save", "file.save"},
-        {"Save as...", "file.save-as"}, {"Import media...", "file.import"}, {"Export...", "file.export"},
-        {nullptr, nullptr},
-        {"Undo", "edit.undo"},          {"Redo", "edit.redo"},             {nullptr, nullptr},
-        {"Settings", "app.settings"},   {"Quit", "app.quit"},
-    };
-    for (const auto& it : items) {
-        if (!it.label) {
-            menuSeparator(ui_);
-            continue;
-        }
-        if (menuItem(ui_, it.label, shortcutText(it.action))) actions_.run(it.action);
-    }
+    item("New project", "file.new");
+    item("Open project...", "file.open");
+    if (menuItem(ui_, "Open recent...", {}, !settings_.recent.empty())) ui_.openPopup(ui_.id("##recent-menu"), {ui_.popupPos().x, barTop});
+    item("Save", "file.save");
+    item("Save as...", "file.save-as");
+    item("Import media...", "file.import");
+    item("Export...", "file.export");
+    menuSeparator(ui_);
+    item("Undo", "edit.undo");
+    item("Redo", "edit.redo");
+    menuSeparator(ui_);
+    item("Command palette...", "app.palette");
+    item("Settings", "app.settings");
+    item("Quit", "app.quit");
     endMenu(ui_);
+}
+
+void Shell::drawRecentMenu(WidgetId id) {
+    if (!beginStatusMenu(ui_, id, screen_.b() - ui_.rowHeight(), ui_.dp(420))) return;
+    std::string open;
+    for (const std::string& path : settings_.recent) {
+        std::filesystem::path p(path);
+        if (menuItem(ui_, p.filename().string() + "##" + path, shortPath(p.parent_path().string()))) open = path;
+    }
+    menuSeparator(ui_);
+    if (menuItem(ui_, "Clear recent projects")) clearRecentProjects();
+    endMenu(ui_);
+    if (!open.empty()) openProjectFile(open);
 }
 
 std::string Shell::shortcutText(std::string_view action) const {
@@ -455,13 +707,25 @@ std::string Shell::withShortcut(std::string_view text, std::string_view action) 
 }
 
 bool Shell::handleKey(const KeyChord& c) {
-    // The dialog takes every key while it is open.
-    if (confirm_) {
-        bool enter = c.key == SDL_SCANCODE_RETURN || c.key == SDL_SCANCODE_KP_ENTER;
-        if (enter && c.mods == 0) answerDialog(Answer::Save);
-        else if (c.key == SDL_SCANCODE_ESCAPE && c.mods == 0) answerDialog(Answer::Cancel);
-        else if (c.key == SDL_SCANCODE_D && c.mods == ModGui) answerDialog(Answer::Discard);
+    KeyChord chord = c;
+    if (chord.key == SDL_SCANCODE_KP_ENTER) chord.key = SDL_SCANCODE_RETURN;
+    // A dialog takes every key while it is open.
+    if (dialog_) {
+        for (const Choice& choice : dialog_->choices)
+            if (choice.key == chord) {
+                answerDialog(std::string(choice.id));
+                break;
+            }
         return true;
+    }
+    if (palette_ && chord.mods == 0) {
+        switch (chord.key) {
+        case SDL_SCANCODE_ESCAPE: closePalette(); return true;
+        case SDL_SCANCODE_RETURN: runPaletteItem(palette_->selected); return true;
+        case SDL_SCANCODE_UP: palette_->selected = std::max(0, palette_->selected - 1); return true;
+        case SDL_SCANCODE_DOWN: palette_->selected = std::min(int(palette_->matches.size()) - 1, palette_->selected + 1); return true;
+        default: break;
+        }
     }
     if (capture_) {
         BindingCapture cap = std::move(*capture_);
@@ -470,7 +734,8 @@ bool Shell::handleKey(const KeyChord& c) {
         if (c.key != SDL_SCANCODE_ESCAPE || c.mods != 0) bindChord(cap.action, c, cap.index);
         return true;
     }
-    return actions_.dispatch(c, ui_.typing());
+    // The palette's search field takes keys from the moment it opens.
+    return actions_.dispatch(c, ui_.typing() || palette_);
 }
 
 void Shell::captureBinding(std::string action, int index) {
@@ -508,9 +773,10 @@ void Shell::bindChord(const std::string& action, const KeyChord& c, int index) {
     notify(text);
 }
 
+// Notices need no frames of their own: an idle editor still draws a few
+// frames a second, which is soon enough for one to go away.
 bool Shell::wantsFrame() const {
-    return ui_.wantsFrame() || session_.player().playing() || session_.exportJob().running() || !screenshots_.empty() ||
-           (!notice_.empty() && ui_.now() - noticeAt_ < kNoticeSeconds + 0.1);
+    return ui_.wantsFrame() || session_.player().playing() || session_.exportJob().running() || !screenshots_.empty();
 }
 
 // ---- screenshots ---------------------------------------------------------------------
@@ -635,11 +901,34 @@ void Shell::registerActions() {
     add("timeline.zoom-fit", "Fit timeline", "Timeline", {{SDL_SCANCODE_0, ModGui}}, [this] { routeToView("timeline", "zoom-fit"); });
     add("script.apply", "Apply script", "Script", {{SDL_SCANCODE_RETURN, ModGui}}, [this] { routeToView("script", "apply"); }, true);
 
+    add("app.palette", "Command palette", "App", {{SDL_SCANCODE_K, ModGui}}, [this] {
+        if (palette_) closePalette();
+        else openPalette();
+    }, true);
     add("app.settings", "Show settings", "App", {{SDL_SCANCODE_COMMA, ModGui}}, [this] { showView("settings"); }, true);
     add("app.quit", "Quit", "App", {{SDL_SCANCODE_Q, ModGui}}, [this] { requestQuit(); }, true);
 }
 
 // ---- commands ------------------------------------------------------------------------
+
+nlohmann::json Shell::dialogJson() const {
+    if (!dialog_) return nullptr;
+    json choices = json::array();
+    for (const Choice& c : dialog_->choices) choices.push_back(c.id);
+    return {{"text", dialog_->text}, {"detail", dialog_->detail}, {"choices", choices}};
+}
+
+nlohmann::json Shell::noticeJson() const {
+    if (!noticeShown()) return nullptr;
+    json j = {{"text", notice_}, {"error", noticeError_}};
+    if (noticeAction_) j["action"] = noticeActionLabel_;
+    return j;
+}
+
+bool Shell::noticeShown() const {
+    double seconds = noticeAction_ ? kActionNoticeSeconds : kNoticeSeconds;
+    return !notice_.empty() && ui_.now() - noticeAt_ < seconds;
+}
 
 nlohmann::json Shell::state() const {
     auto spaces = workspace_.toJson()["spaces"];
@@ -654,7 +943,8 @@ nlohmann::json Shell::state() const {
             {"size", {int(screen_.w), int(screen_.h)}},
             {"scale", ui_.scale()},
             {"typing", ui_.typing()},
-            {"dialog", confirm_ ? json(dialogQuestion()) : json(nullptr)}};
+            {"dialog", dialogJson()},
+            {"notice", noticeJson()}};
 }
 
 void Shell::registerCommands(Commands& commands) {
@@ -787,14 +1077,15 @@ void Shell::registerCommands(Commands& commands) {
                       }
                       return settings_.toJson();
                   }});
-    commands.add({"ui.dialog", "Answer the unsaved-changes dialog: save, discard, or cancel", {req("answer", "string")},
-                  [this](A a, C) -> json {
-                      if (!confirm_) throw EditError("no dialog is open");
+    commands.add({"ui.dialog", "Answer the open dialog with one of its choices, such as save, discard, or cancel",
+                  {req("answer", "string")}, [this](A a, C) -> json {
+                      if (!dialog_) throw EditError("no dialog is open");
                       std::string answer = a["answer"];
-                      if (answer == "save") answerDialog(Answer::Save);
-                      else if (answer == "discard") answerDialog(Answer::Discard);
-                      else if (answer == "cancel") answerDialog(Answer::Cancel);
-                      else throw EditError(fmt::format("unknown answer \"{}\" (save, discard, or cancel)", answer));
+                      if (!answerDialog(answer)) {
+                          std::string ids;
+                          for (const Choice& c : dialog_->choices) ids += (ids.empty() ? "" : ", ") + c.id;
+                          throw EditError(fmt::format("unknown answer \"{}\" (one of {})", answer, ids));
+                      }
                       return state();
                   }});
     commands.add({"ui.screenshot", "Save the window as a PNG after the next frame", {req("path", "path")}, [this](A a, C c) -> json {

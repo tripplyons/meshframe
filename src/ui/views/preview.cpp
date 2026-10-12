@@ -14,6 +14,7 @@ public:
         static const std::vector<std::string> labels = {"Full", "Half", "Quarter"};
         Rect r = area;
         dropdown(env.ui, cutRight(r, std::min(r.w, env.ui.dp(90))), "##resolution", resolution_, labels);
+        env.ui.tooltip("Preview resolution. Lower is faster; export always renders at full size.");
     }
 
     void draw(ViewEnv& env, const Rect& body) override {
@@ -63,12 +64,20 @@ private:
         ui.painter.fill(bar, ui.col(Slot::Panel));
         float b = ui.dp(44);
         double fps = s.project().settings.fps;
-        if (button(ui, cutLeft(bar, b), "Start")) s.seek(0);
-        if (button(ui, cutLeft(bar, b), "Prev")) s.seek(std::max(0.0, std::round(s.time() * fps - 1) / fps));
-        if (button(ui, cutLeft(bar, b), s.player().playing() ? "Pause" : "Play")) s.togglePlay();
-        if (button(ui, cutLeft(bar, b), "Next")) s.seek(std::round(s.time() * fps + 1) / fps);
-        if (button(ui, cutLeft(bar, b), "End")) s.seek(s.project().duration());
-        if (button(ui, cutLeft(bar, b), "Loop", s.player().loop())) s.player().setLoop(!s.player().loop());
+        Shell& shell = env.shell;
+        // A transport button with a tooltip that names its shortcut.
+        auto transport = [&](std::string_view label, bool selected, std::string_view tip, std::string_view action) {
+            bool clicked = button(ui, cutLeft(bar, b), label, selected);
+            ui.tooltip(shell.withShortcut(tip, action));
+            return clicked;
+        };
+        if (transport("Start", false, "Go to the start", "transport.start")) s.seek(0);
+        if (transport("Prev", false, "Previous frame", "transport.prev-frame"))
+            s.seek(std::max(0.0, std::round(s.time() * fps - 1) / fps));
+        if (transport(s.player().playing() ? "Pause" : "Play", false, "Play or pause", "transport.toggle")) s.togglePlay();
+        if (transport("Next", false, "Next frame", "transport.next-frame")) s.seek(std::round(s.time() * fps + 1) / fps);
+        if (transport("End", false, "Go to the end", "transport.end")) s.seek(s.project().duration());
+        if (transport("Loop", s.player().loop(), "Loop playback", "transport.loop")) s.player().setLoop(!s.player().loop());
         Rect text = bar.inset(ui.pad(), 0);
         std::string tc = fmt::format("{} / {}", formatTimecode(s.time(), fps), formatTimecode(s.project().duration(), fps));
         ui.painter.textIn(text, tc, ui.col(Slot::Text), Align::Right, FontRole::Mono);

@@ -173,6 +173,7 @@ bool dropdown(Context& ui, const Rect& r, std::string_view label, int& index, st
             ui.popId();
         }
         endMenu(ui);
+        ui.markItem(id, {});  // no tooltip for the dropdown while its menu is open
     }
     return changed;
 }

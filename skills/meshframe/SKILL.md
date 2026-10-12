@@ -49,7 +49,12 @@ ditto build-app/meshframe.app /Applications/meshframe.app
   `meshframe-cli sessions` lists it. Stop only editors you started, with
   `meshframe-cli ui.action app.quit`. With unsaved changes, the editor asks
   whether to save instead of quitting, and `ui.state` shows the question in
-  `dialog`. Answer with `ui.dialog save` or `ui.dialog discard`.
+  `dialog` with its `choices`. Answer with `ui.dialog save` or
+  `ui.dialog discard`.
+- An editor that starts after one crashed may ask to restore unsaved changes
+  (`dialog` choices `restore`, `later`, `discard`). It blocks other input in
+  the window. Ask the user before you answer `restore` or `discard`; `later`
+  keeps the copy for the next launch.
 
 Each headless invocation is a new session, so `undo` cannot reach changes
 from an earlier invocation. To share one session and history, send many
@@ -165,7 +170,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | History | `undo`, `redo`, `history` |
 | Output | `frame PATH [TIME] [WIDTH] [HEIGHT]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
 | Selection | `select [clips] [track] [media] [effect] [transition] [prop]` |
-| GUI | `ui.state`, `ui.space N`, `ui.swap N`, `ui.layout NAME [space]`, `ui.pane N VIEW [space]`, `ui.actions`, `ui.action ID`, `ui.dialog ANSWER`, `ui.bind ID [KEYS]`, `ui.theme [SLOT] [COLOR]`, `ui.settings [set]`, `ui.screenshot PATH` |
+| GUI | `ui.state`, `ui.space N`, `ui.swap N`, `ui.layout NAME [space]`, `ui.pane N VIEW [space]`, `ui.actions`, `ui.action ID`, `ui.dialog CHOICE`, `ui.bind ID [KEYS]`, `ui.theme [SLOT] [COLOR]`, `ui.settings [set]`, `ui.screenshot PATH` |
 
 Notes:
 
@@ -251,6 +256,7 @@ These commands need a running editor. Read the result back with
 - Panes are numbered from 1 in reading order. Views: `preview`, `timeline`,
   `media`, `inspector`, `video-effects`, `audio-effects`, `curves`, `script`,
   `graph`, `meters`, `scopes`, `console`, `history`, `export`, `settings`.
+- `ui.state` also shows the status bar `notice`, such as an export result.
 - `ui.actions` lists every action with its keys. `ui.action ID` runs one, for
   example `transport.toggle`, `edit.split`, `file.save`, or `app.quit`.
 - `ui.bind ID "Alt+1, Ctrl+1"` rebinds an action. `ui.bind ID` with no keys

@@ -52,7 +52,13 @@ The window has 10 spaces, like i3 workspaces. Each space has a layout preset
 and remembers which view each pane shows. The status bar at the bottom has
 the space buttons, the layout picker, the menu, the project name, and the
 time. Each pane header has a view picker. Drag the borders between panes to
-resize them.
+resize them. Cmd+K opens the command palette, which finds any action by
+name and shows its keys. The menu lists recent projects, and an empty
+timeline or media view offers buttons to import media or open a project.
+
+While a project has unsaved changes, the editor keeps a copy of it in
+`recovery/` next to the settings file, at most every 10 seconds. If the editor
+does not quit normally, the next launch offers to restore the copy.
 
 Views: preview, timeline, media, inspector, video effects, audio effects,
 transition curves, script, reactive graph, audio meters, scopes, console,
@@ -84,6 +90,7 @@ in `MESHFRAME_SETTINGS`.
 | Cmd+E | Show export |
 | Cmd+=, Cmd+-, Cmd+0 | Zoom the timeline in, out, or to fit |
 | Cmd+Enter | Apply the script |
+| Cmd+K | Command palette |
 | Cmd+, | Show settings |
 | Cmd+Q | Quit |
 

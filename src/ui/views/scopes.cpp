@@ -21,6 +21,7 @@ public:
         static const std::vector<std::string> modes = {"Waveform and histogram", "Waveform", "Histogram"};
         Rect r = area;
         dropdown(env.ui, cutRight(r, std::min(r.w, env.ui.dp(170))), "##mode", mode_, modes);
+        env.ui.tooltip("Scopes to show for the frame at the playhead");
     }
 
     void draw(ViewEnv& env, const Rect& body) override {

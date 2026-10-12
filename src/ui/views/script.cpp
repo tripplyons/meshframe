@@ -17,10 +17,16 @@ public:
     void header(ViewEnv& env, const Rect& area) override {
         Context& ui = env.ui;
         Rect r = area;
-        if (button(ui, cutRight(r, std::min(r.w, ui.dp(56))), "Apply", false, modified())) apply(env);
+        bool applyNow = button(ui, cutRight(r, std::min(r.w, ui.dp(56))), "Apply", false, modified());
+        ui.tooltip(env.shell.withShortcut(modified() ? "Run the script in the project" : "No changes to apply", "script.apply"));
+        if (applyNow) apply(env);
         bool autoApply = autoApply_;
-        if (toggle(ui, cutRight(r, std::min(r.w, ui.dp(60))), "Auto", autoApply)) autoApply_ = autoApply;
-        if (external_ && button(ui, cutRight(r, std::min(r.w, ui.dp(64))), "Reload")) {
+        bool toggled = toggle(ui, cutRight(r, std::min(r.w, ui.dp(60))), "Auto", autoApply);
+        ui.tooltip("Apply the script when you pause typing");
+        if (toggled) autoApply_ = autoApply;
+        bool reload = external_ && button(ui, cutRight(r, std::min(r.w, ui.dp(64))), "Reload");
+        if (external_) ui.tooltip("Replace this text with the script as changed elsewhere");
+        if (reload) {
             editor_.setText(env.session.project().script, false);
             applied_ = env.session.project().script;
             external_ = false;

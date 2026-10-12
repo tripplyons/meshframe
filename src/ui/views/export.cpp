@@ -29,7 +29,9 @@ public:
 
         Rect r = labeled(ui, list.next(rowH), "File", labelW);
         if (env.shell.hooks.fileDialog) {
-            if (button(ui, cutRight(r, std::min(r.w, ui.dp(70))), "Browse", false, !busy)) {
+            bool browse = button(ui, cutRight(r, std::min(r.w, ui.dp(70))), "Browse", false, !busy);
+            ui.tooltip("Choose where to write the file");
+            if (browse) {
                 std::weak_ptr<std::string> out = chosen_;
                 env.shell.hooks.fileDialog(true, "Export", {"mp4", "wav"}, [out](std::string path) {
                     if (auto o = out.lock(); o && !path.empty()) *o = std::move(path);
@@ -37,6 +39,7 @@ public:
             }
         }
         textField(ui, r, "##path", path_, FontRole::Mono, "out.mp4");
+        ui.tooltip("Output file. The extension sets the format: .mp4 for video, .wav for audio only.");
 
         auto intRow = [&](const char* label, int& v, int lo, int hi, const char* unit) {
             Rect f = labeled(ui, list.next(rowH), label, labelW);
@@ -48,7 +51,9 @@ public:
         if (height_ <= 0) height_ = ps.height;
         intRow("Width", width_, 16, 8192, "px");
         intRow("Height", height_, 16, 8192, "px");
-        if (button(ui, labeled(ui, list.next(rowH), "", labelW), "Use project size")) width_ = ps.width, height_ = ps.height;
+        bool projectSize = button(ui, labeled(ui, list.next(rowH), "", labelW), "Use project size");
+        ui.tooltip(fmt::format("Set the size to {} x {}", ps.width, ps.height));
+        if (projectSize) width_ = ps.width, height_ = ps.height;
 
         double duration = s.project().duration();
         auto timeRow = [&](const char* label, double& v) {
@@ -59,11 +64,14 @@ public:
         timeRow("Start", start_);
         timeRow("End", end_);
         intRow("Quality", crf_, 0, 51, "crf");
+        ui.tooltip("Constant rate factor. Lower values give better quality and larger files; 18 to 28 is typical.");
 
         list.next(ui.dp(6));
         Rect actions = list.next(rowH).inset(ui.pad(), 0);
         if (busy) {
-            if (button(ui, cutRight(actions, std::min(actions.w, ui.dp(80))), "Cancel")) job.cancel();
+            bool cancel = button(ui, cutRight(actions, std::min(actions.w, ui.dp(80))), "Cancel");
+            ui.tooltip("Stop the export and delete the partial file");
+            if (cancel) job.cancel();
             Rect bar = actions.inset(0, ui.dp(4));
             bar.w -= ui.dp(8);
             ui.painter.fill(bar, ui.col(Slot::Field));
@@ -72,8 +80,19 @@ public:
             ui.painter.fill(done, ui.col(Slot::Accent));
             ui.painter.outline(bar, ui.col(Slot::Border));
             ui.painter.textIn(bar, fmt::format("{:.0f}%", job.progress() * 100), ui.col(Slot::Text), Align::Center);
-        } else if (button(ui, cutLeft(actions, std::min(actions.w, ui.dp(100))), "Export", false, end_ > start_ && !path_.empty())) {
-            start(env);
+        } else {
+            bool ready = end_ > start_ && !path_.empty();
+            bool exportNow = button(ui, cutLeft(actions, std::min(actions.w, ui.dp(100))), "Export", false, ready);
+            ui.tooltip(path_.empty() ? "Choose an output file first" : end_ <= start_ ? "End must be after start" : "Render the range to the file");
+            if (exportNow) start(env);
+            bool wrote = job.finished() && job.error().empty() && !job.options().path.empty();
+            if (wrote && env.shell.hooks.reveal) {
+                cutLeft(actions, ui.dp(8));
+                const std::string& label = env.shell.hooks.revealLabel;
+                bool reveal = button(ui, cutLeft(actions, std::min(actions.w, ui.painter.measure(label) + ui.dp(16))), label + "##reveal");
+                ui.tooltip("Show " + shortPath(job.options().path));
+                if (reveal) env.shell.hooks.reveal(job.options().path);
+            }
         }
 
         list.next(ui.dp(6));

@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <vector>
 
 namespace mf::ui {
 
@@ -19,6 +20,11 @@ struct Settings {
     float monoSize = 13;
     float uiScale = 1;     // multiplies the display scale
     nlohmann::json workspace;  // spaces, layouts, and pane views
+    std::vector<std::string> recent;  // project files, most recent first
+
+    static constexpr size_t kMaxRecent = 10;
+    // Moves a project file to the front of the recent list.
+    void addRecent(const std::string& path);
 
     nlohmann::json toJson() const;
     static Settings fromJson(const nlohmann::json& j);
