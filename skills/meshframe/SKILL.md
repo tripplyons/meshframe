@@ -265,8 +265,9 @@ Notes:
 
 - `prop.*` targets are clips, effects (by id), or transitions (by id).
   `prop.set` replaces keys or an expression with a constant.
-- Linked media clips move, trim, split, and delete together. Pass
-  `linked=false` to edit one side only.
+- Linked media clips move, trim, split, change speed, and delete together.
+  Pass `linked=false` to edit one side only. Speed changes keep the clips'
+  timeline bounds and source offsets.
 - Ripple edits keep the timeline packed. `clip.remove CLIP ripple=true`
   pulls later clips left by the removed time. `clip.trim ... ripple=true`
   shifts later clips by the change in end time. `insert=true` on `clip.add`

@@ -1021,9 +1021,10 @@ void Commands::registerBuiltins() {
              edit(c.session, "rename clip", [&](Project& p) { edit::renameClip(p, id, a["name"]); });
              return nullptr;
          }});
-    add({"clip.speed", "Set a media clip's playback speed", {req("clip", "id"), req("speed", "number")}, [edit](A a, C c) -> json {
+    add({"clip.speed", "Set playback speed, including linked clips by default",
+         {req("clip", "id"), req("speed", "number"), opt("linked", "bool")}, [edit](A a, C c) -> json {
              Id id = resolveClip(c.session.project(), a["clip"]);
-             edit(c.session, "clip speed", [&](Project& p) { edit::setClipSpeed(p, id, a["speed"]); });
+             edit(c.session, "clip speed", [&](Project& p) { edit::setClipSpeed(p, id, a["speed"], get<bool>(a, "linked", true)); });
              return clipToJson(*c.session.project().findClip(id));
          }});
     add({"clip.unlink", "Unlink a clip from its A/V partner", {req("clip", "id")}, [edit](A a, C c) -> json {

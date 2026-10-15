@@ -311,9 +311,10 @@ void renameClip(Project& p, Id clip, std::string name) {
     clipOr(p, clip).name = std::move(name);
 }
 
-void setClipSpeed(Project& p, Id clip, double speed) {
+void setClipSpeed(Project& p, Id clip, double speed, bool withLinked) {
     if (!(speed > 0.01 && speed <= 100)) fail("speed must be between 0.01 and 100");
-    clipOr(p, clip).speed = speed;
+    clipOr(p, clip);
+    for (Id id : linkedGroup(p, clip, withLinked)) p.findClip(id)->speed = speed;
 }
 
 namespace {

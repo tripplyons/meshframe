@@ -664,6 +664,53 @@ TEST(Transcript, ParsesWhisperTokensIntoWords) {
     EXPECT_EQ(t.words[2].text, "friends.");
 }
 
+TEST(Commands, ClipSpeedKeepsLinkedMediaInSync) {
+    if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg is not installed";
+    Session s;
+    Commands c(s);
+    ok(c, {"media.import", fixtures::videoWithAudio()});
+    json ids = ok(c, {"clip.media", "av.mp4", "2"});
+    ASSERT_EQ(ids.size(), 2u);
+    const std::string video = ids[0].dump(), audio = ids[1].dump();
+    ok(c, {"clip.trim", video, "2.2", "0.4"});
+    json other = ok(c, {"clip.media", "av.mp4", "5"});
+    json before = ok(c, {"show", "clips"});
+    size_t steps = s.history().undoLabels().size();
+
+    ok(c, {"clip.speed", video, "2"});
+    for (const auto& id : ids) {
+        json clip = ok(c, {"clip.get", id.dump()});
+        EXPECT_EQ(clip["speed"], 2);
+        EXPECT_EQ(clip["start"], 2.2);
+        EXPECT_NEAR(clip["in"].get<double>(), 0.2, 1e-9);
+        EXPECT_NEAR(clip["duration"].get<double>(), 0.4, 1e-9);
+    }
+    for (const auto& id : other) EXPECT_EQ(ok(c, {"clip.get", id.dump()})["speed"], 1);
+    EXPECT_EQ(s.history().undoLabels().size(), steps + 1);
+    ok(c, {"undo"});
+    EXPECT_EQ(ok(c, {"show", "clips"}), before);
+    ok(c, {"redo"});
+    for (const auto& id : ids) EXPECT_EQ(ok(c, {"clip.get", id.dump()})["speed"], 2);
+
+    // Either half controls the pair; callers can explicitly edit one side.
+    ok(c, {"clip.speed", audio, "0.5"});
+    EXPECT_EQ(ok(c, {"clip.get", video})["speed"], 0.5);
+    ok(c, {"clip.speed", video, "3", "linked=false"});
+    EXPECT_EQ(ok(c, {"clip.get", video})["speed"], 3);
+    EXPECT_EQ(ok(c, {"clip.get", audio})["speed"], 0.5);
+
+    before = ok(c, {"show", "clips"});
+    steps = s.history().undoLabels().size();
+    EXPECT_NE(fails(c, {"clip.speed", video, "0"}).find("speed"), std::string::npos);
+    EXPECT_EQ(ok(c, {"show", "clips"}), before);
+    EXPECT_EQ(s.history().undoLabels().size(), steps);
+
+    ok(c, {"clip.unlink", video});
+    ok(c, {"clip.speed", video, "4"});
+    EXPECT_EQ(ok(c, {"clip.get", video})["speed"], 4);
+    EXPECT_EQ(ok(c, {"clip.get", audio})["speed"], 0.5);
+}
+
 TEST(Commands, TranscriptFindMapsSourceToTimeline) {
     Session s;
     Commands c(s);
@@ -676,7 +723,7 @@ TEST(Commands, TranscriptFindMapsSourceToTimeline) {
 
     // One clip plays the whole file at double speed from 10 s; another starts mid-phrase.
     json ids = ok(c, {"clip.media", "av.mp4", "10"});
-    for (const auto& id : ids) ok(c, {"clip.speed", std::to_string(id.get<Id>()), "2"});
+    ok(c, {"clip.speed", ids[0].dump(), "2"});
     json later = ok(c, {"clip.media", "av.mp4", "20"});
     ok(c, {"clip.trim", std::to_string(later[0].get<Id>()), "20.5", "0.5"});
 

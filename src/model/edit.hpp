@@ -44,7 +44,8 @@ void trimClip(Project& p, Id clip, double start, double duration, bool withLinke
 std::vector<Id> splitClip(Project& p, Id clip, double t, bool withLinked = true);
 void removeClip(Project& p, Id clip, bool withLinked = true);
 void renameClip(Project& p, Id clip, std::string name);
-void setClipSpeed(Project& p, Id clip, double speed);
+// Keeps timeline bounds and source offsets, and updates linked clips by default.
+void setClipSpeed(Project& p, Id clip, double speed, bool withLinked = true);
 void unlinkClip(Project& p, Id clip);
 
 // Ripple edits shift every clip that starts at or after the edit point, on
