@@ -109,11 +109,12 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
     return true;
 }
 
-std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, double t, int padX, int padY) {
+std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, double t, double scale, int padX, int padY) {
     ev.setTime(t);
     const auto& st = ev.project().settings;
-    auto canvas = std::make_shared<Image>(st.width + 2 * padX, st.height + 2 * padY);
-    drawClip(ev, *canvas, c, t, 1, false, padX, padY);
+    int w = std::max(2, int(std::lround(st.width * scale))), h = std::max(2, int(std::lround(st.height * scale)));
+    auto canvas = std::make_shared<Image>(w + 2 * padX, h + 2 * padY);
+    drawClip(ev, *canvas, c, t, double(w) / st.width, false, padX, padY);
     ev.refreshOutputs();
     return canvas;
 }

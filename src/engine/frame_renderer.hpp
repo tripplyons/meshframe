@@ -15,9 +15,10 @@ public:
     // Output is w x h; smaller than the project size gives a scaled preview.
     // Must run on the evaluator's thread.
     std::shared_ptr<Image> render(Evaluator& ev, double t, int w, int h);
-    // Renders one video clip alone over transparency at project size, with
-    // `pad` pixels of margin on each side so content beyond the frame shows.
-    std::shared_ptr<Image> renderClip(Evaluator& ev, const Clip& c, double t, int padX, int padY);
+    // Renders one video clip alone over transparency at project size times
+    // `scale`, with `pad` pixels of margin on each side so content beyond the
+    // frame shows.
+    std::shared_ptr<Image> renderClip(Evaluator& ev, const Clip& c, double t, double scale, int padX, int padY);
 
 private:
     struct Layer {

@@ -10,6 +10,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <map>
 
 using namespace mf;
 
@@ -569,4 +570,72 @@ TEST(Commands, TextMeasureMatchesTheRenderedBlock) {
     EXPECT_LE(b["height"].get<double>(), one["height"].get<double>());
     EXPECT_GT(b["width"].get<double>(), one["width"].get<double>() * 0.8);
     EXPECT_NE(fails(c, {"text.measure", "x", "font=/nope.ttf"}).find("nope"), std::string::npos);
+}
+
+TEST(Commands, CheckFindsEachKindOfProblem) {
+    if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg is not installed";
+    auto dir = fixtures::dir() / "check";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::filesystem::copy_file(fixtures::countingVideo(), dir / "gone.mp4");
+
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "width=320", "height=180", "fps=10"});
+    ok(c, {"script.set", "mf.synth('hot', function(time) return sin(time * 2 * pi * 100) * 1.5 end)"});
+    ok(c, {"clip.add", "solid", "V1", "0", "2", "buried", R"(props={"color":"#ff0000"})"});
+    ok(c, {"clip.add", "solid", "V2", "0", "4", "bg", R"(props={"color":"#606060"})"});
+    ok(c, {"clip.add", "solid", "V2", "5", "1", "black", R"(props={"color":"#000000"})"});
+    ok(c, {"prop.expr", "black", "x", "nope()"});
+    ok(c, {"clip.add", "text", "V3", "0", "1", "edge", R"(props={"text":"Edge","size":40,"x":150})"});
+    ok(c, {"clip.add", "text", "V3", "1", "1", "high", R"(props={"text":"High","size":16,"y":-78})"});
+    ok(c, {"clip.add", "text", "V3", "2", "1", "a", R"(props={"text":"Same","size":30})"});
+    ok(c, {"track.add", "video", "V4"});
+    ok(c, {"clip.add", "text", "V4", "2", "1", "b", R"(props={"text":"Place","size":30})"});
+    ok(c, {"media.import", fixtures::countingVideo()});
+    json placed = ok(c, {"clip.media", "counting.mp4", "6"});
+    ok(c, {"clip.trim", std::to_string(placed[0].get<Id>()), "6", "4"});
+    ok(c, {"media.import", (dir / "gone.mp4").string()});
+    ok(c, {"clip.media", "gone.mp4", "10", "V2"});
+    ok(c, {"media.import", fixtures::sineAudio()});
+    ok(c, {"clip.add", "synth", "A1", "0", "1", "loud", R"(props={"synth":"hot"})"});
+    std::filesystem::remove(dir / "gone.mp4");
+
+    json r = ok(c, {"check"});
+    std::map<std::string, std::vector<json>> byKind;
+    for (const auto& i : r["issues"]) byKind[i["kind"]].push_back(i);
+    for (const char* kind : {"gap", "missing-media", "past-media", "unused-media", "hidden", "black", "expression",
+                             "off-frame", "title-safe", "text-overlap", "clipping", "loudness", "true-peak"})
+        EXPECT_TRUE(byKind.contains(kind)) << kind << " in " << r.dump(1);
+    EXPECT_EQ(r["errors"].get<int>() + r["warnings"].get<int>(), int(r["issues"].size()));
+
+    ASSERT_FALSE(byKind["gap"].empty());
+    EXPECT_NEAR(byKind["gap"][0]["start"].get<double>(), 4, 1e-6);
+    EXPECT_NEAR(byKind["gap"][0]["end"].get<double>(), 5, 1e-6);
+    EXPECT_EQ(byKind["hidden"][0]["name"], "buried");
+    EXPECT_EQ(byKind["off-frame"][0]["name"], "edge");
+    EXPECT_EQ(byKind["title-safe"][0]["name"], "high");
+    // The gap before the black clip renders black too.
+    EXPECT_LE(byKind["black"][0]["start"].get<double>(), 5);
+    EXPECT_GE(byKind["black"][0]["end"].get<double>(), 6);
+    EXPECT_NEAR(byKind["past-media"][0]["start"].get<double>(), 9, 0.01);
+    EXPECT_EQ(byKind["past-media"][0]["severity"], "error");
+    EXPECT_EQ(byKind["unused-media"].size(), 1u);
+    EXPECT_NE(byKind["unused-media"][0]["message"].get<std::string>().find("sine.wav"), std::string::npos);
+
+    ok(c, {"script.set", "this is not lua"});
+    bool scriptError = false;
+    for (const auto& i : ok(c, {"check"})["issues"]) scriptError = scriptError || i["kind"] == "script";
+    EXPECT_TRUE(scriptError);
+}
+
+TEST(Commands, CheckPassesACleanProject) {
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "width=320", "height=180", "fps=10"});
+    ok(c, {"clip.add", "solid", "V1", "0", "2", "bg", R"(props={"color":"#203040"})"});
+    ok(c, {"clip.add", "text", "V2", "0", "2", "title", R"(props={"text":"Hello","size":30})"});
+    json r = ok(c, {"check"});
+    EXPECT_TRUE(r["issues"].empty()) << r.dump(1);
+    EXPECT_GE(r["samples"].get<int>(), 4);
 }

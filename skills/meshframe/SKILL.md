@@ -168,7 +168,17 @@ meshframe-cli help clip.add     # one command's arguments
    - `levels` shows audio meters at the current time. `errors` lists script,
      expression, and render errors at the current frame.
    - In a GUI session, `ui.screenshot shot.png` saves the whole window.
-4. `save` writes the project in a GUI session; headless runs save it for you.
+4. Run `check` before you hand the work back or export. It lists issues,
+   each with `severity` (`error` or `warning`), `kind`, `start` and `end`,
+   the clip it concerns, and a message: script errors and errors at any
+   sampled time (`script`, `expression`), gaps with no video, clips past the
+   end of their media, missing and unused media, clips hidden under an opaque
+   full-frame clip, black frames, text off frame or outside title-safe,
+   overlapping text, clipping, and loudness or true peak off target
+   (`lufs=-14`, `truePeak=-1`). It samples every `step` seconds (default 0.5)
+   and at clip edges. Fix errors; judge warnings against what the user asked
+   for (a fade to black is intentional).
+5. `save` writes the project in a GUI session; headless runs save it for you.
    Then `export out.mp4 wait=true` if the user wants a video.
 
 ## Model
@@ -228,7 +238,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Reactive | `signal.set NAME value=V` or `expr=E`, `signal.remove NAME`, `script.get`, `script.set [SOURCE] [file=PATH]`, `eval CODE [TIME]`, `graph [TIME]`, `errors` |
 | Transport | `play`, `pause`, `toggle`, `seek TIME`, `time` |
 | History | `undo`, `redo`, `history`, `batch COMMANDS [LABEL]` |
-| Output | `audio.analyze [start] [end] [clip] [media] [step] [silence] [waveform] [width]`, `frame PATH [TIME] [WIDTH] [HEIGHT]`, `sheet PATH [start] [end] [count] [every] [clip] [width] [columns]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
+| Output | `check [step] [lufs] [truePeak]`, `audio.analyze [start] [end] [clip] [media] [step] [silence] [waveform] [width]`, `frame PATH [TIME] [WIDTH] [HEIGHT]`, `sheet PATH [start] [end] [count] [every] [clip] [width] [columns]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
 | Selection | `select [clips] [track] [media] [effect] [transition] [prop]` |
 | GUI | `ui.state`, `ui.space N`, `ui.swap N`, `ui.layout NAME [space]`, `ui.pane N VIEW [space]`, `ui.actions`, `ui.action ID`, `ui.dialog CHOICE`, `ui.bind ID [KEYS]`, `ui.theme [SLOT] [COLOR]`, `ui.settings [set]`, `ui.screenshot PATH` |
 

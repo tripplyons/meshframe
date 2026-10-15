@@ -3,13 +3,13 @@
 #include "model/edit.hpp"
 #include "model/schema.hpp"
 #include "audio/analysis.hpp"
-#include "audio/mixer.hpp"
 #include "core/timecode.hpp"
 #include "render/font.hpp"
 #include "render/image.hpp"
 #include "render/raster.hpp"
 #include "render/sheet.hpp"
 #include "render/waveform.hpp"
+#include "session/inspect.hpp"
 #include "script/lua_runtime.hpp"
 
 #include <fmt/format.h>
@@ -834,38 +834,33 @@ void Commands::registerBuiltins() {
              if (!track || track->kind != TrackKind::Video) throw EditError(fmt::format("clip '{}' is not on a video track", clip.name));
              double t = get<double>(a, "time", s.time());
              const auto& st = ep.settings;
-             int padX = st.width / 2, padY = st.height / 2;
-             auto img = s.renderClip(clip, t, padX, padY);
-
-             // Pixels at least 3% opaque count as covered.
-             int x0 = img->w, y0 = img->h, x1 = -1, y1 = -1;
-             int64_t covered = 0, inside = 0;
-             for (int y = 0; y < img->h; ++y) {
-                 const uint8_t* row = img->row(y);
-                 for (int x = 0; x < img->w; ++x)
-                     if (row[x * 4 + 3] >= 8) {
-                         x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
-                         ++covered;
-                         inside += x >= padX && x < padX + st.width && y >= padY && y < padY + st.height;
-                     }
-             }
-             json j = {{"clip", clip.id}, {"time", t}, {"visible", covered > 0}};
-             if (!covered) return j;
-             double left = x0 - padX, top = y0 - padY, right = x1 + 1 - padX, bottom = y1 + 1 - padY;
-             j["box"] = {{"left", left}, {"top", top}, {"right", right}, {"bottom", bottom}, {"width", right - left}, {"height", bottom - top}};
-             j["center"] = {{"x", (left + right) / 2 - st.width / 2.0}, {"y", (top + bottom) / 2 - st.height / 2.0}};
-             j["inFrame"] = std::round(double(inside) / double(covered) * 1000) / 1000;
+             ClipBounds b = measureClip(s, clip, t);
+             json j = {{"clip", clip.id}, {"time", t}, {"visible", b.visible}};
+             if (!b.visible) return j;
+             j["box"] = {{"left", b.left}, {"top", b.top}, {"right", b.right}, {"bottom", b.bottom},
+                         {"width", b.right - b.left}, {"height", b.bottom - b.top}};
+             j["center"] = {{"x", (b.left + b.right) / 2 - st.width / 2.0}, {"y", (b.top + b.bottom) / 2 - st.height / 2.0}};
+             j["inFrame"] = std::round(b.inFrame * 1000) / 1000;
              json edges = json::array();
-             if (left < 0) edges.push_back("left");
-             if (top < 0) edges.push_back("top");
-             if (right > st.width) edges.push_back("right");
-             if (bottom > st.height) edges.push_back("bottom");
+             if (b.left < 0) edges.push_back("left");
+             if (b.top < 0) edges.push_back("top");
+             if (b.right > st.width) edges.push_back("right");
+             if (b.bottom > st.height) edges.push_back("bottom");
              j["crosses"] = edges;
-             double mx = st.width * 0.05, my = st.height * 0.05;
-             j["titleSafe"] = left >= mx && top >= my && right <= st.width - mx && bottom <= st.height - my;
-             // Content may reach past the margin rendered around the frame.
-             if (x0 == 0 || y0 == 0 || x1 == img->w - 1 || y1 == img->h - 1) j["truncated"] = true;
+             j["titleSafe"] = b.titleSafe(st);
+             if (b.truncated) j["truncated"] = true;
              return j;
+         }});
+    add({"check", "Look for problems: gaps, missing media, black frames, unsafe or overlapping text, clipping, loudness, errors",
+         {opt("step", "time", "seconds between sampled frames (default 0.5)"), opt("lufs", "number", "loudness target (default -14)"),
+          opt("truePeak", "number", "true peak limit in dBTP (default -1)")},
+         [](A a, C c) -> json {
+             CheckOptions o;
+             o.step = get<double>(a, "step", o.step);
+             if (o.step <= 0) throw EditError("step must be positive");
+             o.lufs = get<double>(a, "lufs", o.lufs);
+             o.truePeak = get<double>(a, "truePeak", o.truePeak);
+             return checkProject(c.session, o);
          }});
     add({"text.measure", "Measure a text clip's block before scale and rotation",
          {req("text", "string"), opt("size", "number", "default 96"), opt("font", "path", "font file; default the built-in sans")},
@@ -1221,20 +1216,14 @@ void Commands::registerBuiltins() {
                  if (width < 16 || width > 8192) throw EditError("width must be 16 to 8192");
                  opt.columns = width;
              }
-             AudioAnalyzer analyzer(sr, double(first) / sr, frames, opt);
+             AudioAnalysis result;
              if (buffer) {
+                 AudioAnalyzer analyzer(sr, double(first) / sr, frames, opt);
                  analyzer.push(buffer->samples.data() + first * 2, int(frames));
+                 result = analyzer.finish();
              } else {
-                 AudioMixer mixer(s.cache());
-                 std::vector<float> block(size_t(AudioMixer::kBlock) * 16 * 2);
-                 for (int64_t done = 0; done < frames;) {
-                     int n = int(std::min<int64_t>(frames - done, int64_t(block.size() / 2)));
-                     mixer.render(s.evaluator(), double(first + done) / sr, n, block.data(), true);
-                     analyzer.push(block.data(), n);
-                     done += n;
-                 }
+                 result = analyzeMix(s, start, end, opt);
              }
-             AudioAnalysis result = analyzer.finish();
              json j = analysisJson(result);
              j["source"] = buffer ? "media" : "mix";
              if (a.contains("waveform")) {

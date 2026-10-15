@@ -209,8 +209,8 @@ double Session::tick() {
 
 std::shared_ptr<Image> Session::renderFrame(double t, int w, int h) { return renderer_->render(evaluator(), t, w, h); }
 
-std::shared_ptr<Image> Session::renderClip(const Clip& c, double t, int padX, int padY) {
-    return renderer_->renderClip(evaluator(), c, t, padX, padY);
+std::shared_ptr<Image> Session::renderClip(const Clip& c, double t, double scale, int padX, int padY) {
+    return renderer_->renderClip(evaluator(), c, t, scale, padX, padY);
 }
 
 void Session::pruneSelection() {

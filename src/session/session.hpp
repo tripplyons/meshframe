@@ -92,8 +92,8 @@ public:
 
     // Renders a frame at time t; w x h may be smaller than the project size.
     std::shared_ptr<Image> renderFrame(double t, int w, int h);
-    // Renders one clip alone at project size with a margin; see FrameRenderer::renderClip.
-    std::shared_ptr<Image> renderClip(const Clip& c, double t, int padX, int padY);
+    // Renders one clip alone with a margin; see FrameRenderer::renderClip.
+    std::shared_ptr<Image> renderClip(const Clip& c, double t, double scale, int padX, int padY);
 
     ExportJob& exportJob() { return exportJob_; }
 
