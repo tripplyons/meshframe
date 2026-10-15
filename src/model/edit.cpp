@@ -3,6 +3,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <limits>
 #include <cmath>
 
 namespace mf::edit {
@@ -313,6 +314,113 @@ void renameClip(Project& p, Id clip, std::string name) {
 void setClipSpeed(Project& p, Id clip, double speed) {
     if (!(speed > 0.01 && speed <= 100)) fail("speed must be between 0.01 and 100");
     clipOr(p, clip).speed = speed;
+}
+
+namespace {
+
+bool contains(const std::vector<Id>& ids, Id id) { return std::ranges::contains(ids, id); }
+
+void checkUnlocked(const Project& p, const Clip& c) {
+    const Track* t = p.findTrack(c.track);
+    if (t && t->locked) fail(fmt::format("track {} is locked, so clip {} cannot shift", t->name, c.name));
+}
+
+// Moves clips that start at or after `at` (except `keep`) and markers at or
+// after it by `length`. Removes transitions whose clips the shift separates.
+void insertTime(Project& p, double at, double length, const std::vector<Id>& keep) {
+    auto shifts = [&](const Clip& c) { return !contains(keep, c.id) && c.start >= at - 1e-9; };
+    for (auto& c : p.clips)
+        if (shifts(c)) {
+            checkUnlocked(p, c);
+            c.start += length;
+        }
+    std::erase_if(p.transitions, [&](const Transition& tr) {
+        const Clip *a = p.findClip(tr.clipA), *b = p.findClip(tr.clipB);
+        return a && b && shifts(*b) != shifts(*a) && !contains(keep, a->id);
+    });
+    for (auto& m : p.markers)
+        if (m.time >= at - 1e-9) m.time += length;
+}
+
+// Deletes the time from a to b: later clips and markers move left by b - a,
+// and markers inside the range move to a.
+void removeTime(Project& p, double a, double b, const std::vector<Id>& keep) {
+    for (const auto& c : p.clips)
+        if (!contains(keep, c.id) && c.start >= a + 1e-9 && c.start < b - 1e-9)
+            fail(fmt::format("clip {} starts inside the removed time ({:.3f} to {:.3f}); remove or move it first", c.name, a, b));
+    for (auto& c : p.clips)
+        if (!contains(keep, c.id) && c.start >= b - 1e-9) {
+            checkUnlocked(p, c);
+            c.start -= b - a;
+        }
+    for (auto& m : p.markers) m.time = m.time >= b ? m.time - (b - a) : m.time > a ? a : m.time;
+}
+
+}  // namespace
+
+void rippleRemoveClip(Project& p, Id clip, bool withLinked) {
+    clipOr(p, clip);
+    auto group = linkedGroup(p, clip, withLinked);
+    double a = std::numeric_limits<double>::infinity(), b = -a;
+    for (Id id : group) {
+        const Clip& c = *p.findClip(id);
+        a = std::min(a, c.start);
+        b = std::max(b, c.end());
+    }
+    Project next = p;
+    removeClip(next, clip, withLinked);
+    removeTime(next, a, b, {});
+    p = std::move(next);
+}
+
+void rippleInsert(Project& p, const std::vector<Id>& clips) {
+    if (clips.empty()) return;
+    double at = std::numeric_limits<double>::infinity(), end = -at;
+    std::vector<Id> tracks;
+    for (Id id : clips) {
+        const Clip& c = clipOr(p, id);
+        at = std::min(at, c.start);
+        end = std::max(end, c.end());
+        tracks.push_back(c.track);
+    }
+    Project next = p;
+    std::vector<Id> spanning;
+    for (const auto& c : next.clips)
+        if (!contains(clips, c.id) && contains(tracks, c.track) && c.start < at - kMinDuration && c.end() > at + kMinDuration)
+            spanning.push_back(c.id);
+    for (Id id : spanning)
+        if (const Clip* c = next.findClip(id); c && c->start < at && c->end() > at) splitClip(next, id, at);
+    insertTime(next, at, end - at, clips);
+    p = std::move(next);
+}
+
+void rippleTrimClip(Project& p, Id clip, double start, double duration, bool withLinked) {
+    double oldEnd = clipOr(p, clip).end();
+    Project next = p;
+    trimClip(next, clip, start, duration, withLinked);
+    double newEnd = next.findClip(clip)->end();
+    auto group = linkedGroup(next, clip, withLinked);
+    if (newEnd > oldEnd) insertTime(next, oldEnd, newEnd - oldEnd, group);
+    else if (newEnd < oldEnd) removeTime(next, newEnd, oldEnd, group);
+    p = std::move(next);
+}
+
+std::vector<std::pair<double, double>> closeGaps(Project& p, double start, double end) {
+    if (!(end > start)) fail("end must be after start");
+    std::vector<std::pair<double, double>> covered;
+    for (const auto& c : p.clips) covered.emplace_back(c.start, c.end());
+    std::ranges::sort(covered);
+    std::vector<std::pair<double, double>> gaps;
+    double reach = start;
+    double last = covered.empty() ? start : std::min(end, std::ranges::max(covered, {}, &std::pair<double, double>::second).second);
+    for (auto [a, b] : covered) {
+        if (a > reach + kMinDuration && reach < last) gaps.emplace_back(reach, std::min(a, last));
+        reach = std::max(reach, b);
+    }
+    Project next = p;
+    for (auto it = gaps.rbegin(); it != gaps.rend(); ++it) removeTime(next, it->first, it->second, {});
+    p = std::move(next);
+    return gaps;
 }
 
 void unlinkClip(Project& p, Id clip) {

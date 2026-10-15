@@ -90,6 +90,25 @@ std::optional<double> parseMarkerTime(std::string_view s, const Project& p) {
     return m->time + (s[sign] == '-' ? -*offset : *offset);
 }
 
+// Parses "NAME.start" or "NAME.end", optionally with an offset such as
+// "bg.end+12f", as a clip edge. NAME is a clip name or id. Returns nullopt
+// when s has no such suffix.
+std::optional<double> parseClipTime(std::string_view s, const Project& p) {
+    for (std::string_view edge : {".end", ".start"}) {
+        size_t pos = s.rfind(edge);
+        if (pos == std::string_view::npos || pos == 0) continue;
+        size_t after = pos + edge.size();
+        if (after < s.size() && s[after] != '+' && s[after] != '-') continue;
+        const Clip& c = *p.findClip(resolveClip(p, std::string(s.substr(0, pos))));
+        double t = edge == ".end" ? c.end() : c.start;
+        if (after == s.size()) return t;
+        auto offset = parseTime(s.substr(after + 1), p.settings.fps);
+        if (!offset) throw EditError(fmt::format("bad offset in '{}'", s));
+        return t + (s[after] == '-' ? -*offset : *offset);
+    }
+    return std::nullopt;
+}
+
 json coerceArg(const ArgSpec& a, const json& v, const std::string& cwd, const Project& project) {
     double fps = project.settings.fps;
     auto fail = [&]() -> json { throw EditError(fmt::format("argument {}: expected {}, got {}", a.name, a.type, text(v))); };
@@ -105,8 +124,11 @@ json coerceArg(const ArgSpec& a, const json& v, const std::string& cwd, const Pr
         if (v.is_string()) {
             // A clip-local key time keeps a marker's timeline time apart, so the
             // command can subtract its target's start.
-            if (auto m = parseMarkerTime(v.get<std::string>(), project)) return t == "time" ? json(*m) : json{{"timeline", *m}};
-            if (auto d = parseTime(v.get<std::string>(), fps)) return *d;
+            const std::string& str = v.get_ref<const std::string&>();
+            if (auto d = parseTime(str, fps)) return *d;
+            auto m = parseMarkerTime(str, project);
+            if (!m) m = parseClipTime(str, project);
+            if (m) return t == "time" ? json(*m) : json{{"timeline", *m}};
         }
         return fail();
     }
@@ -908,7 +930,8 @@ void Commands::registerBuiltins() {
     // ---- clips ----
     add({"clip.add", "Add a text, solid, generator, or synth clip",
          {req("kind", "string", "text, solid, generator, synth"), req("track", "id"), req("start", "time"),
-          req("duration", "time"), opt("name", "string"), opt("props", "json", "object of property name to value")},
+          req("duration", "time"), opt("name", "string"), opt("props", "json", "object of property name to value"),
+          opt("insert", "bool", "push later clips right to make room")},
          [edit](A a, C c) -> json {
              auto kind = parseClipKind(a["kind"].get<std::string>());
              if (!kind || *kind == ClipKind::Media) throw EditError("kind must be text, solid, generator, or synth; use clip.media for media");
@@ -924,18 +947,23 @@ void Commands::registerBuiltins() {
              edit(c.session, "add clip", [&](Project& p) {
                  id = edit::addClip(p, clip);
                  for (auto it = props.begin(); it != props.end(); ++it) edit::setProp(p, id, it.key(), propertyFromJson(it.value()));
+                 if (get<bool>(a, "insert", false)) edit::rippleInsert(p, {id});
              });
              return clipToJson(*c.session.project().findClip(id));
          }});
     add({"clip.media", "Place a media source on the timeline (linked A/V pair when it has both)",
-         {req("media", "id"), opt("start", "time"), opt("track", "id", "video track"), opt("audioTrack", "id")},
+         {req("media", "id"), opt("start", "time"), opt("track", "id", "video track"), opt("audioTrack", "id"),
+          opt("insert", "bool", "push later clips right to make room")},
          [edit](A a, C c) -> json {
              const Project& cur = c.session.project();
              Id media = resolveMedia(cur, a["media"]);
              Id vt = a.contains("track") ? resolveTrack(cur, a["track"]) : 0;
              Id at = a.contains("audioTrack") ? resolveTrack(cur, a["audioTrack"]) : 0;
              std::vector<Id> ids;
-             edit(c.session, "add media clip", [&](Project& p) { ids = edit::addMediaClips(p, media, get<double>(a, "start", 0.0), vt, at); });
+             edit(c.session, "add media clip", [&](Project& p) {
+                 ids = edit::addMediaClips(p, media, get<double>(a, "start", 0.0), vt, at);
+                 if (get<bool>(a, "insert", false)) edit::rippleInsert(p, ids);
+             });
              return ids;
          }});
     add({"clip.move", "Move a clip in time and optionally to another track",
@@ -949,10 +977,15 @@ void Commands::registerBuiltins() {
              return clipToJson(*c.session.project().findClip(id));
          }});
     add({"clip.trim", "Set a clip's start and duration (source offset follows the start)",
-         {req("clip", "id"), req("start", "time"), req("duration", "time"), opt("linked", "bool")},
+         {req("clip", "id"), req("start", "time"), req("duration", "time"), opt("linked", "bool"),
+          opt("ripple", "bool", "shift later clips by the change in end time")},
          [edit](A a, C c) -> json {
              Id id = resolveClip(c.session.project(), a["clip"]);
-             edit(c.session, "trim clip", [&](Project& p) { edit::trimClip(p, id, a["start"], a["duration"], get<bool>(a, "linked", true)); });
+             bool linked = get<bool>(a, "linked", true);
+             edit(c.session, "trim clip", [&](Project& p) {
+                 if (get<bool>(a, "ripple", false)) edit::rippleTrimClip(p, id, a["start"], a["duration"], linked);
+                 else edit::trimClip(p, id, a["start"], a["duration"], linked);
+             });
              return clipToJson(*c.session.project().findClip(id));
          }});
     add({"clip.split", "Split a clip at a timeline time; returns the new right-hand ids",
@@ -962,10 +995,26 @@ void Commands::registerBuiltins() {
              edit(c.session, "split clip", [&](Project& p) { ids = edit::splitClip(p, id, a["time"], get<bool>(a, "linked", true)); });
              return ids;
          }});
-    add({"clip.remove", "Remove a clip", {req("clip", "id"), opt("linked", "bool")}, [edit](A a, C c) -> json {
+    add({"clip.remove", "Remove a clip",
+         {req("clip", "id"), opt("linked", "bool"), opt("ripple", "bool", "pull later clips left to fill its time")},
+         [edit](A a, C c) -> json {
              Id id = resolveClip(c.session.project(), a["clip"]);
-             edit(c.session, "remove clip", [&](Project& p) { edit::removeClip(p, id, get<bool>(a, "linked", true)); });
+             bool linked = get<bool>(a, "linked", true);
+             edit(c.session, "remove clip", [&](Project& p) {
+                 if (get<bool>(a, "ripple", false)) edit::rippleRemoveClip(p, id, linked);
+                 else edit::removeClip(p, id, linked);
+             });
              return nullptr;
+         }});
+    add({"close-gaps", "Remove empty time where no track has a clip, pulling later clips left",
+         {opt("start", "time"), opt("end", "time")}, [edit](A a, C c) -> json {
+             std::vector<std::pair<double, double>> gaps;
+             edit(c.session, "close gaps", [&](Project& p) {
+                 gaps = edit::closeGaps(p, get<double>(a, "start", 0.0), get<double>(a, "end", std::numeric_limits<double>::infinity()));
+             });
+             json out = json::array();
+             for (auto [start, end] : gaps) out.push_back({{"start", start}, {"end", end}});
+             return out;
          }});
     add({"clip.rename", "Rename a clip", {req("clip", "id"), req("name", "string")}, [edit](A a, C c) -> json {
              Id id = resolveClip(c.session.project(), a["clip"]);

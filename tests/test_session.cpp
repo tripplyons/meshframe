@@ -73,7 +73,7 @@ TEST(Commands, ArgumentsAndErrors) {
     Commands c(s);
     json help = ok(c, {"help"});
     EXPECT_GT(help.size(), 40u);
-    EXPECT_EQ(ok(c, {"help", "clip.add"})["usage"], "clip.add <kind> <track> <start> <duration> [name] [props]");
+    EXPECT_EQ(ok(c, {"help", "clip.add"})["usage"], "clip.add <kind> <track> <start> <duration> [name] [props] [insert]");
 
     EXPECT_NE(fails(c, {"nope"}).find("unknown command"), std::string::npos);
     EXPECT_NE(fails(c, {"clip.add", "text"}).find("missing argument 'track'"), std::string::npos);
@@ -831,4 +831,76 @@ TEST(Commands, WaitRepliesWhenTheProjectChanges) {
     ASSERT_TRUE(reply);
     EXPECT_TRUE((*reply)["result"]["timedOut"]);
     EXPECT_TRUE((*reply)["result"]["revisions"].empty());
+}
+
+TEST(Commands, RippleEditsShiftLaterClipsOnAllTracks) {
+    Session s;
+    Commands c(s);
+    ok(c, {"clip.add", "solid", "V1", "0", "2", "a"});
+    ok(c, {"clip.add", "solid", "V1", "a.end", "3", "b"});
+    ok(c, {"clip.add", "solid", "V1", "b.end", "1", "c"});
+    ok(c, {"clip.add", "text", "V2", "2", "2", "title"});
+    ok(c, {"marker.add", "beat", "3"});
+    auto start = [&](const std::string& name) { return ok(c, {"clip.get", name})["start"].get<double>(); };
+    auto marker = [&] { return ok(c, {"show", "markers"})[0]["time"].get<double>(); };
+    EXPECT_DOUBLE_EQ(start("c"), 5);
+
+    // Ripple delete: everything after a moves left by its 2 seconds.
+    ok(c, {"clip.remove", "a", "ripple=true"});
+    EXPECT_DOUBLE_EQ(start("b"), 0);
+    EXPECT_DOUBLE_EQ(start("c"), 3);
+    EXPECT_DOUBLE_EQ(start("title"), 0);
+    EXPECT_DOUBLE_EQ(marker(), 1);
+
+    // Ripple trim: b grows by 1, so c moves right; the title starts before b's end.
+    ok(c, {"clip.trim", "b", "0", "4", "ripple=true"});
+    EXPECT_DOUBLE_EQ(start("c"), 4);
+    EXPECT_DOUBLE_EQ(start("title"), 0);
+    ok(c, {"clip.trim", "b", "0", "3.5", "ripple=true"});
+    EXPECT_DOUBLE_EQ(start("c"), 3.5);
+    ok(c, {"clip.trim", "b", "0", "4", "ripple=true"});
+
+    // Insert inside b splits it; clips on other tracks that span the point stay.
+    ok(c, {"clip.add", "solid", "V1", "1", "1", "ins", "insert=true"});
+    std::vector<std::pair<double, double>> parts;
+    for (const auto& clip : ok(c, {"show", "clips"}))
+        if (clip["name"] == "b") parts.emplace_back(clip["start"], clip["duration"]);
+    std::ranges::sort(parts);
+    EXPECT_EQ(parts, (std::vector<std::pair<double, double>>{{0, 1}, {2, 3}}));
+    EXPECT_DOUBLE_EQ(start("c"), 5);
+    EXPECT_DOUBLE_EQ(start("title"), 0);
+    EXPECT_DOUBLE_EQ(marker(), 2);
+
+    // Close gaps removes time no track uses.
+    ok(c, {"clip.move", "c", "c.start+1s"});
+    json gaps = ok(c, {"close-gaps"});
+    ASSERT_EQ(gaps.size(), 1u);
+    EXPECT_DOUBLE_EQ(gaps[0]["start"], 5);
+    EXPECT_DOUBLE_EQ(gaps[0]["end"], 6);
+    EXPECT_DOUBLE_EQ(start("c"), 5);
+    EXPECT_TRUE(ok(c, {"close-gaps"}).empty());
+
+    // A clip that starts inside the removed time, or a locked track, blocks a ripple.
+    ok(c, {"clip.add", "solid", "V2", "c.start+0.5", "0.2", "flash"});
+    EXPECT_NE(fails(c, {"clip.remove", "c", "ripple=true"}).find("flash starts inside"), std::string::npos);
+    ok(c, {"clip.remove", "flash"});
+    ok(c, {"clip.add", "solid", "V2", "c.end", "1", "after"});
+    ok(c, {"track.set", "V2", "locked=true"});
+    EXPECT_NE(fails(c, {"clip.remove", "c", "ripple=true"}).find("locked"), std::string::npos);
+    EXPECT_DOUBLE_EQ(start("c"), 5);
+
+    EXPECT_NE(fails(c, {"seek", "nope.end"}).find("no clip named 'nope'"), std::string::npos);
+}
+
+TEST(Commands, InsertMediaSplitsLinkedPairs) {
+    if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg not found";
+    Session s;
+    Commands c(s);
+    json m = ok(c, {"media.import", fixtures::videoWithAudio()});
+    ok(c, {"clip.media", m["name"], "0"});
+    json ids = ok(c, {"clip.media", m["name"], "0.5", "insert=true"});
+    ASSERT_EQ(ids.size(), 2u);
+    std::map<double, int> starts;
+    for (const auto& clip : ok(c, {"show", "clips"})) ++starts[clip["start"].get<double>()];
+    EXPECT_EQ(starts, (std::map<double, int>{{0, 2}, {0.5, 2}, {1.5, 2}}));
 }

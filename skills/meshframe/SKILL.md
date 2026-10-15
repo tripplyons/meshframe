@@ -117,12 +117,13 @@ meshframe-cli help clip.add     # one command's arguments
   strings. Quote JSON objects for the shell: `'props={"text":"Hi","size":64}'`.
 - Clips, tracks, and other targets accept an id or a name. Names must be
   unique. Use ids after splitting a clip, because both halves keep the name.
-- Times and durations are in seconds: `2.5`. They also accept frames at the
-  project frame rate (`90f`), timecode (`00:00:03:12`, HH:MM:SS:FF), and clock
-  time (`1:15.5` or `1:02:03.5`), and markers (`@chorus`, `@chorus+2f`,
-  `@chorus-0:01`). Replies always use seconds. Keyframe times are
-  clip-local, measured from the clip's start; a marker given as a keyframe
-  time still means that point on the timeline.
+- Times and durations are in seconds: `2.5` or `2.5s`. They also accept
+  frames at the project frame rate (`90f`), timecode (`00:00:03:12`,
+  HH:MM:SS:FF), clock time (`1:15.5` or `1:02:03.5`), markers (`@chorus`,
+  `@chorus+2f`, `@chorus-0:01`), and clip edges (`bg.start`, `bg.end`,
+  `bg.end+1s`, where `bg` is a clip name or id). Replies always use seconds.
+  Keyframe times are clip-local, measured from the clip's start; a marker or
+  clip edge given as a keyframe time still means that point on the timeline.
 - On success, a string result prints raw and an object prints as JSON. With
   `--json`, the full reply is printed. On failure, `error: MESSAGE` goes to
   stderr. Exit status: 0 for success, 1 when the command fails, 2 for usage
@@ -230,7 +231,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Project | `settings [width] [height] [fps] [sampleRate] [background]` |
 | Tracks | `track.add KIND [NAME]`, `track.set TRACK [name] [muted] [hidden] [locked]`, `track.move TRACK INDEX`, `track.remove TRACK` |
 | Media | `media.import PATH`, `media.list`, `media.inspect MEDIA [sheet] [count] [threshold]`, `media.transcribe MEDIA [model] [language] [force]`, `transcript.get MEDIA [start] [end] [words]`, `transcript.find TEXT [media]`, `media.remove MEDIA` |
-| Clips | `clip.bounds CLIP [TIME]`, `text.measure TEXT [size] [font]`, `clip.add KIND TRACK START DURATION [NAME] [PROPS]`, `clip.media MEDIA [START] [TRACK] [AUDIOTRACK]`, `clip.get CLIP [TIME]`, `clip.move CLIP START [TRACK]`, `clip.trim CLIP START DURATION`, `clip.split CLIP TIME`, `clip.speed`, `clip.rename`, `clip.unlink`, `clip.remove` |
+| Clips | `clip.bounds CLIP [TIME]`, `text.measure TEXT [size] [font]`, `clip.add KIND TRACK START DURATION [NAME] [PROPS] [insert]`, `clip.media MEDIA [START] [TRACK] [AUDIOTRACK] [insert]`, `clip.get CLIP [TIME]`, `clip.move CLIP START [TRACK]`, `clip.trim CLIP START DURATION [ripple]`, `clip.split CLIP TIME`, `clip.speed`, `clip.rename`, `clip.unlink`, `clip.remove CLIP [ripple]`, `close-gaps [start] [end]` |
 | Properties | `prop.set TARGET NAME VALUE`, `prop.key TARGET NAME TIME VALUE [EASE]`, `prop.unkey TARGET NAME TIME`, `prop.expr TARGET NAME EXPR`, `prop.get TARGET NAME [TIME]` |
 | Effects | `effect.add TARGET TYPE [INDEX]`, `effect.enable EFFECT [ENABLED]`, `effect.move EFFECT DELTA`, `effect.remove EFFECT` |
 | Transitions | `transition.add A B [TYPE] [DURATION]`, `transition.set TR [TYPE] [DURATION]`, `transition.curve TR CURVE`, `transition.remove TR` |
@@ -248,6 +249,16 @@ Notes:
   `prop.set` replaces keys or an expression with a constant.
 - Linked media clips move, trim, split, and delete together. Pass
   `linked=false` to edit one side only.
+- Ripple edits keep the timeline packed. `clip.remove CLIP ripple=true`
+  pulls later clips left by the removed time. `clip.trim ... ripple=true`
+  shifts later clips by the change in end time. `insert=true` on `clip.add`
+  or `clip.media` pushes later clips right, and splits a clip that spans the
+  start on the same track. `close-gaps` removes time where no track has a
+  clip. A ripple shifts clips that start at or after the edit point on every
+  track, and markers there too. It fails when a clip on a locked track would
+  shift, or when another clip starts inside removed time.
+- To place clips end to end, start each at the previous one's edge:
+  `clip.add solid V1 intro.end 3 bg`.
 - `transition.curve` takes an ease name or a JSON key list such as
   `'[{"t":0,"v":0},{"t":1,"v":1,"interp":"linear"}]'`.
 - `export` writes MP4 (H.264 and AAC) or, for a `.wav` path, audio only. It

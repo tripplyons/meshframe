@@ -47,6 +47,23 @@ void renameClip(Project& p, Id clip, std::string name);
 void setClipSpeed(Project& p, Id clip, double speed);
 void unlinkClip(Project& p, Id clip);
 
+// Ripple edits shift every clip that starts at or after the edit point, on
+// all tracks, and the markers there too. A clip that starts before the point
+// stays, even when it runs past it. Shifting a clip on a locked track fails.
+//
+// Removes the clip (and its linked clips) and pulls later clips left by the
+// time it covered. Fails when another clip starts inside that time.
+void rippleRemoveClip(Project& p, Id clip, bool withLinked = true);
+// Makes room for clips just added at one start: later clips move right by
+// their length. A clip that spans the start on the same track is split first.
+void rippleInsert(Project& p, const std::vector<Id>& clips);
+// Trims like trimClip, then shifts the clips after the old end by the
+// change in end time.
+void rippleTrimClip(Project& p, Id clip, double start, double duration, bool withLinked = true);
+// Removes times between start and end where no track has a clip. Returns
+// the removed ranges as [start, end) pairs in the original timing.
+std::vector<std::pair<double, double>> closeGaps(Project& p, double start, double end);
+
 // Properties live on clips, effects, and transitions. The target id names one.
 PropertyMap& propsOf(Project& p, Id target);
 std::vector<PropSpec> specsOf(const Project& p, Id target);

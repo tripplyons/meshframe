@@ -31,6 +31,7 @@ std::string formatTimecode(double seconds, double fps) {
 
 std::optional<double> parseTime(std::string_view s, double fps) {
     if (s.starts_with('@')) return std::nullopt;
+    if (s.ends_with('s')) return parseNumber(s.substr(0, s.size() - 1));
     if (s.ends_with('f')) {
         auto frames = parseNumber(s.substr(0, s.size() - 1));
         if (!frames || fps <= 0) return std::nullopt;
