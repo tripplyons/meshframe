@@ -1,11 +1,11 @@
 ---
 name: meshframe
-description: Edit video and audio in meshframe through its CLI, either in a running editor session or headless on a project file. Use when asked to build, change, inspect, render, or export a meshframe project, or to drive the meshframe GUI.
+description: Create and edit video, audio, and vector animations in meshframe through its CLI, in a running editor or headless project. Use for shapes, SVG paths, stroke reveals, morphs, motion paths, effects, rendering, export, and driving the meshframe GUI.
 ---
 
 # meshframe
 
-meshframe is a video editor in which every property is reactive. A property is
+meshframe is a video and vector animation editor in which every property is reactive. A property is
 a constant, a keyframe curve, or a Lua expression, and expressions can read
 time, signals, and other properties. The editor keeps a dependency graph of
 these values and recomputes only what changed. `meshframe-cli` runs the same
@@ -35,6 +35,20 @@ brew install cmake ninja sdl3 luajit ffmpeg freetype libxml2 nlohmann-json fmt g
 scripts/build-macos-app.sh
 ditto build-app/meshframe.app /Applications/meshframe.app
 ```
+
+For features built from a source checkout, use that checkout's binaries:
+
+```sh
+cmake --build build -j 6
+./build/meshframe-cli --project animation.mfproj help path.import
+./build/meshframe-cli --project animation.mfproj schema clips
+```
+
+The installed app can be older than the checkout. An open editor executes
+commands with its own binary, even when you call a newer CLI. Check its
+`schema clips` for `path` and `motionPath` before editing. If it lacks them,
+use a separate project with the source-built editor or headless CLI. Preserve
+any existing editor session and its unsaved work.
 
 ## Choose a session
 
@@ -297,7 +311,9 @@ Notes:
 
 ## Shapes and path animation
 
-Use `clip.add path` for vector objects. Choose `shape=rectangle`, `ellipse`,
+Use `clip.add path` for vector objects. These primitives support Manim-like
+animation; they do not execute Manim Python scenes. Run `schema clips` for
+current defaults and `help path.import` for import arguments. Choose `shape=rectangle`, `ellipse`,
 `line`, or `triangle`, with `width` and `height` in local pixels. Choose
 `shape=path` and set `path` to SVG path data for custom geometry. Coordinates
 are relative to the object's origin; positive y points down. The clip origin
@@ -309,7 +325,10 @@ transparent paint. A nonempty `path` overrides the procedural `shape`.
 
 `path.import drawing.svg V2 0 4` creates one editable clip per SVG element,
 in paint order, as one undo step. It embeds geometry and paint in the project.
-The original file is not required for rendering. The importer applies SVG
+The command returns an array of clip objects, including their IDs and names.
+Use those IDs for later edits when an import produces several clips. A supplied
+name becomes `NAME 1`, `NAME 2`, and so on for multiple elements. Import failure
+leaves the project unchanged. The original file is not required for rendering. The importer applies SVG
 viewBox scaling and `preserveAspectRatio` alignment, then centers the viewport
 at the clip origin. Without explicit viewport dimensions, it uses the viewBox
 size. It retains geometry outside the viewport without clipping, including
@@ -352,6 +371,18 @@ appears when the full stroke is visible (`trimStart=0`, `trimEnd=1`).
 from 0 to 1 to interpolate sampled points along corresponding contours.
 Contour counts and open/closed status must match. Contour order, direction,
 and start points determine correspondence. Use fill/opacity keys for fades.
+
+For example, morph two closed triangles with corresponding vertices:
+
+```sh
+meshframe-cli clip.add path V2 0 4 morphing 'props={"path":"M -80 60 L 0 -60 L 80 60 Z","targetPath":"M -100 40 L 0 -100 L 100 40 Z","fill":"#65d5d0"}'
+meshframe-cli prop.key morphing morph 0 0
+meshframe-cli prop.key morphing morph 3 1 ease-in-out
+```
+
+These examples target the selected session. For a headless project, add
+`--project animation.mfproj` before each command. Use a persistent session or
+`--batch -` when edits must share an undo history.
 
 All visual clips, including text and media, accept `motionPath`,
 `motionProgress`, and `motionRotate`. Positions along the path add to `x`

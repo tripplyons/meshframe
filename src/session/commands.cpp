@@ -932,7 +932,7 @@ void Commands::registerBuiltins() {
     // ---- clips ----
     add({"clip.add", "Add a text, solid, path, generator, or synth clip",
          {req("kind", "string", "text, solid, path, generator, synth"), req("track", "id"), req("start", "time"),
-          req("duration", "time"), opt("name", "string"), opt("props", "json", "object of property name to value"),
+          req("duration", "time"), opt("name", "string"), opt("props", "json", "property object; for path clips use shape, path, fill, stroke, width, height; see schema clips"),
           opt("insert", "bool", "push later clips right to make room")},
          [edit](A a, C c) -> json {
              auto kind = parseClipKind(a["kind"].get<std::string>());
@@ -953,8 +953,10 @@ void Commands::registerBuiltins() {
              });
              return clipToJson(*c.session.project().findClip(id));
          }});
-    add({"path.import", "Import SVG or raw .path/.txt paths as editable clips in paint order",
-         {req("path", "path"), req("track", "id"), req("start", "time"), req("duration", "time"), opt("name", "string")},
+    add({"path.import", "Import SVG or raw .path/.txt geometry as editable clips in paint order; embeds geometry and paint, returns clip objects, and undoes as one step",
+         {req("path", "path", "SVG geometry or raw SVG path data; unsupported SVG features fail without edits"),
+          req("track", "id", "destination video track"), req("start", "time", "shared timeline start"),
+          req("duration", "time", "shared clip duration"), opt("name", "string", "name prefix; multiple elements receive numbered names")},
          [edit](A a, C c) -> json {
              auto paths = importPaths(a["path"].get<std::string>());
              Id track = resolveTrack(c.session.project(), a["track"]);
