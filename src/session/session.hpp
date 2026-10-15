@@ -17,6 +17,15 @@
 
 namespace mf {
 
+// The project as it was after one change, kept so clients can ask what
+// changed since a revision.
+struct Revision {
+    uint64_t number = 0;
+    std::string label;   // the undo label, or "undo: ...", "open", and so on
+    std::string source;  // "gui" or "cli"
+    Project project;
+};
+
 struct LogLine {
     enum class Level { Info, Warn, Error } level = Level::Info;
     std::string text;
@@ -47,6 +56,12 @@ public:
     // Effective project (with script clips), synced with the latest edits.
     Evaluator& evaluator();
     uint64_t revision() const { return revision_; }
+    // The latest revisions, oldest first; the last is the current one.
+    static constexpr size_t kRevisionsKept = 200;
+    const std::deque<Revision>& revisions() const { return revisions_; }
+    // Changes are attributed to the source set when they happen ("gui" by
+    // default). Returns the previous source.
+    std::string setSource(std::string source);
 
     // Runs fn on a copy of the project; commits it as one undo step if fn
     // returns normally. EditError and other exceptions propagate unchanged.
@@ -109,7 +124,7 @@ public:
     std::vector<std::function<bool()>> pollers;
 
 private:
-    void changed();
+    void changed(const std::string& label);
 
     Project project_;
     History history_;
@@ -125,6 +140,8 @@ private:
     };
     std::optional<BatchStart> batch_;
     uint64_t revision_ = 1, savedRevision_ = 1, evaluated_ = 0;
+    std::string source_ = "gui";
+    std::deque<Revision> revisions_;
     std::string path_;
     std::unique_ptr<MediaCache> cache_;
     std::unique_ptr<Evaluator> evaluator_;

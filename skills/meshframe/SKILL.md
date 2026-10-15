@@ -89,7 +89,7 @@ lines as one `batch` request. They become one undo step, and if any command
 fails, none of them take effect. The reply holds each command's result in
 order, or an error naming the command that failed. A batch cannot run
 `undo`, `redo`, `new`, `open`, `save`, `export`, `export.cancel`, `play`,
-`pause`, `toggle`, `media.transcribe`, or `ui.*` commands. Refer to clips made in the same batch
+`pause`, `toggle`, `media.transcribe`, `wait`, or `ui.*` commands. Refer to clips made in the same batch
 by name.
 
 ```sh
@@ -237,7 +237,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Markers | `marker.add [NAME] [TIME]`, `marker.move MARKER TIME`, `marker.rename MARKER NAME`, `marker.remove MARKER`, `show markers` |
 | Reactive | `signal.set NAME value=V` or `expr=E`, `signal.remove NAME`, `script.get`, `script.set [SOURCE] [file=PATH]`, `eval CODE [TIME]`, `graph [TIME]`, `errors` |
 | Transport | `play`, `pause`, `toggle`, `seek TIME`, `time` |
-| History | `undo`, `redo`, `history`, `batch COMMANDS [LABEL]` |
+| History | `undo`, `redo`, `history`, `batch COMMANDS [LABEL]`, `diff SINCE`, `wait [since] [timeout]` |
 | Output | `check [step] [lufs] [truePeak]`, `audio.analyze [start] [end] [clip] [media] [step] [silence] [waveform] [width]`, `frame PATH [TIME] [WIDTH] [HEIGHT]`, `sheet PATH [start] [end] [count] [every] [clip] [width] [columns]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
 | Selection | `select [clips] [track] [media] [effect] [transition] [prop]` |
 | GUI | `ui.state`, `ui.space N`, `ui.swap N`, `ui.layout NAME [space]`, `ui.pane N VIEW [space]`, `ui.actions`, `ui.action ID`, `ui.dialog CHOICE`, `ui.bind ID [KEYS]`, `ui.theme [SLOT] [COLOR]`, `ui.settings [set]`, `ui.screenshot PATH` |
@@ -254,6 +254,15 @@ Notes:
   runs in the background. Use `wait=true` to reply when it finishes, or poll
   `export.status`. `crf` is 0 to 51, and lower means higher quality.
 - `select` changes what the GUI's inspector, curves, and effects views show.
+- Each change raises the `revision` in `status`. `diff SINCE` lists the
+  objects added, removed, and changed since that revision, with the old and
+  new value of each changed field, and the label and source (`gui` or `cli`)
+  of each revision in between. The session keeps the last 200 revisions.
+- `wait [since] [timeout]` replies when the revision passes `since` (default:
+  the current one), with the same diff. After `timeout` seconds (default 30)
+  it replies with `timedOut: true`. Use it to see what the user changes in
+  the GUI: read `revision` from `status`, then call `wait` in a loop with the
+  last reply's `revision`.
 
 ## Working with footage
 

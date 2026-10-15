@@ -324,6 +324,7 @@ int runHeadless(const Options& o) {
     if (!o.noSave)
         if (auto s = sessionWithFile(o.project)) return runRemoteOn(o, s->socket);
     Session session;
+    session.setSource("cli");
     Commands commands(session);
     std::string err;
     namespace fs = std::filesystem;
@@ -353,6 +354,7 @@ int serveLoop(const std::string& file, double idleTimeout, int ready) {
         close(ready);
     };
     Session session;
+    session.setSource("cli");
     Commands commands(session);
     std::string err;
     bool opened = std::filesystem::exists(file) ? session.open(file, &err) : session.save(file, &err);

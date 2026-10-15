@@ -11,6 +11,7 @@
 #include "render/raster.hpp"
 #include "render/sheet.hpp"
 #include "render/waveform.hpp"
+#include "session/diff.hpp"
 #include "session/inspect.hpp"
 #include "script/lua_runtime.hpp"
 
@@ -311,6 +312,12 @@ void Commands::run(const json& request, Reply reply) {
         else
             reply({{"ok", true}, {"result", std::move(result)}});
     }, request.value("cwd", ""));
+    std::string source = session_.setSource("cli");
+    struct Restore {
+        Session& s;
+        std::string source;
+        ~Restore() { s.setSource(std::move(source)); }
+    } restore{session_, std::move(source)};
     try {
         json args = normalize(it->second, request);
         json result = it->second.fn(args, ctx);
@@ -334,6 +341,25 @@ json Commands::runSync(const json& request) {
 // ---- builtin commands -----------------------------------------------------------
 
 namespace {
+
+// The changes from revision `since` to the current one, with the label and
+// source of each revision in between.
+json revisionDiff(const Session& s, int64_t since) {
+    const auto& revs = s.revisions();
+    if (since > int64_t(s.revision()))
+        throw EditError(fmt::format("revision {} is newer than the current revision {}", since, s.revision()));
+    auto base = std::ranges::find_if(revs, [&](const Revision& r) { return int64_t(r.number) == since; });
+    if (base == revs.end())
+        throw EditError(fmt::format("revision {} is no longer kept; the oldest is {}", since, revs.front().number));
+    json out = diffProjects(base->project, s.project());
+    json steps = json::array();
+    for (auto it = std::next(base); it != revs.end(); ++it)
+        steps.push_back({{"revision", it->number}, {"label", it->label}, {"source", it->source}});
+    out["since"] = since;
+    out["revision"] = s.revision();
+    out["revisions"] = std::move(steps);
+    return out;
+}
 
 ArgSpec req(std::string name, std::string type, std::string help = {}) { return {std::move(name), std::move(type), true, std::move(help)}; }
 ArgSpec opt(std::string name, std::string type, std::string help = {}) { return {std::move(name), std::move(type), false, std::move(help)}; }
@@ -590,7 +616,7 @@ void Commands::registerBuiltins() {
              // These change files, history, or playback, or reply later.
              auto allowed = [](const std::string& name) {
                  static const std::set<std::string> excluded = {"batch", "undo", "redo", "new", "open", "save", "export",
-                                                                "export.cancel", "play", "pause", "toggle", "media.transcribe"};
+                                                                "export.cancel", "play", "pause", "toggle", "media.transcribe", "wait"};
                  return !excluded.contains(name) && !name.starts_with("ui.");
              };
              for (size_t i = 0; i < requests.size(); ++i) {
@@ -614,6 +640,33 @@ void Commands::registerBuiltins() {
              std::string label = get<std::string>(a, "label", "batch");
              bool edited = s.commitBatch(label);
              return {{"results", results}, {"undo", edited ? json(label) : json()}};
+         }});
+    add({"diff", "Show what changed since a revision: added, removed, and changed objects",
+         {req("since", "int", "a revision from status, diff, or wait")},
+         [](A a, C c) -> json { return revisionDiff(c.session, a["since"].get<int64_t>()); }});
+    add({"wait", "Wait until the project changes after a revision, then show the diff",
+         {opt("since", "int", "default: the current revision"), opt("timeout", "number", "seconds, default 30")},
+         [](A a, C c) -> json {
+             Session& s = c.session;
+             int64_t since = get<int64_t>(a, "since", int64_t(s.revision()));
+             double timeout = std::clamp(get<double>(a, "timeout", 30.0), 0.0, 3600.0);
+             json now = revisionDiff(s, since);  // checks that `since` is known
+             if (int64_t(s.revision()) > since) return now;
+             auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout);
+             Reply reply = c.defer();
+             s.pollers.push_back([&s, since, deadline, reply] {
+                 bool changed = int64_t(s.revision()) > since;
+                 if (!changed && std::chrono::steady_clock::now() < deadline) return false;
+                 try {
+                     json r = revisionDiff(s, since);
+                     r["timedOut"] = !changed;
+                     reply(std::move(r));
+                 } catch (const std::exception& e) {
+                     reply({{"error", e.what()}});
+                 }
+                 return true;
+             });
+             return nullptr;
          }});
     add({"status", "Session summary: file, time, size, counts, errors, export", {}, [](A, C c) -> json {
              Session& s = c.session;
@@ -780,6 +833,7 @@ void Commands::registerBuiltins() {
                      reply({{"error", err}});
                      return true;
                  }
+                 std::string source = s.setSource("cli");
                  try {
                      auto shared = std::make_shared<const Transcript>(std::move(*transcript));
                      s.apply("transcribe", [&](Project& p) { edit::setTranscript(p, id, shared); });
@@ -787,6 +841,7 @@ void Commands::registerBuiltins() {
                  } catch (const std::exception& e) {
                      reply({{"error", e.what()}});
                  }
+                 s.setSource(std::move(source));
                  return true;
              });
              return nullptr;

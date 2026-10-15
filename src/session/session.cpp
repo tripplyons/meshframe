@@ -20,6 +20,7 @@ Session::Session(std::unique_ptr<AudioSink> sink)
       sink_(std::move(sink)),
       player_(std::make_unique<Player>(*mixer_, sink_.get())) {
     evaluator_->onLog = [this](std::string line) { log(LogLine::Level::Info, std::move(line)); };
+    revisions_.push_back({revision_, "new", source_, project_});
 }
 
 Session::~Session() {
@@ -38,9 +39,16 @@ Evaluator& Session::evaluator() {
     return *evaluator_;
 }
 
-void Session::changed() {
+void Session::changed(const std::string& label) {
     ++revision_;
     pruneSelection();
+    revisions_.push_back({revision_, label, source_, project_});
+    while (revisions_.size() > kRevisionsKept) revisions_.pop_front();
+}
+
+std::string Session::setSource(std::string source) {
+    std::swap(source, source_);
+    return source;
 }
 
 void Session::apply(const std::string& label, const std::function<void(Project&)>& fn) {
@@ -49,7 +57,7 @@ void Session::apply(const std::string& label, const std::function<void(Project&)
     fn(next);
     history_.push(label, std::move(project_));
     project_ = std::move(next);
-    changed();
+    changed(label);
 }
 
 void Session::beginGesture(const std::string& label) {
@@ -65,7 +73,7 @@ void Session::updateGesture(const std::function<void(Project&)>& fn) {
     fn(next);
     project_ = std::move(next);
     gestureChanged_ = true;
-    changed();
+    changed(gestureLabel_);
 }
 
 void Session::endGesture() {
@@ -99,7 +107,7 @@ void Session::rollbackBatch() {
     history_ = std::move(batch_->history);
     selection = std::move(batch_->selection);
     if (edited) {
-        changed();
+        changed("rollback");
         if (batch_->clean) savedRevision_ = revision_;
     }
     batch_.reset();
@@ -109,7 +117,7 @@ bool Session::undo() {
     if (gesture_) endGesture();
     if (!history_.canUndo()) return false;
     std::string label = history_.undo(project_);
-    changed();
+    changed("undo: " + label);
     log(LogLine::Level::Info, "undo: " + label);
     return true;
 }
@@ -118,7 +126,7 @@ bool Session::redo() {
     if (gesture_) endGesture();
     if (!history_.canRedo()) return false;
     std::string label = history_.redo(project_);
-    changed();
+    changed("redo: " + label);
     log(LogLine::Level::Info, "redo: " + label);
     return true;
 }
@@ -129,7 +137,7 @@ void Session::newProject() {
     history_.clear();
     path_.clear();
     selection = {};
-    changed();
+    changed("new");
     savedRevision_ = revision_;
 }
 
@@ -142,7 +150,7 @@ bool Session::open(const std::string& path, std::string* err) {
         path_ = std::filesystem::absolute(path).string();
         selection = {};
         player_->seek(0);
-        changed();
+        changed("open");
         savedRevision_ = revision_;
         log(LogLine::Level::Info, "opened " + path_);
         return true;

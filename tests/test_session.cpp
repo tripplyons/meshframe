@@ -755,3 +755,80 @@ TEST(Commands, MediaTranscribeRunsWhisper) {
     EXPECT_EQ(ok(c, {"media.transcribe", "speech.aiff"})["words"], r["words"]);
     EXPECT_EQ(s.history().undoLabels().size(), steps);
 }
+
+TEST(Commands, DiffReportsChangesSinceARevision) {
+    Session s;
+    Commands c(s);
+    ok(c, {"clip.add", "solid", "V1", "0", "4", "bg"});
+    ok(c, {"clip.add", "solid", "V1", "4", "2", "tail"});
+    int64_t since = ok(c, {"status"})["revision"];
+
+    ok(c, {"prop.set", "bg", "opacity", "0.5"});
+    ok(c, {"clip.remove", "tail"});
+    ok(c, {"marker.add", "intro", "1"});
+    s.apply("rename", [](Project& p) { p.name = "film"; });  // as the GUI would
+
+    json d = ok(c, {"diff", std::to_string(since)});
+    EXPECT_EQ(d["since"], since);
+    EXPECT_EQ(d["revision"], s.revision());
+    ASSERT_EQ(d["added"].size(), 1u);
+    EXPECT_EQ(d["added"][0]["kind"], "marker");
+    EXPECT_EQ(d["added"][0]["name"], "intro");
+    ASSERT_EQ(d["removed"].size(), 1u);
+    EXPECT_EQ(d["removed"][0]["name"], "tail");
+    ASSERT_EQ(d["changed"].size(), 2u);
+    EXPECT_EQ(d["changed"][0]["kind"], "project");
+    EXPECT_EQ(d["changed"][0]["fields"]["name"]["new"], "film");
+    EXPECT_EQ(d["changed"][1]["name"], "bg");
+    EXPECT_EQ(d["changed"][1]["fields"]["props.opacity"]["old"], 1);
+    EXPECT_EQ(d["changed"][1]["fields"]["props.opacity"]["new"], 0.5);
+
+    ASSERT_EQ(d["revisions"].size(), 4u);
+    EXPECT_EQ(d["revisions"][0]["source"], "cli");
+    EXPECT_EQ(d["revisions"][3]["label"], "rename");
+    EXPECT_EQ(d["revisions"][3]["source"], "gui");
+
+    // Undo is a change of its own, and the current revision has no changes.
+    ok(c, {"undo"});
+    json u = ok(c, {"diff", std::to_string(int64_t(s.revision()) - 1)});
+    EXPECT_EQ(u["revisions"][0]["label"], "undo: rename");
+    EXPECT_EQ(u["changed"][0]["fields"]["name"]["new"], "untitled");
+    json none = ok(c, {"diff", std::to_string(s.revision())});
+    EXPECT_TRUE(none["added"].empty() && none["removed"].empty() && none["changed"].empty());
+
+    // Only the last revisions are kept.
+    for (size_t i = 0; i < Session::kRevisionsKept; ++i) ok(c, {"clip.move", "bg", std::to_string(i % 2)});
+    EXPECT_NE(fails(c, {"diff", std::to_string(since)}).find("the oldest is " + std::to_string(s.revisions().front().number)),
+              std::string::npos);
+    EXPECT_NE(fails(c, {"diff", std::to_string(s.revision() + 1)}).find("newer"), std::string::npos);
+}
+
+TEST(Commands, WaitRepliesWhenTheProjectChanges) {
+    Session s;
+    Commands c(s);
+    std::optional<json> reply;
+    auto wait = [&](json args) {
+        reply.reset();
+        c.run({{"cmd", "wait"}, {"args", std::move(args)}}, [&](json r) { reply = std::move(r); });
+    };
+
+    wait(json::object());
+    s.tick();
+    EXPECT_FALSE(reply);
+    s.apply("rename", [](Project& p) { p.name = "film"; });
+    s.tick();
+    ASSERT_TRUE(reply);
+    EXPECT_FALSE((*reply)["result"]["timedOut"]);
+    EXPECT_EQ((*reply)["result"]["changed"][0]["fields"]["name"]["new"], "film");
+
+    // An edit made before the wait replies at once.
+    wait({{"since", 1}});
+    ASSERT_TRUE(reply);
+    EXPECT_EQ((*reply)["result"]["revisions"][0]["label"], "rename");
+
+    wait({{"timeout", 0}});
+    s.tick();
+    ASSERT_TRUE(reply);
+    EXPECT_TRUE((*reply)["result"]["timedOut"]);
+    EXPECT_TRUE((*reply)["result"]["revisions"].empty());
+}
