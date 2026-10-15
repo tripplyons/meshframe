@@ -95,6 +95,7 @@ public:
         ui.painter.pushClip(lanes_);
         drawLanes(env);
         ui.painter.popClip();
+        drawMarkers(env);
         drawPlayhead(env);
         if (p.clips.empty() && !ui.dragging()) startPanel(env, lanes_, "No clips. Drag media here, or import some.");
         drawMenus(env);
@@ -412,6 +413,27 @@ private:
             auto ids = edit::addMediaClips(pr, media, t, vtrack, atrack);
             env.session.selection.clips = ids;
         });
+    }
+
+    // A line through the ruler and lanes, a notch on the ruler, and a name tag
+    // at the top of the lanes.
+    void drawMarkers(ViewEnv& env) {
+        Context& ui = env.ui;
+        Color line = ui.col(Slot::Marker);
+        Color faint = line;
+        faint.a *= 0.45f;
+        ui.painter.pushClip({lanes_.x, ruler_.y, lanes_.w, lanes_.b() - ruler_.y});
+        for (const Marker& m : env.session.project().markers) {
+            float x = std::round(xAt(m.time));
+            if (x < lanes_.x - ui.dp(200) || x >= lanes_.r()) continue;
+            float r = ui.dp(4);
+            ui.painter.triangle({x - r, ruler_.b() - r}, {x + r + 1, ruler_.b() - r}, {x, ruler_.b()}, line);
+            ui.painter.vline(x, ruler_.b(), lanes_.b(), faint);
+            Rect tag{x, lanes_.y, ui.painter.measure(m.name) + ui.dp(8), ui.rowHeight() * 0.8f};
+            ui.painter.fill(tag, line);
+            ui.painter.textIn(tag.inset(ui.dp(4), 0), m.name, ui.col(Slot::Panel));
+        }
+        ui.painter.popClip();
     }
 
     void drawPlayhead(ViewEnv& env) {

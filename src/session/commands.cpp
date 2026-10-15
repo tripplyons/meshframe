@@ -67,6 +67,7 @@ json specToJson(const CommandSpec& spec) {
 // Parses a time in seconds from "2.5", "90f" (frames), "1:15.5" or
 // "1:02:03.5" (clock), or "00:00:03:12" (HH:MM:SS:FF timecode).
 std::optional<double> parseTime(std::string_view s, double fps) {
+    if (s.starts_with('@')) return std::nullopt;
     if (s.ends_with('f')) {
         auto frames = parseNumber(s.substr(0, s.size() - 1));
         if (!frames || fps <= 0) return std::nullopt;
@@ -96,7 +97,22 @@ std::optional<double> parseTime(std::string_view s, double fps) {
     return parts.size() == 3 ? v[0] * 3600 + v[1] * 60 + v[2] : v[0] * 60 + v[1];
 }
 
-json coerceArg(const ArgSpec& a, const json& v, const std::string& cwd, double fps) {
+// Parses "@name", "@name+2f", or "@name-0:01" as a marker's timeline time
+// plus an offset. Returns nullopt when s does not start with @.
+std::optional<double> parseMarkerTime(std::string_view s, const Project& p) {
+    if (!s.starts_with('@')) return std::nullopt;
+    size_t sign = s.find_first_of("+-", 1);
+    std::string name(s.substr(1, sign == std::string_view::npos ? sign : sign - 1));
+    const Marker* m = p.findMarkerByName(name);
+    if (!m) throw EditError(fmt::format("no marker named '{}'", name));
+    if (sign == std::string_view::npos) return m->time;
+    auto offset = parseTime(s.substr(sign + 1), p.settings.fps);
+    if (!offset) throw EditError(fmt::format("bad offset in '{}'", s));
+    return m->time + (s[sign] == '-' ? -*offset : *offset);
+}
+
+json coerceArg(const ArgSpec& a, const json& v, const std::string& cwd, const Project& project) {
+    double fps = project.settings.fps;
     auto fail = [&]() -> json { throw EditError(fmt::format("argument {}: expected {}, got {}", a.name, a.type, text(v))); };
     const std::string& t = a.type;
     if (t == "number") {
@@ -105,10 +121,14 @@ json coerceArg(const ArgSpec& a, const json& v, const std::string& cwd, double f
             if (auto d = parseNumber(v.get<std::string>())) return *d;
         return fail();
     }
-    if (t == "time") {
+    if (t == "time" || t == "keytime") {
         if (v.is_number()) return v;
-        if (v.is_string())
+        if (v.is_string()) {
+            // A clip-local key time keeps a marker's timeline time apart, so the
+            // command can subtract its target's start.
+            if (auto m = parseMarkerTime(v.get<std::string>(), project)) return t == "time" ? json(*m) : json{{"timeline", *m}};
             if (auto d = parseTime(v.get<std::string>(), fps)) return *d;
+        }
         return fail();
     }
     if (t == "int") {
@@ -190,6 +210,17 @@ Id resolveMedia(const Project& p, const json& v) {
     throw EditError(fmt::format("no media named '{}'", name));
 }
 
+Id resolveMarker(const Project& p, const json& v) {
+    if (auto id = idOf(v)) {
+        if (p.findMarker(*id)) return *id;
+        throw EditError(fmt::format("no marker {}", *id));
+    }
+    std::string name = text(v);
+    if (name.starts_with('@')) name.erase(0, 1);
+    if (const Marker* m = p.findMarkerByName(name)) return m->id;
+    throw EditError(fmt::format("no marker named '{}'", name));
+}
+
 Id resolveTarget(const Project& p, const json& v) {
     if (auto id = idOf(v)) {
         if (p.findClip(*id) || p.findTransition(*id) || findEffectIn(p, *id)) return *id;
@@ -269,7 +300,7 @@ json Commands::normalize(const CommandSpec& spec, const json& request) const {
     for (auto it = raw.begin(); it != raw.end(); ++it) {
         auto a = std::ranges::find(spec.args, it.key(), &ArgSpec::name);
         if (a == spec.args.end()) throw EditError(fmt::format("unknown argument '{}'; usage: {}", it.key(), usage(spec)));
-        args[it.key()] = coerceArg(*a, it.value(), cwd, session_.project().settings.fps);
+        args[it.key()] = coerceArg(*a, it.value(), cwd, session_.project());
     }
     for (const auto& a : spec.args)
         if (a.required && !args.contains(a.name))
@@ -421,6 +452,18 @@ const Property& propOf(const Project& p, Id target, const std::string& name) {
     auto it = props.find(name);
     if (it == props.end()) throw EditError(fmt::format("no property '{}'", name));
     return it->second;
+}
+
+// A keytime argument in clip-local seconds. Marker times are timeline times,
+// so they are measured from the start of the target's clip or transition window.
+double keyTime(const Project& p, Id target, const json& v) {
+    if (!v.is_object()) return v.get<double>();
+    double t = v["timeline"];
+    const Clip* owner = p.findClip(target);
+    if (!owner) findEffectIn(p, target, &owner);
+    if (owner) return t - owner->start;
+    if (const Transition* tr = p.findTransition(target)) return t - Evaluator::window(p, *tr).first;
+    return t;
 }
 
 Curve curveArg(const json& v) {
@@ -578,12 +621,13 @@ void Commands::registerBuiltins() {
                      {"scriptClips", ev.project().clips.size() - p.clips.size()},
                      {"media", p.media.size()},
                      {"transitions", p.transitions.size()},
+                     {"markers", p.markers.size()},
                      {"errors", errorsJson(s, s.time())},
                      {"undo", s.history().undoLabels().empty() ? json() : json(s.history().undoLabels().back())},
                      {"export", exportStatus(s)}};
          }});
     add({"show", "Show part of the project as JSON",
-         {opt("what", "string", "summary (default), project, tracks, clips, media, transitions, signals, master, settings, script, selection")},
+         {opt("what", "string", "summary (default), project, tracks, clips, media, transitions, signals, markers, master, settings, script, selection")},
          [](A a, C c) -> json {
              Session& s = c.session;
              const Project& p = s.project();
@@ -601,6 +645,7 @@ void Commands::registerBuiltins() {
              if (what == "transitions") return list(p.transitions, transitionToJson);
              if (what == "signals")
                  return list(p.signals, [](const SignalDef& d) { return json{{"id", d.id}, {"name", d.name}, {"value", propertyToJson(d.value)}}; });
+             if (what == "markers") return list(p.markers, markerToJson);
              if (what == "master") return list(p.masterAudio, effectToJson);
              if (what == "settings") return settingsToJson(p.settings);
              if (what == "script") return p.script;
@@ -798,12 +843,12 @@ void Commands::registerBuiltins() {
              return {{"errors", errorsJson(c.session, c.session.time())}};
          }});
     add({"prop.key", "Add or replace a keyframe at clip-local time",
-         {req("target", "id"), req("name", "string"), req("time", "time"), req("value", "number"),
+         {req("target", "id"), req("name", "string"), req("time", "keytime"), req("value", "number"),
           opt("ease", "string", "hold, linear, bezier, or a preset like ease-in-out")},
          [edit](A a, C c) -> json {
              Id id = resolveTarget(c.session.project(), a["target"]);
              std::string name = a["name"];
-             double t = a["time"];
+             double t = keyTime(c.session.project(), id, a["time"]);
              std::string ease = get<std::string>(a, "ease", "");
              const EasePreset* preset = ease.empty() || parseInterp(ease) ? nullptr : findEase(ease);
              if (!ease.empty() && !preset && !parseInterp(ease)) throw EditError(fmt::format("unknown ease '{}'", ease));
@@ -818,10 +863,11 @@ void Commands::registerBuiltins() {
              });
              return propertyToJson(propOf(c.session.project(), id, name));
          }});
-    add({"prop.unkey", "Remove the keyframe at clip-local time", {req("target", "id"), req("name", "string"), req("time", "time")},
+    add({"prop.unkey", "Remove the keyframe at clip-local time", {req("target", "id"), req("name", "string"), req("time", "keytime")},
          [edit](A a, C c) -> json {
              Id id = resolveTarget(c.session.project(), a["target"]);
-             edit(c.session, "remove keyframe", [&](Project& p) { edit::removeKeyframe(p, id, a["name"], a["time"]); });
+             double t = keyTime(c.session.project(), id, a["time"]);
+             edit(c.session, "remove keyframe", [&](Project& p) { edit::removeKeyframe(p, id, a["name"], t); });
              return nullptr;
          }});
     add({"prop.get", "Show a property definition and its value at a time", {req("target", "id"), req("name", "string"), opt("time", "time")},
@@ -905,6 +951,29 @@ void Commands::registerBuiltins() {
              Property prop = a.contains("expr") ? Property::expression(a["expr"]) : Property::of(valueFromJson(a["value"]));
              edit(c.session, "signal " + a["name"].get<std::string>(), [&](Project& p) { edit::setSignal(p, a["name"], prop); });
              return {{"errors", errorsJson(c.session, c.session.time())}};
+         }});
+    add({"marker.add", "Add a timeline marker (at the playhead by default); returns it",
+         {opt("name", "string", "letters, digits, and _; default M1, M2, ..."), opt("time", "time")},
+         [edit](A a, C c) -> json {
+             Id id = 0;
+             double t = get<double>(a, "time", c.session.time());
+             edit(c.session, "add marker", [&](Project& p) { id = edit::addMarker(p, get<std::string>(a, "name", ""), t); });
+             return markerToJson(*c.session.project().findMarker(id));
+         }});
+    add({"marker.move", "Move a marker to a time", {req("marker", "id"), req("time", "time")}, [edit](A a, C c) -> json {
+             Id id = resolveMarker(c.session.project(), a["marker"]);
+             edit(c.session, "move marker", [&](Project& p) { edit::moveMarker(p, id, a["time"]); });
+             return markerToJson(*c.session.project().findMarker(id));
+         }});
+    add({"marker.rename", "Rename a marker", {req("marker", "id"), req("name", "string")}, [edit](A a, C c) -> json {
+             Id id = resolveMarker(c.session.project(), a["marker"]);
+             edit(c.session, "rename marker", [&](Project& p) { edit::renameMarker(p, id, a["name"]); });
+             return markerToJson(*c.session.project().findMarker(id));
+         }});
+    add({"marker.remove", "Remove a marker", {req("marker", "id")}, [edit](A a, C c) -> json {
+             Id id = resolveMarker(c.session.project(), a["marker"]);
+             edit(c.session, "remove marker", [&](Project& p) { edit::removeMarker(p, id); });
+             return nullptr;
          }});
     add({"signal.remove", "Remove a project signal", {req("name", "string")}, [edit](A a, C c) -> json {
              edit(c.session, "remove signal", [&](Project& p) { edit::removeSignal(p, a["name"]); });

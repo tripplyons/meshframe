@@ -80,6 +80,8 @@ in `MESHFRAME_SETTINGS`.
 | Left, Right | Previous or next frame |
 | Shift+Left, Shift+Right | Back or forward one second |
 | Home, End | Go to start or end |
+| Option+Left, Option+Right | Previous or next marker |
+| M | Add a marker at the playhead |
 | Cmd+L | Toggle loop |
 | Cmd+Z, Cmd+Shift+Z | Undo, redo |
 | Cmd+B | Split at the playhead |

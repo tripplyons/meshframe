@@ -14,9 +14,9 @@ using namespace mf::ui;
 
 namespace {
 
-struct Marker : PaneState {
+struct PaneMarker : PaneState {
     int value = 0;
-    explicit Marker(int v) : value(v) {}
+    explicit PaneMarker(int v) : value(v) {}
 };
 
 }  // namespace
@@ -26,7 +26,7 @@ TEST(Workspace, SwitchAndSwapFollow) {
     EXPECT_EQ(ws.current(), 0);
     EXPECT_EQ(ws.space(0).layout, "editor");
     EXPECT_EQ(ws.space(2).layout, "code");
-    ws.space(0).panes[1].state = std::make_unique<Marker>(7);
+    ws.space(0).panes[1].state = std::make_unique<PaneMarker>(7);
 
     ws.switchTo(4);
     EXPECT_EQ(ws.current(), 4);
@@ -39,7 +39,7 @@ TEST(Workspace, SwitchAndSwapFollow) {
     EXPECT_EQ(ws.current(), 2);
     EXPECT_EQ(ws.space(2).layout, "editor");
     EXPECT_EQ(ws.space(0).layout, "code");
-    auto* m = dynamic_cast<Marker*>(ws.space(2).panes[1].state.get());
+    auto* m = dynamic_cast<PaneMarker*>(ws.space(2).panes[1].state.get());
     ASSERT_NE(m, nullptr) << "pane state follows the swap";
     EXPECT_EQ(m->value, 7);
 

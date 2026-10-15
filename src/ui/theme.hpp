@@ -29,6 +29,7 @@ namespace mf::ui {
     X(Ruler, "ruler", 0.130f)                              \
     X(Grid, "grid", 0.165f)                                \
     X(Playhead, "playhead", 0.960f)                        \
+    X(Marker, "marker", 0.720f)                            \
     X(ClipMedia, "clip-media", 0.300f)                     \
     X(ClipAudio, "clip-audio", 0.240f)                     \
     X(ClipText, "clip-text", 0.360f)                       \

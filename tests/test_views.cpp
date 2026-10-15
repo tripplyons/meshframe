@@ -233,3 +233,27 @@ TEST(Views, SettingsColorEditsApplyLiveAndPersist) {
     Settings loaded = Settings::load(path);
     EXPECT_EQ(loaded.theme[Slot::Panel], *parseColor("#204060"));
 }
+
+TEST(Views, MarkerKeysAddAndJump) {
+    ShellHarness h;
+    ok(h, {"ui.layout", "single"});
+    ok(h, {"ui.pane", "1", "timeline"});
+    ok(h, {"clip.add", "solid", "V1", "0", "10"});
+    ok(h, {"seek", "2"});
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_M, 0}));
+    ok(h, {"seek", "5"});
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_M, 0}));
+    json markers = ok(h, {"show", "markers"});
+    ASSERT_EQ(markers.size(), 2u);
+    EXPECT_EQ(markers[0]["name"], "M1");
+    EXPECT_EQ(markers[1]["time"], 5.0);
+
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_LEFT, ModAlt}));
+    EXPECT_DOUBLE_EQ(h.session.time(), 2.0);
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_RIGHT, ModAlt}));
+    EXPECT_DOUBLE_EQ(h.session.time(), 5.0);
+    EXPECT_TRUE(h.shell->handleKey({SDL_SCANCODE_RIGHT, ModAlt}));
+    EXPECT_DOUBLE_EQ(h.session.time(), 5.0);
+    EXPECT_EQ(ok(h, {"ui.state"})["notice"]["text"], "No later marker");
+    h.frame();  // draws the markers
+}

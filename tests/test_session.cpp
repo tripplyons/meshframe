@@ -318,3 +318,52 @@ TEST(Commands, BatchIsOneUndoStepOrNothing) {
     EXPECT_TRUE(ok(cc, {"batch", R"(["status", "show clips"])"})["undo"].is_null());
     EXPECT_TRUE(clean.history().undoLabels().empty());
 }
+
+TEST(Commands, MarkersNameTimes) {
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "fps=30"});
+    json m = ok(c, {"marker.add", "chorus", "2"});
+    EXPECT_EQ(m["name"], "chorus");
+    EXPECT_EQ(m["time"], 2.0);
+    EXPECT_EQ(ok(c, {"marker.add"})["name"], "M1");  // at the playhead, 0
+    EXPECT_NE(fails(c, {"marker.add", "chorus", "3"}).find("exists"), std::string::npos);
+    EXPECT_NE(fails(c, {"marker.add", "2nd", "3"}).find("must use letters"), std::string::npos);
+
+    // Time arguments take @name with an optional offset.
+    json clip = ok(c, {"clip.add", "solid", "V1", "@chorus", "4", "bg"});
+    EXPECT_EQ(clip["start"], 2.0);
+    EXPECT_DOUBLE_EQ(ok(c, {"eval", "t", "@chorus+15f"}).get<double>(), 2.5);
+    EXPECT_DOUBLE_EQ(ok(c, {"eval", "t", "@chorus-0:01"}).get<double>(), 1.0);
+    EXPECT_NE(fails(c, {"seek", "@verse"}).find("no marker named 'verse'"), std::string::npos);
+
+    // Key times are clip-local, so a marker key lands at the marker on the timeline.
+    ok(c, {"marker.add", "drop", "3"});
+    ok(c, {"prop.key", "bg", "opacity", "@drop", "0.25"});
+    EXPECT_EQ(ok(c, {"prop.get", "bg", "opacity"})["property"]["curve"][0]["t"], 1.0);
+    ok(c, {"prop.unkey", "bg", "opacity", "@drop"});
+    EXPECT_EQ(ok(c, {"prop.get", "bg", "opacity"})["mode"], "constant");
+
+    // Expressions and the script read marker.NAME, and follow moves.
+    ok(c, {"prop.expr", "bg", "x", "marker.drop * 10"});
+    EXPECT_EQ(ok(c, {"clip.get", "bg", "2"})["values"]["x"], 30.0);
+    ok(c, {"script.set", "mf.clip{track='V2', kind='solid', name='late', start=marker.drop, duration=1}"});
+    ok(c, {"marker.move", "drop", "3.5"});
+    EXPECT_EQ(ok(c, {"clip.get", "bg", "2"})["values"]["x"], 35.0);
+    EXPECT_EQ(ok(c, {"clip.get", "late"})["start"], 3.5);
+
+    // Markers stay sorted, rename, remove, undo, and save.
+    ok(c, {"marker.rename", "@drop", "bridge"});
+    json markers = ok(c, {"show", "markers"});
+    ASSERT_EQ(markers.size(), 3u);
+    EXPECT_EQ(markers[0]["name"], "M1");
+    EXPECT_EQ(markers[2]["name"], "bridge");
+    ok(c, {"marker.remove", "M1"});
+    ASSERT_TRUE(s.undo());
+    EXPECT_EQ(ok(c, {"show", "markers"}).size(), 3u);
+    ok(c, {"save", "markers.mfproj"});
+    Session loaded;
+    Commands lc(loaded);
+    ok(lc, {"open", "markers.mfproj"});
+    EXPECT_EQ(ok(lc, {"show", "markers"}), ok(c, {"show", "markers"}));
+}

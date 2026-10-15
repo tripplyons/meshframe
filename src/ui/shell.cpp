@@ -843,6 +843,17 @@ void Shell::registerActions() {
     add("transport.next-frame", "Next frame", "Transport", {{SDL_SCANCODE_RIGHT, 0}}, [step] { step(1, 0); });
     add("transport.back", "Back one second", "Transport", {{SDL_SCANCODE_LEFT, ModShift}}, [step] { step(0, -1); });
     add("transport.forward", "Forward one second", "Transport", {{SDL_SCANCODE_RIGHT, ModShift}}, [step] { step(0, 1); });
+    auto jumpMarker = [this](int dir) {
+        const auto& markers = session_.project().markers;
+        double t = session_.time(), eps = 1e-6;
+        const Marker* best = nullptr;
+        for (const Marker& m : markers)
+            if (dir > 0 ? m.time > t + eps && (!best || m.time < best->time) : m.time < t - eps && (!best || m.time > best->time)) best = &m;
+        if (!best) return notify(dir > 0 ? "No later marker" : "No earlier marker");
+        session_.seek(best->time);
+    };
+    add("transport.prev-marker", "Previous marker", "Transport", {{SDL_SCANCODE_LEFT, ModAlt}}, [jumpMarker] { jumpMarker(-1); });
+    add("transport.next-marker", "Next marker", "Transport", {{SDL_SCANCODE_RIGHT, ModAlt}}, [jumpMarker] { jumpMarker(1); });
     add("transport.loop", "Toggle loop", "Transport", {{SDL_SCANCODE_L, ModGui}}, [this] {
         session_.player().setLoop(!session_.player().loop());
         notify(session_.player().loop() ? "Loop on" : "Loop off");
@@ -882,6 +893,12 @@ void Shell::registerActions() {
             for (Id id : targets)
                 if (const Clip* c = p.findClip(id); c && c->start < t && c->end() > t) edit::splitClip(p, id, t);
         });
+    });
+    add("edit.add-marker", "Add marker at playhead", "Edit", {{SDL_SCANCODE_M, 0}}, [this] {
+        double t = session_.time();
+        Id id = 0;
+        edit("Add marker", [&](Project& p) { id = edit::addMarker(p, "", t); });
+        if (const Marker* m = session_.project().findMarker(id)) notify("Added marker " + m->name);
     });
     add("edit.select-all", "Select all clips", "Edit", {{SDL_SCANCODE_A, ModGui}}, [this] {
         session_.selection.clips.clear();

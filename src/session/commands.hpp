@@ -11,7 +11,9 @@
 namespace mf {
 
 // Argument types: id (number or name), number, int, bool, string, value (JSON
-// if it parses, else a string), json, path (resolved against the client's cwd).
+// if it parses, else a string), json, path (resolved against the client's cwd),
+// time (seconds, 90f, timecode, clock, or @marker), and keytime (a clip-local
+// time; @marker is measured from the target's start).
 struct ArgSpec {
     std::string name;
     std::string type;
@@ -81,6 +83,7 @@ private:
 Id resolveClip(const Project& p, const json& v);
 Id resolveTrack(const Project& p, const json& v);
 Id resolveMedia(const Project& p, const json& v);
+Id resolveMarker(const Project& p, const json& v);
 // A property owner: clip (id or name), effect id, or transition id.
 Id resolveTarget(const Project& p, const json& v);
 

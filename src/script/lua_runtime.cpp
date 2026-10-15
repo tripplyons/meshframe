@@ -237,6 +237,7 @@ const LuaApi& luaApi() {
                 {"lt", "lt", "Seconds since the clip's start"},
                 {"progress", "progress", "0 to 1 across the clip, or across a transition's window"},
                 {"sig", "sig.NAME", "A project or script signal"},
+                {"marker", "marker.NAME", "A timeline marker's time in seconds"},
                 {"fps", "fps", "Project frame rate"},
                 {"w", "w", "Project width in pixels"},
                 {"h", "h", "Project height in pixels"},
@@ -435,6 +436,17 @@ void LuaRuntime::setConstants(double fps, int width, int height, int sampleRate)
     lua_pushnumber(L_, height); lua_setfield(L_, -2, "height");
     lua_pushnumber(L_, sampleRate); lua_setfield(L_, -2, "sample_rate");
     lua_pop(L_, 2);
+}
+
+void LuaRuntime::setMarkers(const std::vector<Marker>& markers) {
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, baseEnv_);
+    lua_createtable(L_, 0, int(markers.size()));
+    for (const auto& m : markers) {
+        lua_pushnumber(L_, m.time);
+        lua_setfield(L_, -2, m.name.c_str());
+    }
+    lua_setfield(L_, -2, "marker");
+    lua_pop(L_, 1);
 }
 
 void LuaRuntime::releaseCompiled() {

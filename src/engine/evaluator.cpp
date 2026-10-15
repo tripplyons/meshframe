@@ -27,9 +27,12 @@ Value coerceLoose(const PropSpec* spec, Value v) {
 Evaluator::Evaluator() { lua_.setHost(this); }
 
 void Evaluator::setProject(const Project& p) {
+    // The script can read markers, so moving one reruns it.
+    bool markersChanged = p.markers != user_.markers;
     user_ = p;
     lua_.setConstants(p.settings.fps, p.settings.width, p.settings.height, p.settings.sampleRate);
-    if (!scriptRan_ || p.script != lastScript_) {
+    lua_.setMarkers(p.markers);
+    if (!scriptRan_ || p.script != lastScript_ || markersChanged) {
         // Rebuilding drops graph nodes that point at compiled expressions.
         graph_.clear();
         script_ = lua_.runScript(p.script);

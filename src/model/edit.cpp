@@ -550,6 +550,54 @@ void removeSignal(Project& p, const std::string& name) {
     std::erase_if(p.signals, [&](const SignalDef& s) { return s.name == name; });
 }
 
+namespace {
+
+void checkMarkerName(const Project& p, const std::string& name, Id self) {
+    bool valid = !name.empty() && !std::isdigit(static_cast<unsigned char>(name[0]));
+    for (char ch : name) valid = valid && (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_');
+    if (!valid) fail(fmt::format("marker name '{}' must use letters, digits, and _, and not start with a digit", name));
+    if (const Marker* m = p.findMarkerByName(name); m && m->id != self) fail(fmt::format("a marker named '{}' exists", name));
+}
+
+void sortMarkers(Project& p) {
+    std::ranges::stable_sort(p.markers, {}, &Marker::time);
+}
+
+Marker& markerOrFail(Project& p, Id id) {
+    Marker* m = p.findMarker(id);
+    if (!m) fail(fmt::format("no marker {}", id));
+    return *m;
+}
+
+}  // namespace
+
+Id addMarker(Project& p, std::string name, double time) {
+    if (time < 0) fail("marker time must be 0 or later");
+    if (name.empty())
+        for (int n = 1; name.empty() || p.findMarkerByName(name); ++n) name = fmt::format("M{}", n);
+    checkMarkerName(p, name, 0);
+    Marker m{p.newId(), std::move(name), time};
+    p.markers.push_back(m);
+    sortMarkers(p);
+    return m.id;
+}
+
+void moveMarker(Project& p, Id marker, double time) {
+    if (time < 0) fail("marker time must be 0 or later");
+    markerOrFail(p, marker).time = time;
+    sortMarkers(p);
+}
+
+void renameMarker(Project& p, Id marker, const std::string& name) {
+    checkMarkerName(p, name, marker);
+    markerOrFail(p, marker).name = name;
+}
+
+void removeMarker(Project& p, Id marker) {
+    markerOrFail(p, marker);
+    std::erase_if(p.markers, [&](const Marker& m) { return m.id == marker; });
+}
+
 void setScript(Project& p, std::string source) { p.script = std::move(source); }
 
 void setSettings(Project& p, const ProjectSettings& s) {

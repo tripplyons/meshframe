@@ -108,8 +108,10 @@ meshframe-cli help clip.add     # one command's arguments
   unique. Use ids after splitting a clip, because both halves keep the name.
 - Times and durations are in seconds: `2.5`. They also accept frames at the
   project frame rate (`90f`), timecode (`00:00:03:12`, HH:MM:SS:FF), and clock
-  time (`1:15.5` or `1:02:03.5`). Replies always use seconds. Keyframe times
-  are clip-local, measured from the clip's start.
+  time (`1:15.5` or `1:02:03.5`), and markers (`@chorus`, `@chorus+2f`,
+  `@chorus-0:01`). Replies always use seconds. Keyframe times are
+  clip-local, measured from the clip's start; a marker given as a keyframe
+  time still means that point on the timeline.
 - On success, a string result prints raw and an object prints as JSON. With
   `--json`, the full reply is printed. On failure, `error: MESSAGE` goes to
   stderr. Exit status: 0 for success, 1 when the command fails, 2 for usage
@@ -162,6 +164,11 @@ from the same specs the editor uses, so read it instead of guessing names.
   start. The transition's curve maps progress to mix.
 - **Signals** are named project values, constant or expression, read as
   `sig.NAME`.
+- **Markers** are named timeline times. Names use letters, digits, and `_`
+  and are unique. Add markers for beats, sections, and cue points, then
+  place clips and keys at `@name` and read `marker.NAME` in expressions and
+  the script. Moving a marker updates everything that reads it through
+  `marker.NAME`; clips placed with `@name` keep their time.
 - **Eases** shape keyframe segments and transition curves. A key's ease
   shapes the segment that starts at that key.
 - Colors are `#rrggbb` or `#rrggbbaa`. In Lua, use `rgb()`, `gray()`, or `hsv()`.
@@ -180,6 +187,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Properties | `prop.set TARGET NAME VALUE`, `prop.key TARGET NAME TIME VALUE [EASE]`, `prop.unkey TARGET NAME TIME`, `prop.expr TARGET NAME EXPR`, `prop.get TARGET NAME [TIME]` |
 | Effects | `effect.add TARGET TYPE [INDEX]`, `effect.enable EFFECT [ENABLED]`, `effect.move EFFECT DELTA`, `effect.remove EFFECT` |
 | Transitions | `transition.add A B [TYPE] [DURATION]`, `transition.set TR [TYPE] [DURATION]`, `transition.curve TR CURVE`, `transition.remove TR` |
+| Markers | `marker.add [NAME] [TIME]`, `marker.move MARKER TIME`, `marker.rename MARKER NAME`, `marker.remove MARKER`, `show markers` |
 | Reactive | `signal.set NAME value=V` or `expr=E`, `signal.remove NAME`, `script.get`, `script.set [SOURCE] [file=PATH]`, `eval CODE [TIME]`, `graph [TIME]`, `errors` |
 | Transport | `play`, `pause`, `toggle`, `seek TIME`, `time` |
 | History | `undo`, `redo`, `history`, `batch COMMANDS [LABEL]` |
@@ -204,7 +212,7 @@ Notes:
 
 Property and signal expressions are Lua expressions. They can read `t`
 (project time), `lt` (time since the clip's start), `progress` (0 to 1 across
-the clip or transition), `sig.NAME`, `prop("clip name", "prop")`, project
+the clip or transition), `sig.NAME`, `marker.NAME`, `prop("clip name", "prop")`, project
 settings, math and color helpers, and functions defined in the project script.
 `schema lua` lists every variable and helper with its signature.
 

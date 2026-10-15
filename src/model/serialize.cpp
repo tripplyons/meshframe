@@ -224,6 +224,8 @@ ProjectSettings settingsFromJson(const json& j, ProjectSettings s) {
     return s;
 }
 
+json markerToJson(const Marker& m) { return {{"id", m.id}, {"name", m.name}, {"time", m.time}}; }
+
 json projectToJson(const Project& p) {
     json j;
     j["format"] = "meshframe";
@@ -241,6 +243,8 @@ json projectToJson(const Project& p) {
     for (const auto& t : p.transitions) j["transitions"].push_back(transitionToJson(t));
     j["signals"] = json::array();
     for (const auto& s : p.signals) j["signals"].push_back({{"id", s.id}, {"name", s.name}, {"value", propertyToJson(s.value)}});
+    j["markers"] = json::array();
+    for (const auto& m : p.markers) j["markers"].push_back(markerToJson(m));
     j["masterAudio"] = json::array();
     for (const auto& e : p.masterAudio) j["masterAudio"].push_back(effectToJson(e));
     j["script"] = p.script;
@@ -321,6 +325,9 @@ Project projectFromJson(const json& j) {
         s.value = propertyFromJson(js.at("value"));
         p.signals.push_back(std::move(s));
     }
+    for (const auto& jm : j.value("markers", json::array()))
+        p.markers.push_back({jm.at("id").get<Id>(), jm.at("name").get<std::string>(), jm.value("time", 0.0)});
+    std::ranges::stable_sort(p.markers, {}, &Marker::time);
     for (const auto& je : j.value("masterAudio", json::array())) p.masterAudio.push_back(effectFromJson(je, true));
     p.script = j.value("script", "");
     // Guard against hand-edited files with stale counters.
@@ -334,6 +341,7 @@ Project projectFromJson(const json& j) {
     }
     for (const auto& t : p.transitions) maxId = std::max(maxId, t.id);
     for (const auto& s : p.signals) maxId = std::max(maxId, s.id);
+    for (const auto& m : p.markers) maxId = std::max(maxId, m.id);
     for (const auto& e : p.masterAudio) maxId = std::max(maxId, e.id);
     p.nextId = std::max(p.nextId, maxId + 1);
     return p;

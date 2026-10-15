@@ -62,6 +62,8 @@ public:
 
     void setHost(Host* host) { host_ = host; }
     void setConstants(double fps, int width, int height, int sampleRate);
+    // Replaces the marker table that expressions read as marker.NAME.
+    void setMarkers(const std::vector<Marker>& markers);
 
     // Runs the project script in a new environment. Clears compiled expressions.
     ScriptOutput runScript(const std::string& source);

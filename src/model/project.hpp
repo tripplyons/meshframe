@@ -118,6 +118,15 @@ struct SignalDef {
     Property value;
 };
 
+// A named time on the timeline.
+struct Marker {
+    Id id = 0;
+    std::string name;
+    double time = 0;
+
+    bool operator==(const Marker&) const = default;
+};
+
 struct ProjectSettings {
     int width = 1920, height = 1080;
     double fps = 30;
@@ -133,6 +142,7 @@ struct Project {
     std::vector<Clip> clips;
     std::vector<Transition> transitions;
     std::vector<SignalDef> signals;
+    std::vector<Marker> markers;  // sorted by time
     std::vector<Effect> masterAudio;
     std::string script;
     Id nextId = 1;
@@ -153,6 +163,9 @@ struct Project {
     const Transition* findTransition(Id id) const;
     SignalDef* findSignal(std::string_view name);
     const SignalDef* findSignal(std::string_view name) const;
+    Marker* findMarker(Id id);
+    const Marker* findMarker(Id id) const;
+    const Marker* findMarkerByName(std::string_view name) const;
     // Finds an effect in any clip chain or the master chain.
     Effect* findEffect(Id id, Clip** owner = nullptr);
 

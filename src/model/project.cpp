@@ -102,6 +102,17 @@ SignalDef* Project::findSignal(std::string_view n) {
 }
 const SignalDef* Project::findSignal(std::string_view n) const { return const_cast<Project*>(this)->findSignal(n); }
 
+Marker* Project::findMarker(Id id) {
+    for (auto& m : markers) if (m.id == id) return &m;
+    return nullptr;
+}
+const Marker* Project::findMarker(Id id) const { return const_cast<Project*>(this)->findMarker(id); }
+
+const Marker* Project::findMarkerByName(std::string_view n) const {
+    for (const auto& m : markers) if (m.name == n) return &m;
+    return nullptr;
+}
+
 Effect* Project::findEffect(Id id, Clip** owner) {
     for (auto& c : clips) {
         for (auto& e : c.videoEffects) if (e.id == id) { if (owner) *owner = &c; return &e; }
