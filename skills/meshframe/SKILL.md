@@ -39,15 +39,26 @@ ditto build-app/meshframe.app /Applications/meshframe.app
 ## Choose a session
 
 - If the user has the editor open, use that session. `meshframe-cli sessions`
-  lists running editors with their pid, project path, and dirty state. With
-  one session, the CLI connects to it automatically. With several, pass
-  `--session PID`.
-- With no editor open, work headless: `meshframe-cli --project FILE.mfproj CMD`.
-  The file is created if missing and saved after each change (`--no-save`
-  prevents this). GUI commands (`ui.*`) need a running editor.
+  lists running sessions with their pid, kind (`editor` or `headless`),
+  project path, and dirty state. With one session, the CLI connects to it
+  automatically. With several, pass `--session PID`.
+- With no editor open, start a headless session and use it for the whole
+  task: `meshframe-cli serve FILE.mfproj`. It returns once the session is
+  ready and prints its pid and socket. Then run `meshframe-cli --project
+  FILE.mfproj CMD` as usual. While a session (headless or editor) has FILE
+  open, `--project FILE` sends commands to it, so separate calls share one
+  undo history. A headless session saves FILE after each change (the editor
+  does not; the user saves there). When you finish, stop it with
+  `meshframe-cli --project FILE.mfproj quit`. It also stops by itself after
+  30 minutes without requests (`--idle-timeout SEC` before `serve` changes
+  this). Running `serve` on a file that is already open prints that session.
+- Without a running session, `--project FILE` runs a one-off headless
+  session: the file is created if missing and saved after the command
+  (`--no-save` prevents this, and always works on a private copy). GUI
+  commands (`ui.*`) need a running editor.
 - To start an editor yourself, run `meshframe FILE.mfproj &`, then wait until
   `meshframe-cli sessions` lists it. Stop only editors you started, with
-  `meshframe-cli ui.action app.quit`. With unsaved changes, the editor asks
+  `meshframe-cli quit`. With unsaved changes, the editor asks
   whether to save instead of quitting, and `ui.state` shows the question in
   `dialog` with its `choices`. Answer with `ui.dialog save` or
   `ui.dialog discard`.
@@ -56,9 +67,9 @@ ditto build-app/meshframe.app /Applications/meshframe.app
   the window. Ask the user before you answer `restore` or `discard`; `later`
   keeps the copy for the next launch.
 
-Each headless invocation is a new session, so `undo` cannot reach changes
-from an earlier invocation. To share one session and history, send many
-requests through one process with `-`:
+Without `serve`, each headless invocation is a new session, so `undo` cannot
+reach changes from an earlier invocation. You can also send many requests
+through one process with `-`:
 
 ```sh
 meshframe-cli --project demo.mfproj - <<'EOF'
@@ -185,7 +196,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 
 | Area | Commands |
 | --- | --- |
-| Files | `new`, `open PATH`, `save [PATH]`, `status`, `show [WHAT]`, `schema [SECTION]` |
+| Files | `new`, `open PATH`, `save [PATH]`, `status`, `show [WHAT]`, `schema [SECTION]`, `quit` |
 | Project | `settings [width] [height] [fps] [sampleRate] [background]` |
 | Tracks | `track.add KIND [NAME]`, `track.set TRACK [name] [muted] [hidden] [locked]`, `track.move TRACK INDEX`, `track.remove TRACK` |
 | Media | `media.import PATH`, `media.list`, `media.remove MEDIA` |

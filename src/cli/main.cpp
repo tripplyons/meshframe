@@ -8,6 +8,9 @@
 
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
+#include <fcntl.h>
+#include <mutex>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -27,6 +30,7 @@ using namespace mf;
 constexpr const char* kUsage = R"(usage: meshframe-cli [options] COMMAND [ARGS...]
        meshframe-cli [options] -
        meshframe-cli sessions
+       meshframe-cli [--idle-timeout SEC] serve FILE
 
 Runs a command in a running meshframe session, or headless on a project file.
 ARGS are positional values or name=value pairs. Run "help" for the command
@@ -37,14 +41,22 @@ or a JSON object {"cmd": ..., "args": {...}}. Prints one JSON reply per line.
 With "--batch -", sends all stdin lines as one batch: one undo step, and no
 changes if any command fails. Prints one JSON reply.
 
+"serve FILE" starts a headless session on FILE in the background and prints
+its pid and socket once it is ready. It saves FILE after each change, so
+separate calls share one undo history. Stop it with the "quit" command; it
+also stops after --idle-timeout seconds without requests (default 1800, 0
+never). While a session has FILE open, "--project FILE" sends commands to it.
+
 options:
   --session PID     use the session of this meshframe process
   --socket PATH     use the session listening on this socket
-  --project FILE    run headless on FILE (created if missing); saves FILE after
-                    changes. GUI commands (ui.*) need a running session.
+  --project FILE    run on FILE: in the running session that has it open, or
+                    else headless (created if missing), saving FILE after
+                    changes. GUI commands (ui.*) need a running editor.
   --no-save         with --project, do not save
   --json            print the full JSON reply
   --batch           with "-", run stdin as one batch
+  --idle-timeout SEC  with serve, stop after SEC seconds without requests
   --timeout SEC     seconds to wait for a reply (default 120, 0 waits forever)
   -h, --help        show this help
 
@@ -55,7 +67,7 @@ struct Options {
     std::optional<int> session;
     std::string socket, project;
     bool noSave = false, rawJson = false, stdinMode = false, batch = false;
-    double timeout = 120;
+    double timeout = 120, idleTimeout = 1800;
     std::vector<std::string> words;
 };
 
@@ -93,6 +105,12 @@ Options parseOptions(int argc, char** argv) {
                 o.timeout = std::stod(value("--timeout"));
             } catch (...) {
                 usageError("--timeout needs a number of seconds");
+            }
+        } else if (a == "--idle-timeout") {
+            try {
+                o.idleTimeout = std::stod(value("--idle-timeout"));
+            } catch (...) {
+                usageError("--idle-timeout needs a number of seconds");
             }
         } else if (a == "-") {
             o.stdinMode = true;
@@ -218,7 +236,7 @@ int listSessionsCommand(const Options& o) {
     std::vector<SessionInfo> sessions = listSessions();
     json out = json::array();
     for (const auto& s : sessions) {
-        json entry = {{"pid", s.pid}, {"socket", s.socket}};
+        json entry = {{"pid", s.pid}, {"kind", s.kind}, {"socket", s.socket}};
         Client c;
         std::string err;
         if (!c.connect(s.socket, &err)) entry["error"] = err;
@@ -277,7 +295,34 @@ int runRequests(const Options& o, const std::function<std::optional<json>(const 
     return status;
 }
 
+// The running session whose project file is `path`, if any.
+std::optional<SessionInfo> sessionWithFile(const std::string& path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path want = fs::weakly_canonical(fs::absolute(path), ec);
+    for (const auto& s : listSessions()) {
+        Client c;
+        std::string err;
+        if (!c.connect(s.socket, &err)) continue;
+        auto reply = c.call({{"cmd", "status"}}, 5, &err);
+        if (!reply || !reply->value("ok", false)) continue;
+        std::string open = (*reply)["result"].value("path", "");
+        if (!open.empty() && fs::weakly_canonical(open, ec) == want) return s;
+    }
+    return std::nullopt;
+}
+
+int runRemoteOn(const Options& o, const std::string& socket) {
+    Client client;
+    std::string err;
+    if (!client.connect(socket, &err)) usageError(err);
+    return runRequests(o, [&](const json& request, std::string* e) { return client.call(request, o.timeout, e); });
+}
+
 int runHeadless(const Options& o) {
+    // Another process writing the same file would lose one side's edits.
+    if (!o.noSave)
+        if (auto s = sessionWithFile(o.project)) return runRemoteOn(o, s->socket);
     Session session;
     Commands commands(session);
     std::string err;
@@ -297,11 +342,98 @@ int runHeadless(const Options& o) {
     return status;
 }
 
-int runRemote(const Options& o) {
-    Client client;
+int runRemote(const Options& o) { return runRemoteOn(o, findSocket(o)); }
+
+// Runs a headless session on `file` until `quit` or the idle timeout. Writes
+// one JSON line to `ready` once it serves requests, or an error.
+int serveLoop(const std::string& file, double idleTimeout, int ready) {
+    auto report = [&](const json& j) {
+        std::string line = j.dump() + "\n";
+        (void)!write(ready, line.data(), line.size());
+        close(ready);
+    };
+    Session session;
+    Commands commands(session);
     std::string err;
-    if (!client.connect(findSocket(o), &err)) usageError(err);
-    return runRequests(o, [&](const json& request, std::string* e) { return client.call(request, o.timeout, e); });
+    bool opened = std::filesystem::exists(file) ? session.open(file, &err) : session.save(file, &err);
+    if (!opened) return report({{"ok", false}, {"error", err}}), 2;
+
+    bool quit = false;
+    commands.add({"quit", "Save and stop this headless session", {}, [&](const json&, CommandContext&) -> json {
+                      quit = true;
+                      return nullptr;
+                  }});
+    std::mutex mu;
+    std::condition_variable cv;
+    bool woken = false;
+    CommandServer server(commands, [&] {
+        std::lock_guard lock(mu);
+        woken = true;
+        cv.notify_one();
+    }, "headless");
+    if (!server.startDefault(&err)) return report({{"ok", false}, {"error", err}}), 2;
+    report({{"ok", true}, {"pid", getpid()}, {"socket", server.path()}, {"path", session.path()}});
+
+    using Clock = std::chrono::steady_clock;
+    auto lastRequest = Clock::now();
+    while (!quit) {
+        // Deferred replies and exports need ticks; otherwise sleep until a request.
+        bool busy = !session.pollers.empty() || session.exportJob().running();
+        {
+            std::unique_lock lock(mu);
+            cv.wait_for(lock, busy ? std::chrono::milliseconds(5) : std::chrono::milliseconds(500), [&] { return woken; });
+            woken = false;
+        }
+        if (server.poll() > 0) lastRequest = Clock::now();
+        session.tick();
+        if (session.dirty() && !session.save(session.path(), &err)) session.log(LogLine::Level::Error, "cannot save: " + err);
+        bool idle = idleTimeout > 0 && Clock::now() - lastRequest > std::chrono::duration<double>(idleTimeout);
+        if (idle && session.pollers.empty() && !session.exportJob().running()) break;
+    }
+    server.stop();
+    session.exportJob().wait();
+    if (session.dirty()) session.save(session.path(), &err);
+    return 0;
+}
+
+int serveCommand(const Options& o) {
+    if (o.words.size() != 2) usageError("usage: meshframe-cli serve FILE");
+    std::string file = std::filesystem::absolute(o.words[1]).lexically_normal().string();
+    if (auto s = sessionWithFile(file)) {
+        fmt::print("{}\n", json{{"pid", s->pid}, {"kind", s->kind}, {"socket", s->socket}, {"path", file}, {"running", true}}.dump());
+        return 0;
+    }
+    int fds[2];
+    if (pipe(fds) != 0) usageError(fmt::format("pipe: {}", std::strerror(errno)));
+    pid_t pid = fork();
+    if (pid < 0) usageError(fmt::format("fork: {}", std::strerror(errno)));
+    if (pid == 0) {
+        // The session outlives this command: no terminal, no inherited output.
+        close(fds[0]);
+        setsid();
+        int null = open("/dev/null", O_RDWR);
+        for (int fd : {0, 1, 2}) dup2(null, fd);
+        if (null > 2) close(null);
+        std::exit(serveLoop(file, o.idleTimeout, fds[1]));
+    }
+    close(fds[1]);
+    std::string out;
+    char buf[4096];
+    for (ssize_t n; (n = read(fds[0], buf, sizeof buf)) != 0;) {
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) break;
+        out.append(buf, size_t(n));
+    }
+    close(fds[0]);
+    json r = json::parse(out, nullptr, false);
+    if (r.is_discarded() || !r.value("ok", false)) {
+        std::string err = r.is_discarded() ? "the session exited before it was ready" : r.value("error", std::string("unknown error"));
+        fmt::print(stderr, "meshframe-cli: cannot serve {}: {}\n", file, err);
+        return 2;
+    }
+    r.erase("ok");
+    fmt::print("{}\n", r.dump());
+    return 0;
 }
 
 }  // namespace
@@ -309,5 +441,6 @@ int runRemote(const Options& o) {
 int main(int argc, char** argv) {
     Options o = parseOptions(argc, argv);
     if (!o.stdinMode && o.words.size() == 1 && o.words[0] == "sessions" && o.project.empty()) return listSessionsCommand(o);
+    if (!o.stdinMode && !o.words.empty() && o.words[0] == "serve" && o.project.empty()) return serveCommand(o);
     return o.project.empty() ? runRemote(o) : runHeadless(o);
 }

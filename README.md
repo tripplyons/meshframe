@@ -112,7 +112,9 @@ The running editor listens on a Unix socket in `$MESHFRAME_RUNTIME_DIR` or
 ```
 
 Without a running editor, add `--project FILE.mfproj` to edit a file
-headless. Use `-` to read many commands from stdin in one session, or
+headless. `meshframe-cli serve FILE.mfproj` keeps a headless session open in
+the background so separate calls share one undo history; while any session
+has FILE open, `--project FILE` sends commands to it. `quit` stops it. Use `-` to read many commands from stdin in one session, or
 `--batch -` to run them as one undo step that has no effect if any command fails.
 `examples/demo.sh` builds, renders, and exports a demo project this way.
 

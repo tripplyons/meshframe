@@ -969,6 +969,10 @@ void Shell::registerCommands(Commands& commands) {
     using A = const json&;
     using C = CommandContext&;
     commands.add({"ui.state", "Show spaces, layouts, pane views, and the window size", {}, [this](A, C) -> json { return state(); }});
+    commands.add({"quit", "Quit the editor; with unsaved changes it asks first (see ui.state dialog)", {}, [this](A, C) -> json {
+                      requestQuit();
+                      return state();
+                  }});
     commands.add({"ui.space", "Switch to a space (1-10)", {req("space", "int")}, [this](A a, C) -> json {
                       workspace_.switchTo(spaceArg(a, "space", 0));
                       workspaceChanged();

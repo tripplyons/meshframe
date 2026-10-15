@@ -257,3 +257,13 @@ TEST(Views, MarkerKeysAddAndJump) {
     EXPECT_EQ(ok(h, {"ui.state"})["notice"]["text"], "No later marker");
     h.frame();  // draws the markers
 }
+
+TEST(Views, QuitCommandAsksAboutUnsavedChanges) {
+    ShellHarness h;
+    ok(h, {"clip.add", "solid", "V1", "0", "1"});
+    json state = ok(h, {"quit"});
+    EXPECT_FALSE(h.shell->quitRequested());
+    EXPECT_TRUE(state["dialog"]["choices"].dump().find("discard") != std::string::npos) << state.dump();
+    ok(h, {"ui.dialog", "discard"});
+    EXPECT_TRUE(h.shell->quitRequested());
+}

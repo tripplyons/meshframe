@@ -8,6 +8,7 @@
 #include <future>
 #include <sstream>
 
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -74,6 +75,7 @@ struct RuntimeDir {
 }  // namespace
 
 TEST(Bridge, HeadlessProjectFile) {
+    RuntimeDir runtime;  // --project looks for sessions with the file open
     fs::path dir = fixtures::dir() / "bridge";
     fs::remove_all(dir);
     fs::create_directories(dir);
@@ -192,4 +194,48 @@ TEST(Bridge, SessionsSkipsAndRemovesDeadProcesses) {
                                  json{{"pid", child}, {"socket", (runtime.path / "gone.sock").string()}}.dump());
     EXPECT_TRUE(listSessions().empty());
     EXPECT_FALSE(fs::exists(info));
+}
+
+TEST(Bridge, ServeKeepsOneSessionAcrossCalls) {
+    RuntimeDir runtime;
+    fs::path dir = fixtures::dir() / "serve";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    std::string file = (dir / "served.mfproj").string();
+
+    CliResult r = cli({"--idle-timeout", "30", "serve", file});
+    ASSERT_EQ(r.status, 0) << r.out;
+    json info = json::parse(r.out);
+    int pid = info["pid"];
+    EXPECT_TRUE(fs::exists(file)) << "serve creates the file";
+    EXPECT_TRUE(json::parse(cli({"serve", file}).out)["running"].get<bool>()) << "a second serve finds the first";
+    json sessions = json::parse(cli({"sessions"}).out);
+    ASSERT_EQ(sessions.size(), 1u);
+    EXPECT_EQ(sessions[0]["kind"], "headless");
+    EXPECT_EQ(sessions[0]["pid"], pid);
+
+    // Separate calls share one history, and each change is saved.
+    ASSERT_EQ(cli({"--project", file, "clip.add", "solid", "V1", "0", "3", "bg"}).status, 0);
+    ASSERT_EQ(cli({"--project", file, "clip.add", "solid", "V2", "0", "3", "top"}).status, 0);
+    ASSERT_EQ(cli({"--project", file, "undo"}).status, 0);
+    json history = json::parse(cli({"--project", file, "history"}).out);
+    EXPECT_EQ(history["undo"].size(), 1u);
+    EXPECT_EQ(history["redo"].size(), 1u);
+    std::ifstream in(file);
+    EXPECT_EQ(json::parse(in)["clips"].size(), 1u);
+
+    // quit saves and stops the session.
+    EXPECT_EQ(cli({"--project", file, "quit"}).status, 0);
+    for (int i = 0; i < 200 && kill(pid, 0) == 0; ++i) usleep(10000);
+    EXPECT_NE(kill(pid, 0), 0) << "the session exited";
+    EXPECT_NE(cli({"sessions"}).out.find("No running sessions"), std::string::npos);
+
+    // An idle session stops by itself.
+    r = cli({"--idle-timeout", "0.2", "serve", file});
+    ASSERT_EQ(r.status, 0) << r.out;
+    pid = json::parse(r.out)["pid"];
+    for (int i = 0; i < 300 && kill(pid, 0) == 0; ++i) usleep(10000);
+    EXPECT_NE(kill(pid, 0), 0) << "the idle session exited";
+
+    EXPECT_EQ(cli({"serve", (dir / "missing" / "x.mfproj").string()}).status, 2);
 }

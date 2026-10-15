@@ -33,7 +33,7 @@ std::vector<SessionInfo> listSessions() {
         std::ifstream in(entry.path());
         json j = json::parse(in, nullptr, false);
         if (j.is_discarded() || !j.contains("pid") || !j.contains("socket")) continue;
-        SessionInfo info{j["pid"].get<int>(), j["socket"].get<std::string>(), entry.path().string()};
+        SessionInfo info{j["pid"].get<int>(), j.value("kind", "editor"), j["socket"].get<std::string>(), entry.path().string()};
         if (kill(info.pid, 0) != 0 && errno == ESRCH) {
             fs::remove(info.infoPath, ec);
             fs::remove(info.socket, ec);
@@ -72,7 +72,8 @@ struct CommandServer::Connection {
     }
 };
 
-CommandServer::CommandServer(Commands& commands, std::function<void()> wake) : commands_(commands), wake_(std::move(wake)) {}
+CommandServer::CommandServer(Commands& commands, std::function<void()> wake, std::string kind)
+    : commands_(commands), wake_(std::move(wake)), kind_(std::move(kind)) {}
 
 CommandServer::~CommandServer() { stop(); }
 
@@ -111,7 +112,7 @@ bool CommandServer::start(const std::string& socketPath, bool publish, std::stri
     if (publish) {
         infoPath_ = fs::path(socketPath).replace_extension(".json").string();
         std::ofstream out(infoPath_);
-        out << json{{"pid", getpid()}, {"socket", socketPath}}.dump() << "\n";
+        out << json{{"pid", getpid()}, {"kind", kind_}, {"socket", socketPath}}.dump() << "\n";
     }
     thread_ = std::thread([this] { ioLoop(); });
     return true;
@@ -186,7 +187,7 @@ void CommandServer::ioLoop() {
     }
 }
 
-void CommandServer::poll() {
+size_t CommandServer::poll() {
     std::vector<std::pair<std::shared_ptr<Connection>, std::string>> work;
     {
         std::lock_guard lock(mu_);
@@ -200,6 +201,7 @@ void CommandServer::poll() {
         }
         commands_.run(request, [conn](json reply) { conn->send(reply); });
     }
+    return work.size();
 }
 
 }  // namespace mf

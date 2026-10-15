@@ -19,6 +19,7 @@ std::string runtimeDir();
 // A running session found in the runtime directory.
 struct SessionInfo {
     int pid = 0;
+    std::string kind;  // "editor" or "headless"
     std::string socket;
     std::string infoPath;
 };
@@ -32,8 +33,9 @@ std::vector<SessionInfo> listSessions();
 // race the UI.
 class CommandServer {
 public:
-    // `wake` is called from the I/O thread when a request arrives.
-    CommandServer(Commands& commands, std::function<void()> wake);
+    // `wake` is called from the I/O thread when a request arrives. `kind` is
+    // published for `sessions`: "editor" or "headless".
+    CommandServer(Commands& commands, std::function<void()> wake, std::string kind = "editor");
     ~CommandServer();
 
     // Listens on `socketPath`. With `publish`, also writes <pid>.json next to
@@ -44,8 +46,8 @@ public:
     void stop();
     const std::string& path() const { return path_; }
 
-    // Runs queued requests on the calling thread.
-    void poll();
+    // Runs queued requests on the calling thread. Returns how many ran.
+    size_t poll();
 
     struct Connection;
 
@@ -54,6 +56,7 @@ private:
 
     Commands& commands_;
     std::function<void()> wake_;
+    std::string kind_;
     std::string path_, infoPath_;
     int listenFd_ = -1;
     int stopPipe_[2] = {-1, -1};
