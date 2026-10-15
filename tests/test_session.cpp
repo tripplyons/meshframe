@@ -495,3 +495,78 @@ TEST(Commands, AudioAnalyzeReadsMedia) {
     EXPECT_NEAR(r["samplePeakDbfs"].get<double>(), -18.06, 0.1);  // ffmpeg's sine is 1/8 full scale
     EXPECT_TRUE(r["integratedLufs"].is_number());
 }
+
+TEST(Commands, ClipBoundsFollowTransformsAndEffects) {
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "width=320", "height=180"});
+    ok(c, {"clip.add", "solid", "V1", "0", "4", "box", R"(props={"scale":0.5})"});
+    auto box = [&](const char* time = "1") { return ok(c, {"clip.bounds", "box", time}); };
+    auto near = [](const json& b, double l, double t, double r, double bt, double tol = 1) {
+        EXPECT_NEAR(b["left"].get<double>(), l, tol) << b.dump();
+        EXPECT_NEAR(b["top"].get<double>(), t, tol) << b.dump();
+        EXPECT_NEAR(b["right"].get<double>(), r, tol) << b.dump();
+        EXPECT_NEAR(b["bottom"].get<double>(), bt, tol) << b.dump();
+    };
+
+    json b = box();
+    near(b["box"], 80, 45, 240, 135);
+    EXPECT_EQ(b["center"]["x"], 0.0);
+    EXPECT_EQ(b["inFrame"], 1.0);
+    EXPECT_TRUE(b["crosses"].empty());
+    EXPECT_TRUE(b["titleSafe"].get<bool>());
+
+    // Moved half out of frame on the right.
+    ok(c, {"prop.set", "box", "x", "100"});
+    b = box();
+    near(b["box"], 180, 45, 340, 135);
+    EXPECT_NEAR(b["center"]["x"].get<double>(), 100, 0.5);
+    EXPECT_NEAR(b["inFrame"].get<double>(), 0.875, 0.01);
+    EXPECT_EQ(b["crosses"], json::array({"right"}));
+    EXPECT_FALSE(b["titleSafe"].get<bool>());
+
+    // Rotated a quarter turn: the box swaps width and height.
+    ok(c, {"prop.set", "box", "x", "0"});
+    ok(c, {"prop.set", "box", "rotation", "90"});
+    near(box()["box"], 115, 10, 205, 170);
+
+    // Effects count: blur spreads a generator's drawing.
+    ok(c, {"script.set", "mf.generator('dot', function(g) g:rect(140, 70, 40, 40, gray(1)) end)"});
+    ok(c, {"clip.add", "generator", "V2", "0", "4", "dot", R"(props={"generator":"dot"})"});
+    near(ok(c, {"clip.bounds", "dot", "1"})["box"], 140, 70, 180, 110);
+    ok(c, {"effect.add", "dot", "blur"});
+    json blurred = ok(c, {"clip.bounds", "dot", "1"})["box"];
+    EXPECT_LT(blurred["left"].get<double>(), 138);
+    EXPECT_GT(blurred["right"].get<double>(), 182);
+    ok(c, {"prop.set", "box", "rotation", "0"});
+
+    // Larger than the margin around the frame, and fully transparent.
+    ok(c, {"prop.set", "box", "scale", "3"});
+    EXPECT_TRUE(box()["truncated"].get<bool>());
+    ok(c, {"prop.set", "box", "opacity", "0"});
+    EXPECT_FALSE(box()["visible"].get<bool>());
+
+    ok(c, {"clip.add", "synth", "A1", "0", "1", "tone"});
+    EXPECT_NE(fails(c, {"clip.bounds", "tone"}).find("not on a video track"), std::string::npos);
+}
+
+TEST(Commands, TextMeasureMatchesTheRenderedBlock) {
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "width=640", "height=360"});
+    json one = ok(c, {"text.measure", "Hello", "size=60"});
+    EXPECT_EQ(one["lines"], 1);
+    json r = c.runSync({{"cmd", "text.measure"}, {"args", {{"text", "Hello\nworld"}, {"size", 60}}}});
+    ASSERT_TRUE(r["ok"]) << r.dump();
+    EXPECT_EQ(r["result"]["lines"], 2);
+    EXPECT_NEAR(r["result"]["height"].get<double>(), 2 * r["result"]["lineHeight"].get<double>() + 2, 1);
+    EXPECT_GT(ok(c, {"text.measure", "Hello", "size=120"})["width"].get<double>(), 1.9 * one["width"].get<double>());
+
+    // The block holds the drawn glyphs.
+    ok(c, {"clip.add", "text", "V1", "0", "1", "t", R"(props={"text":"Hello","size":60})"});
+    json b = ok(c, {"clip.bounds", "t", "0.5"})["box"];
+    EXPECT_LE(b["width"].get<double>(), one["width"].get<double>());
+    EXPECT_LE(b["height"].get<double>(), one["height"].get<double>());
+    EXPECT_GT(b["width"].get<double>(), one["width"].get<double>() * 0.8);
+    EXPECT_NE(fails(c, {"text.measure", "x", "font=/nope.ttf"}).find("nope"), std::string::npos);
+}

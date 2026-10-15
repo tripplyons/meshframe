@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <sstream>
 #include <vector>
 
 namespace mf {
@@ -116,6 +117,19 @@ void fillPolygon(Image& dst, std::span<const Vec2> pts, Color color) {
     Coverage cov(x0, y0, x1 - x0, y1 - y0);
     for (size_t i = 0; i < pts.size(); ++i) cov.line(pts[i], pts[(i + 1) % pts.size()]);
     cov.fill(dst, color);
+}
+
+TextBlock layoutTextBlock(Font& font, const std::string& text, float px) {
+    TextBlock b;
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) b.lines.push_back(line);
+    if (b.lines.empty()) return b;
+    b.lineHeight = font.metrics(px).lineHeight;
+    float width = 0;
+    for (const auto& l : b.lines) width = std::max(width, font.measure(l, px));
+    b.w = std::max(2, int(std::ceil(width)) + 2);
+    b.h = std::max(2, int(std::ceil(b.lineHeight * b.lines.size())) + 2);
+    return b;
 }
 
 void drawText(Image& dst, Font& font, std::string_view text, float x, float y, float px, Color c) {

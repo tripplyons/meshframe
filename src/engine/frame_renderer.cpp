@@ -9,26 +9,18 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
-#include <sstream>
 
 namespace mf {
 
 namespace {
 
 std::shared_ptr<Image> renderTextBlock(Font& font, const std::string& text, float px, Color color) {
-    std::vector<std::string> lines;
-    std::istringstream in(text);
-    for (std::string line; std::getline(in, line);) lines.push_back(line);
-    if (lines.empty()) return nullptr;
-    FontMetrics m = font.metrics(px);
-    float width = 0;
-    for (const auto& l : lines) width = std::max(width, font.measure(l, px));
-    int w = std::max(2, int(std::ceil(width)) + 2);
-    int h = std::max(2, int(std::ceil(m.lineHeight * lines.size())) + 2);
-    auto img = std::make_shared<Image>(w, h);
-    for (size_t i = 0; i < lines.size(); ++i) {
-        float lw = font.measure(lines[i], px);
-        drawText(*img, font, lines[i], (w - lw) / 2, 1 + m.lineHeight * i, px, color);
+    TextBlock b = layoutTextBlock(font, text, px);
+    if (b.lines.empty()) return nullptr;
+    auto img = std::make_shared<Image>(b.w, b.h);
+    for (size_t i = 0; i < b.lines.size(); ++i) {
+        float lw = font.measure(b.lines[i], px);
+        drawText(*img, font, b.lines[i], (b.w - lw) / 2, 1 + b.lineHeight * i, px, color);
     }
     return img;
 }
@@ -97,8 +89,8 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
     return layer;
 }
 
-bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t, double unit, bool useBlend) {
-    Layer layer = content(ev, c, t, unit, dst.w, dst.h);
+bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t, double unit, bool useBlend, int padX, int padY) {
+    Layer layer = content(ev, c, t, unit, dst.w - 2 * padX, dst.h - 2 * padY);
     if (!layer.image || layer.image->empty()) return false;
     double toDisplay = layer.displayW / layer.image->w;
     for (const auto& e : c.videoEffects) {
@@ -115,6 +107,15 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
     float opacity = float(std::clamp(ev.num(c, "opacity", 1), 0.0, 1.0));
     drawLayer(dst, *layer.image, at, opacity, useBlend ? parseBlend(ev.str(c, "blend")) : Blend::Normal);
     return true;
+}
+
+std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, double t, int padX, int padY) {
+    ev.setTime(t);
+    const auto& st = ev.project().settings;
+    auto canvas = std::make_shared<Image>(st.width + 2 * padX, st.height + 2 * padY);
+    drawClip(ev, *canvas, c, t, 1, false, padX, padY);
+    ev.refreshOutputs();
+    return canvas;
 }
 
 std::shared_ptr<Image> FrameRenderer::render(Evaluator& ev, double t, int w, int h) {

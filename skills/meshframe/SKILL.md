@@ -143,6 +143,16 @@ meshframe-cli help clip.add     # one command's arguments
      set the range, `count=N` or `every=15f` set the sampling, and `width`
      and `columns` set the layout. The reply lists each cell's time.
    - `frame out.png TIME [WIDTH]` renders one frame to PNG. Read the image.
+   - `clip.bounds CLIP TIME` shows where a video clip actually draws: the box
+     of covered pixels after effects (`left`, `top`, `right`, `bottom` from
+     the frame's top-left), its `center` in clip `x`, `y` terms, `inFrame`
+     (the fraction of covered pixels inside the frame), the frame edges it
+     `crosses`, and whether it is `titleSafe` (inside the central 90%). To
+     center a clip, subtract `center` from its `x` and `y`. A fully
+     transparent clip reports `visible: false`, so pick a time after any
+     fade-in.
+   - `text.measure TEXT [size] [font]` gives a text clip's block size before
+     scale and rotation, so you can choose a size that fits.
    - `clip.get CLIP TIME` shows evaluated values. `prop.get TARGET NAME TIME`
      shows one property's definition and value.
    - `audio.analyze` measures the mix, since you cannot listen to it:
@@ -210,7 +220,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Project | `settings [width] [height] [fps] [sampleRate] [background]` |
 | Tracks | `track.add KIND [NAME]`, `track.set TRACK [name] [muted] [hidden] [locked]`, `track.move TRACK INDEX`, `track.remove TRACK` |
 | Media | `media.import PATH`, `media.list`, `media.remove MEDIA` |
-| Clips | `clip.add KIND TRACK START DURATION [NAME] [PROPS]`, `clip.media MEDIA [START] [TRACK] [AUDIOTRACK]`, `clip.get CLIP [TIME]`, `clip.move CLIP START [TRACK]`, `clip.trim CLIP START DURATION`, `clip.split CLIP TIME`, `clip.speed`, `clip.rename`, `clip.unlink`, `clip.remove` |
+| Clips | `clip.bounds CLIP [TIME]`, `text.measure TEXT [size] [font]`, `clip.add KIND TRACK START DURATION [NAME] [PROPS]`, `clip.media MEDIA [START] [TRACK] [AUDIOTRACK]`, `clip.get CLIP [TIME]`, `clip.move CLIP START [TRACK]`, `clip.trim CLIP START DURATION`, `clip.split CLIP TIME`, `clip.speed`, `clip.rename`, `clip.unlink`, `clip.remove` |
 | Properties | `prop.set TARGET NAME VALUE`, `prop.key TARGET NAME TIME VALUE [EASE]`, `prop.unkey TARGET NAME TIME`, `prop.expr TARGET NAME EXPR`, `prop.get TARGET NAME [TIME]` |
 | Effects | `effect.add TARGET TYPE [INDEX]`, `effect.enable EFFECT [ENABLED]`, `effect.move EFFECT DELTA`, `effect.remove EFFECT` |
 | Transitions | `transition.add A B [TYPE] [DURATION]`, `transition.set TR [TYPE] [DURATION]`, `transition.curve TR CURVE`, `transition.remove TR` |

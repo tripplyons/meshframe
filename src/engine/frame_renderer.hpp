@@ -15,6 +15,9 @@ public:
     // Output is w x h; smaller than the project size gives a scaled preview.
     // Must run on the evaluator's thread.
     std::shared_ptr<Image> render(Evaluator& ev, double t, int w, int h);
+    // Renders one video clip alone over transparency at project size, with
+    // `pad` pixels of margin on each side so content beyond the frame shows.
+    std::shared_ptr<Image> renderClip(Evaluator& ev, const Clip& c, double t, int padX, int padY);
 
 private:
     struct Layer {
@@ -22,8 +25,9 @@ private:
         double displayW = 0, displayH = 0;  // size in output pixels before the clip's scale
     };
     Layer content(Evaluator& ev, const Clip& c, double t, double unit, int w, int h);
-    // Draws a clip with its effects and transform; returns false when it has no content.
-    bool drawClip(Evaluator& ev, Image& dst, const Clip& c, double t, double unit, bool useBlend);
+    // Draws a clip with its effects and transform; returns false when it has no
+    // content. The frame is dst less `pad` pixels on each side.
+    bool drawClip(Evaluator& ev, Image& dst, const Clip& c, double t, double unit, bool useBlend, int padX = 0, int padY = 0);
 
     MediaCache& cache_;
 };

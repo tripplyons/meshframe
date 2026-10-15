@@ -209,6 +209,10 @@ double Session::tick() {
 
 std::shared_ptr<Image> Session::renderFrame(double t, int w, int h) { return renderer_->render(evaluator(), t, w, h); }
 
+std::shared_ptr<Image> Session::renderClip(const Clip& c, double t, int padX, int padY) {
+    return renderer_->renderClip(evaluator(), c, t, padX, padY);
+}
+
 void Session::pruneSelection() {
     std::erase_if(selection.clips, [&](Id id) { return !project_.findClip(id) && id < kScriptIdBase; });
     if (selection.transition && !project_.findTransition(selection.transition)) selection.transition = 0;

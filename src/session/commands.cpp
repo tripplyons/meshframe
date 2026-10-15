@@ -5,7 +5,9 @@
 #include "audio/analysis.hpp"
 #include "audio/mixer.hpp"
 #include "core/timecode.hpp"
+#include "render/font.hpp"
 #include "render/image.hpp"
+#include "render/raster.hpp"
 #include "render/sheet.hpp"
 #include "render/waveform.hpp"
 #include "script/lua_runtime.hpp"
@@ -821,6 +823,60 @@ void Commands::registerBuiltins() {
              j["time"] = t;
              j["values"] = values;
              return j;
+         }});
+
+    add({"clip.bounds", "Show the box of pixels a video clip covers at a time, and how it sits in the frame",
+         {req("clip", "id"), opt("time", "time")}, [](A a, C c) -> json {
+             Session& s = c.session;
+             const Project& ep = s.evaluator().project();
+             const Clip& clip = *ep.findClip(resolveClip(ep, a["clip"]));
+             const Track* track = ep.findTrack(clip.track);
+             if (!track || track->kind != TrackKind::Video) throw EditError(fmt::format("clip '{}' is not on a video track", clip.name));
+             double t = get<double>(a, "time", s.time());
+             const auto& st = ep.settings;
+             int padX = st.width / 2, padY = st.height / 2;
+             auto img = s.renderClip(clip, t, padX, padY);
+
+             // Pixels at least 3% opaque count as covered.
+             int x0 = img->w, y0 = img->h, x1 = -1, y1 = -1;
+             int64_t covered = 0, inside = 0;
+             for (int y = 0; y < img->h; ++y) {
+                 const uint8_t* row = img->row(y);
+                 for (int x = 0; x < img->w; ++x)
+                     if (row[x * 4 + 3] >= 8) {
+                         x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
+                         ++covered;
+                         inside += x >= padX && x < padX + st.width && y >= padY && y < padY + st.height;
+                     }
+             }
+             json j = {{"clip", clip.id}, {"time", t}, {"visible", covered > 0}};
+             if (!covered) return j;
+             double left = x0 - padX, top = y0 - padY, right = x1 + 1 - padX, bottom = y1 + 1 - padY;
+             j["box"] = {{"left", left}, {"top", top}, {"right", right}, {"bottom", bottom}, {"width", right - left}, {"height", bottom - top}};
+             j["center"] = {{"x", (left + right) / 2 - st.width / 2.0}, {"y", (top + bottom) / 2 - st.height / 2.0}};
+             j["inFrame"] = std::round(double(inside) / double(covered) * 1000) / 1000;
+             json edges = json::array();
+             if (left < 0) edges.push_back("left");
+             if (top < 0) edges.push_back("top");
+             if (right > st.width) edges.push_back("right");
+             if (bottom > st.height) edges.push_back("bottom");
+             j["crosses"] = edges;
+             double mx = st.width * 0.05, my = st.height * 0.05;
+             j["titleSafe"] = left >= mx && top >= my && right <= st.width - mx && bottom <= st.height - my;
+             // Content may reach past the margin rendered around the frame.
+             if (x0 == 0 || y0 == 0 || x1 == img->w - 1 || y1 == img->h - 1) j["truncated"] = true;
+             return j;
+         }});
+    add({"text.measure", "Measure a text clip's block before scale and rotation",
+         {req("text", "string"), opt("size", "number", "default 96"), opt("font", "path", "font file; default the built-in sans")},
+         [](A a, C) -> json {
+             std::string err;
+             std::shared_ptr<Font> font = a.contains("font") ? Font::load(a["font"], &err) : Font::sans();
+             if (!font) throw EditError(err.empty() ? "cannot load the font" : err);
+             double size = get<double>(a, "size", 96.0);
+             if (size < 1) throw EditError("size must be at least 1");
+             TextBlock b = layoutTextBlock(*font, a["text"], float(size));
+             return {{"width", b.w}, {"height", b.h}, {"lines", b.lines.size()}, {"lineHeight", b.lineHeight}};
          }});
 
     // ---- properties ----
