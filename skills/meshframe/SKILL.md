@@ -97,7 +97,7 @@ meshframe-cli help clip.add     # one command's arguments
 ## Workflow
 
 1. Inspect: `status`, then `show` (tracks and clips) or `show clips`. Read
-   `help` output instead of guessing argument names.
+   `help` and `schema` output instead of guessing argument or property names.
 2. Edit with the commands below. Commands that set expressions or the script
    return `errors`. Check that it is empty.
 3. Verify what you made:
@@ -112,43 +112,36 @@ meshframe-cli help clip.add     # one command's arguments
 
 ## Model
 
+`meshframe-cli schema` lists every clip kind with its properties (type,
+default, range, unit, choices), every video and audio effect with its
+parameters, transition types, eases, blend modes, and the Lua API. It comes
+from the same specs the editor uses, so read it instead of guessing names.
+`schema SECTION` shows one part, for example `schema clips` or `schema lua`.
+
 - **Project**: settings (`width`, `height`, `fps`, `sampleRate`,
   `background`), tracks, media, clips, transitions, signals, a master audio
   effect chain, and one Lua script.
 - **Tracks**: the default project has V3, V2, V1 (top to bottom) and A2, A1.
   Higher video tracks draw over lower ones. Track kinds: `video` or `audio`.
 - **Clips** have a kind, track, start, duration, properties, and effect
-  chains:
-  - `text`: `text`, `size`, `color`, `font` (a font file path; empty means
-    the default).
-  - `solid`: `color`.
-  - `generator`: `generator`, the name of a script generator.
-  - `synth` (audio track): `synth`, the name of a script synth.
-  - `media`: placed with `clip.media`. `media.import` names media by file
-    name, extension included (`clip.mp4`). Video and audio stay linked as a
-    pair until `clip.unlink`. Use `clip.speed` to change playback speed.
-  - Every video clip also has `x`, `y` (pixels from the frame center; +y is
-    down), `scale`, `rotation` (degrees), `opacity`, and `blend` (`normal`,
-    `add`, `multiply`, `screen`).
-  - Every audio clip also has `gain` (dB, -60 to 12) and `pan` (-1 to 1).
-- **Effects** run in chain order.
-  - Video: `brightness_contrast`, `saturation` (amount), `blur` (radius),
-    `invert` (mix), `tint` (color, amount), `vignette` (amount, softness),
-    `threshold` (level).
-  - Audio: `gain`, `pan`, `lowpass` (cutoff, q), `highpass` (cutoff, q),
-    `delay` (time, feedback, mix), `compressor` (threshold, ratio, attack,
-    release, makeup).
-  - Audio effects can also go on `master`. Effect parameters are properties,
-    so they can be keyed or driven by expressions too.
+  chains. Video tracks hold `text`, `solid`, `generator` (drawn by a script
+  generator), and `media` clips. Audio tracks hold `synth` (a script synth)
+  and `media` clips.
+  - `media` clips are placed with `clip.media`. `media.import` names media by
+    file name, extension included (`clip.mp4`). Video and audio stay linked as
+    a pair until `clip.unlink`. Use `clip.speed` to change playback speed.
+  - Video clips share `x`, `y` (pixels from the frame center; +y is down),
+    `scale`, `rotation` (degrees), `opacity`, and `blend`. Audio clips share
+    `gain` (dB) and `pan`.
+- **Effects** run in chain order. Audio effects can also go on `master`.
+  Effect parameters are properties, so they can be keyed or driven by
+  expressions too.
 - **Transitions** blend clip A into clip B over a window centered on B's
-  start. Types: `crossfade`, `wipe` (direction, softness), `dip` (color),
-  `slide` (direction). The transition's curve maps progress to mix.
+  start. The transition's curve maps progress to mix.
 - **Signals** are named project values, constant or expression, read as
   `sig.NAME`.
-- **Eases** for keys and curves: `hold`, `linear`, `ease`, `ease-in`,
-  `ease-out`, `ease-in-out`, `ease-in-cubic`, `ease-out-cubic`,
-  `ease-in-out-cubic`, `ease-in-back`, `ease-out-back`, `ease-in-out-back`.
-  A key's ease shapes the segment that starts at that key.
+- **Eases** shape keyframe segments and transition curves. A key's ease
+  shapes the segment that starts at that key.
 - Colors are `#rrggbb` or `#rrggbbaa`. In Lua, use `rgb()`, `gray()`, or `hsv()`.
 
 ## Commands
@@ -157,7 +150,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 
 | Area | Commands |
 | --- | --- |
-| Files | `new`, `open PATH`, `save [PATH]`, `status`, `show [WHAT]` |
+| Files | `new`, `open PATH`, `save [PATH]`, `status`, `show [WHAT]`, `schema [SECTION]` |
 | Project | `settings [width] [height] [fps] [sampleRate] [background]` |
 | Tracks | `track.add KIND [NAME]`, `track.set TRACK [name] [muted] [hidden] [locked]`, `track.move TRACK INDEX`, `track.remove TRACK` |
 | Media | `media.import PATH`, `media.list`, `media.remove MEDIA` |
@@ -187,19 +180,11 @@ Notes:
 
 ## Expressions and scripting
 
-Property and signal expressions are Lua expressions. They can read:
-
-- `t`: project time in seconds. `lt`: time since the clip's start.
-  `progress`: 0 to 1 across the clip (or across the transition's window).
-- `sig.NAME`: a signal. `prop("clip name", "prop")` reads another clip's
-  evaluated property.
-- `fps`, `w`, `h`, `sample_rate`: project settings.
-- Helpers: `abs ceil floor sqrt exp log sin cos tan asin acos atan atan2 min
-  max fmod pow pi huge`, `clamp(x, a=0, b=1)`, `lerp(a, b, x)`,
-  `smoothstep(a, b, x)`, `round`, `ease(name, x)`, `hash(n)` (0 to 1),
-  `noise(x)` (smooth, -1 to 1), `osc(freq, phase)` (a sine of `t`, -1 to 1),
-  `rgb(r, g, b, a)`, `gray(v, a)`, `hsv(h, s, v, a)` (components 0 to 1).
-- Functions defined in the project script.
+Property and signal expressions are Lua expressions. They can read `t`
+(project time), `lt` (time since the clip's start), `progress` (0 to 1 across
+the clip or transition), `sig.NAME`, `prop("clip name", "prop")`, project
+settings, math and color helpers, and functions defined in the project script.
+`schema lua` lists every variable and helper with its signature.
 
 Examples:
 
@@ -217,10 +202,8 @@ The project script (`script.set`) runs whenever it changes. It can declare:
 -- Signals, constant or computed per frame.
 mf.signal("pulse", function() return exp(-fmod(t * 2, 1) * 6) end)
 
--- Generators draw a clip's image. g has w, h, t, lt, and progress.
--- Methods: g:clear(color), g:rect(x, y, w, h, color), g:circle(x, y, r, color),
--- g:line(x1, y1, x2, y2, width, color), g:text(str, x, y, size, color),
--- g:poly({x1, y1, x2, y2, x3, y3, ...}, color). Coordinates are project pixels.
+-- Generators draw a clip's image. g has w, h, t, lt, and progress, and the
+-- drawing methods in `schema lua` (canvas). Coordinates are project pixels.
 mf.generator("rings", function(g)
   g:clear(gray(0.05))
   for i = 1, 6 do g:circle(g.w / 2, g.h / 2, i * 40 * (1 + sig.pulse * 0.2), hsv(i / 6, 0.5, 0.9, 0.3)) end

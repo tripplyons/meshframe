@@ -107,6 +107,21 @@ private:
     ScriptOutput* pending_ = nullptr;
 };
 
+// One documented name in the scripting API, listed by the `schema` command.
+struct LuaApiEntry {
+    const char* name;
+    const char* signature;
+    const char* summary;
+};
+
+struct LuaApi {
+    std::vector<LuaApiEntry> variables;     // read in expressions and scripts
+    std::vector<LuaApiEntry> functions;     // global helpers
+    std::vector<LuaApiEntry> canvas;        // methods of a generator's g
+    std::vector<LuaApiEntry> declarations;  // mf.* functions for the project script
+};
+const LuaApi& luaApi();
+
 Value luaToValue(lua_State* L, int index);
 std::optional<Color> luaToColor(lua_State* L, int index);
 

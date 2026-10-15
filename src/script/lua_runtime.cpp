@@ -229,6 +229,75 @@ function osc(freq, phase) return sin((t * freq + (phase or 0)) * 2 * pi) end
 
 }  // namespace
 
+const LuaApi& luaApi() {
+    static const LuaApi api = {
+        .variables =
+            {
+                {"t", "t", "Project time in seconds"},
+                {"lt", "lt", "Seconds since the clip's start"},
+                {"progress", "progress", "0 to 1 across the clip, or across a transition's window"},
+                {"sig", "sig.NAME", "A project or script signal"},
+                {"fps", "fps", "Project frame rate"},
+                {"w", "w", "Project width in pixels"},
+                {"h", "h", "Project height in pixels"},
+                {"sample_rate", "sample_rate", "Project audio sample rate"},
+                {"pi", "pi", "The constant pi"},
+                {"huge", "huge", "Positive infinity"},
+            },
+        .functions =
+            {
+                {"prop", "prop(clip, name)", "Another clip's evaluated property; clip is a name"},
+                {"ease", "ease(name, x)", "Applies an ease preset to x in 0..1"},
+                {"clamp", "clamp(x, a=0, b=1)", "Limits x to a..b"},
+                {"lerp", "lerp(a, b, x)", "Linear blend from a to b"},
+                {"smoothstep", "smoothstep(a, b, x)", "Smooth 0..1 step as x goes from a to b"},
+                {"round", "round(x)", "Nearest integer"},
+                {"hash", "hash(n)", "Pseudo-random 0..1 from a number"},
+                {"noise", "noise(x)", "Smooth value noise, -1..1"},
+                {"osc", "osc(freq, phase=0)", "Sine of t at freq Hz, -1..1"},
+                {"rgb", "rgb(r, g, b, a=1)", "Color from components 0..1"},
+                {"gray", "gray(v, a=1)", "Gray color"},
+                {"hsv", "hsv(h, s, v, a=1)", "Color from hue, saturation, value, all 0..1"},
+                {"print", "print(...)", "Writes a log line"},
+                {"abs", "abs(x)", "math.abs"},
+                {"ceil", "ceil(x)", "math.ceil"},
+                {"floor", "floor(x)", "math.floor"},
+                {"sqrt", "sqrt(x)", "math.sqrt"},
+                {"exp", "exp(x)", "math.exp"},
+                {"log", "log(x)", "math.log"},
+                {"sin", "sin(x)", "math.sin"},
+                {"cos", "cos(x)", "math.cos"},
+                {"tan", "tan(x)", "math.tan"},
+                {"asin", "asin(x)", "math.asin"},
+                {"acos", "acos(x)", "math.acos"},
+                {"atan", "atan(x)", "math.atan"},
+                {"atan2", "atan2(y, x)", "math.atan2"},
+                {"min", "min(a, b, ...)", "math.min"},
+                {"max", "max(a, b, ...)", "math.max"},
+                {"fmod", "fmod(a, b)", "math.fmod"},
+                {"pow", "pow(a, b)", "math.pow"},
+            },
+        .canvas =
+            {
+                {"clear", "g:clear(color=black)", "Fills the canvas"},
+                {"rect", "g:rect(x, y, w, h, color=white)", "Filled rectangle; x, y is the top-left corner"},
+                {"circle", "g:circle(x, y, r, color=white)", "Filled circle"},
+                {"line", "g:line(x1, y1, x2, y2, width=2, color=white)", "Line segment"},
+                {"text", "g:text(str, x, y, size=48, color=white)", "Text; x, y is the top-left corner"},
+                {"poly", "g:poly({x1, y1, x2, y2, x3, y3, ...}, color=white)", "Filled polygon"},
+            },
+        .declarations =
+            {
+                {"signal", "mf.signal(name, fn)", "Declares a signal computed per frame"},
+                {"generator", "mf.generator(name, fn(g))", "Declares a generator; g has w, h, t, lt, progress"},
+                {"synth", "mf.synth(name, fn(time))", "Declares a synth that returns one sample in -1..1"},
+                {"clip", "mf.clip{track=, kind=, start=, duration=, ...}", "Declares a read-only clip; props may be functions"},
+                {"log", "mf.log(...)", "Writes a log line"},
+            },
+    };
+    return api;
+}
+
 std::optional<Color> luaToColor(lua_State* L, int index) {
     index = index < 0 ? lua_gettop(L) + index + 1 : index;
     if (lua_type(L, index) == LUA_TSTRING) return parseColor(lua_tostring(L, index));

@@ -3,6 +3,7 @@
 #include "model/edit.hpp"
 #include "model/schema.hpp"
 #include "render/image.hpp"
+#include "script/lua_runtime.hpp"
 
 #include <fmt/format.h>
 
@@ -391,6 +392,69 @@ Curve curveArg(const json& v) {
     return curveFromJson(v);
 }
 
+json propSpecToJson(const PropSpec& spec) {
+    json j = {{"name", spec.name}, {"type", typeName(spec.type)}, {"default", valueToJson(spec.def)}};
+    if (spec.type == ValueType::Number) {
+        j["min"] = spec.min;
+        j["max"] = spec.max;
+        j["step"] = spec.step;
+        if (*spec.unit) j["unit"] = spec.unit;
+    }
+    if (!spec.choices.empty()) j["choices"] = spec.choices;
+    if (!spec.animatable) j["animatable"] = false;
+    return j;
+}
+
+json propSpecsToJson(std::span<const PropSpec> specs) {
+    json out = json::array();
+    for (const auto& s : specs) out.push_back(propSpecToJson(s));
+    return out;
+}
+
+json effectSpecsToJson(const std::vector<EffectSpec>& specs) {
+    json out = json::array();
+    for (const auto& e : specs) out.push_back({{"type", e.type}, {"label", e.label}, {"params", propSpecsToJson(e.props)}});
+    return out;
+}
+
+json luaEntriesToJson(const std::vector<LuaApiEntry>& entries) {
+    json out = json::array();
+    for (const auto& e : entries) out.push_back({{"name", e.name}, {"signature", e.signature}, {"summary", e.summary}});
+    return out;
+}
+
+// Everything an agent needs to name things correctly, generated from the
+// specs the editor itself uses.
+json schemaJson() {
+    json clips = json::array();
+    auto clip = [&](ClipKind kind, TrackKind track) {
+        clips.push_back({{"kind", clipKindName(kind)}, {"track", trackKindName(track)}, {"props", propSpecsToJson(clipPropSpecs(kind, track))}});
+    };
+    clip(ClipKind::Text, TrackKind::Video);
+    clip(ClipKind::Solid, TrackKind::Video);
+    clip(ClipKind::Generator, TrackKind::Video);
+    clip(ClipKind::Media, TrackKind::Video);
+    clip(ClipKind::Media, TrackKind::Audio);
+    clip(ClipKind::Synth, TrackKind::Audio);
+
+    json eases = {interpName(Interp::Hold)};  // the presets include linear
+    for (const auto& e : easePresets()) eases.push_back(e.name);
+
+    const LuaApi& lua = luaApi();
+    return {{"trackKinds", {trackKindName(TrackKind::Video), trackKindName(TrackKind::Audio)}},
+            {"clips", clips},
+            {"blendModes", findClipProp(ClipKind::Solid, TrackKind::Video, "blend")->choices},
+            {"videoEffects", effectSpecsToJson(videoEffectSpecs())},
+            {"audioEffects", effectSpecsToJson(audioEffectSpecs())},
+            {"transitions", effectSpecsToJson(transitionSpecs())},
+            {"eases", eases},
+            {"lua",
+             {{"variables", luaEntriesToJson(lua.variables)},
+              {"functions", luaEntriesToJson(lua.functions)},
+              {"canvas", luaEntriesToJson(lua.canvas)},
+              {"declarations", luaEntriesToJson(lua.declarations)}}}};
+}
+
 }  // namespace
 
 void Commands::registerBuiltins() {
@@ -408,6 +472,15 @@ void Commands::registerBuiltins() {
              json out = json::array();
              for (const auto& [name, spec] : commands_) out.push_back({{"name", name}, {"usage", usage(spec)}, {"summary", spec.summary}});
              return out;
+         }});
+    add({"schema", "Show clip kinds, properties, effects, transitions, eases, and the Lua API",
+         {opt("section", "string", "trackKinds, clips, blendModes, videoEffects, audioEffects, transitions, eases, or lua")},
+         [](A a, C) -> json {
+             json j = schemaJson();
+             if (!a.contains("section")) return j;
+             std::string section = a["section"];
+             if (!j.contains(section)) throw EditError(fmt::format("unknown section '{}'", section));
+             return j[section];
          }});
     add({"status", "Session summary: file, time, size, counts, errors, export", {}, [](A, C c) -> json {
              Session& s = c.session;

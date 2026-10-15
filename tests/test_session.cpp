@@ -4,6 +4,7 @@
 #include "session/commands.hpp"
 
 #include <SDL3/SDL.h>
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -197,4 +198,51 @@ TEST(Commands, FilesFramesAndExport) {
         EXPECT_EQ(ok(c, {"media.list"}).size(), 1u);
     }
     EXPECT_NE(fails(c, {"media.import", "missing.mp4"}).size(), 0u);
+}
+
+TEST(Commands, SchemaNamesAreAccepted) {
+    Session s;
+    Commands c(s);
+    json schema = ok(c, {"schema"});
+    EXPECT_EQ(ok(c, {"schema", "eases"}), schema["eases"]);
+    EXPECT_NE(fails(c, {"schema", "nope"}).find("unknown section"), std::string::npos);
+
+    // Every listed clip kind and property is what clip.get reports.
+    ok(c, {"clip.add", "generator", "V1", "0", "4", "gen", R"(props={"generator":"probe"})"});
+    for (const auto& clip : schema["clips"]) {
+        std::string kind = clip["kind"];
+        if (kind == "media") continue;
+        std::string track = clip["track"] == "audio" ? "A1" : "V2";
+        Id id = ok(c, {"clip.add", kind, track, "0", "1"})["id"];
+        json values = ok(c, {"clip.get", std::to_string(id), "0"})["values"];
+        EXPECT_EQ(values.size(), clip["props"].size()) << kind;
+        for (const auto& prop : clip["props"]) EXPECT_TRUE(values.contains(prop["name"])) << kind << " " << prop["name"];
+        ok(c, {"clip.remove", std::to_string(id)});
+    }
+    for (const auto& blend : schema["blendModes"]) ok(c, {"prop.set", "gen", "blend", blend});
+
+    // Every effect, transition, and ease is accepted by the editing commands.
+    for (const auto& e : schema["videoEffects"]) ok(c, {"effect.add", "gen", e["type"]});
+    for (const auto& e : schema["audioEffects"]) ok(c, {"effect.add", "master", e["type"]});
+    ok(c, {"clip.add", "solid", "V2", "0", "2", "a"});
+    ok(c, {"clip.add", "solid", "V2", "2", "2", "b"});
+    Id tr = ok(c, {"transition.add", "a", "b"})["id"];
+    for (const auto& t : schema["transitions"]) ok(c, {"transition.set", std::to_string(tr), t["type"]});
+    for (const auto& e : schema["eases"]) ok(c, {"prop.key", "gen", "opacity", "0", "1", e});
+
+    // Every listed Lua name exists in the script environment.
+    const json& lua = schema["lua"];
+    for (const auto& v : lua["variables"])
+        EXPECT_EQ(ok(c, {"eval", fmt::format("return {} ~= nil", v["name"].get<std::string>())}), 1.0) << v["name"];
+    for (const auto& f : lua["functions"])
+        EXPECT_EQ(ok(c, {"eval", fmt::format("return type({})", f["name"].get<std::string>())}), "function") << f["name"];
+    for (const auto& f : lua["declarations"])
+        EXPECT_EQ(ok(c, {"eval", fmt::format("return type(mf.{})", f["name"].get<std::string>())}), "function") << f["name"];
+    std::string checks;
+    for (const auto& m : lua["canvas"])
+        checks += fmt::format("assert(type(g.{0}) == 'function', 'missing {0}')\n", m["name"].get<std::string>());
+    json script = ok(c, {"script.set", "mf.generator('probe', function(g)\n" + checks + "end)"});
+    EXPECT_FALSE(script.contains("error")) << script.dump();
+    ok(c, {"frame", "schema_probe.png", "0", "64"});
+    EXPECT_TRUE(ok(c, {"errors"}).empty()) << ok(c, {"errors"}).dump();
 }
