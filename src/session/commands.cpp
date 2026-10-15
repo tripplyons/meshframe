@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -62,13 +63,51 @@ json specToJson(const CommandSpec& spec) {
     return {{"name", spec.name}, {"summary", spec.summary}, {"usage", usage(spec)}, {"args", args}};
 }
 
-json coerceArg(const ArgSpec& a, const json& v, const std::string& cwd) {
+// Parses a time in seconds from "2.5", "90f" (frames), "1:15.5" or
+// "1:02:03.5" (clock), or "00:00:03:12" (HH:MM:SS:FF timecode).
+std::optional<double> parseTime(std::string_view s, double fps) {
+    if (s.ends_with('f')) {
+        auto frames = parseNumber(s.substr(0, s.size() - 1));
+        if (!frames || fps <= 0) return std::nullopt;
+        return *frames / fps;
+    }
+    std::vector<std::string_view> parts;
+    for (size_t start = 0;;) {
+        size_t colon = s.find(':', start);
+        parts.push_back(s.substr(start, colon == std::string_view::npos ? colon : colon - start));
+        if (colon == std::string_view::npos) break;
+        start = colon + 1;
+    }
+    if (parts.size() == 1) return parseNumber(s);
+    if (parts.size() > 4) return std::nullopt;
+    std::vector<double> v;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        auto n = parseNumber(parts[i]);
+        bool whole = parts.size() == 4 || i + 1 < parts.size();
+        if (!n || *n < 0 || parts[i].starts_with('+') || (whole && *n != std::floor(*n))) return std::nullopt;
+        v.push_back(*n);
+    }
+    if (parts.size() == 4) {
+        if (fps <= 0 || v[1] >= 60 || v[2] >= 60 || v[3] >= std::ceil(fps)) return std::nullopt;
+        return v[0] * 3600 + v[1] * 60 + v[2] + v[3] / fps;
+    }
+    if (v.back() >= 60 || (parts.size() == 3 && v[1] >= 60)) return std::nullopt;
+    return parts.size() == 3 ? v[0] * 3600 + v[1] * 60 + v[2] : v[0] * 60 + v[1];
+}
+
+json coerceArg(const ArgSpec& a, const json& v, const std::string& cwd, double fps) {
     auto fail = [&]() -> json { throw EditError(fmt::format("argument {}: expected {}, got {}", a.name, a.type, text(v))); };
     const std::string& t = a.type;
     if (t == "number") {
         if (v.is_number()) return v;
         if (v.is_string())
             if (auto d = parseNumber(v.get<std::string>())) return *d;
+        return fail();
+    }
+    if (t == "time") {
+        if (v.is_number()) return v;
+        if (v.is_string())
+            if (auto d = parseTime(v.get<std::string>(), fps)) return *d;
         return fail();
     }
     if (t == "int") {
@@ -229,7 +268,7 @@ json Commands::normalize(const CommandSpec& spec, const json& request) const {
     for (auto it = raw.begin(); it != raw.end(); ++it) {
         auto a = std::ranges::find(spec.args, it.key(), &ArgSpec::name);
         if (a == spec.args.end()) throw EditError(fmt::format("unknown argument '{}'; usage: {}", it.key(), usage(spec)));
-        args[it.key()] = coerceArg(*a, it.value(), cwd);
+        args[it.key()] = coerceArg(*a, it.value(), cwd, session_.project().settings.fps);
     }
     for (const auto& a : spec.args)
         if (a.required && !args.contains(a.name))
@@ -609,8 +648,8 @@ void Commands::registerBuiltins() {
 
     // ---- clips ----
     add({"clip.add", "Add a text, solid, generator, or synth clip",
-         {req("kind", "string", "text, solid, generator, synth"), req("track", "id"), req("start", "number"),
-          req("duration", "number"), opt("name", "string"), opt("props", "json", "object of property name to value")},
+         {req("kind", "string", "text, solid, generator, synth"), req("track", "id"), req("start", "time"),
+          req("duration", "time"), opt("name", "string"), opt("props", "json", "object of property name to value")},
          [edit](A a, C c) -> json {
              auto kind = parseClipKind(a["kind"].get<std::string>());
              if (!kind || *kind == ClipKind::Media) throw EditError("kind must be text, solid, generator, or synth; use clip.media for media");
@@ -630,7 +669,7 @@ void Commands::registerBuiltins() {
              return clipToJson(*c.session.project().findClip(id));
          }});
     add({"clip.media", "Place a media source on the timeline (linked A/V pair when it has both)",
-         {req("media", "id"), opt("start", "number"), opt("track", "id", "video track"), opt("audioTrack", "id")},
+         {req("media", "id"), opt("start", "time"), opt("track", "id", "video track"), opt("audioTrack", "id")},
          [edit](A a, C c) -> json {
              const Project& cur = c.session.project();
              Id media = resolveMedia(cur, a["media"]);
@@ -641,7 +680,7 @@ void Commands::registerBuiltins() {
              return ids;
          }});
     add({"clip.move", "Move a clip in time and optionally to another track",
-         {req("clip", "id"), req("start", "number"), opt("track", "id"), opt("linked", "bool", "move linked clips (default true)")},
+         {req("clip", "id"), req("start", "time"), opt("track", "id"), opt("linked", "bool", "move linked clips (default true)")},
          [edit](A a, C c) -> json {
              const Project& cur = c.session.project();
              Id id = resolveClip(cur, a["clip"]);
@@ -651,14 +690,14 @@ void Commands::registerBuiltins() {
              return clipToJson(*c.session.project().findClip(id));
          }});
     add({"clip.trim", "Set a clip's start and duration (source offset follows the start)",
-         {req("clip", "id"), req("start", "number"), req("duration", "number"), opt("linked", "bool")},
+         {req("clip", "id"), req("start", "time"), req("duration", "time"), opt("linked", "bool")},
          [edit](A a, C c) -> json {
              Id id = resolveClip(c.session.project(), a["clip"]);
              edit(c.session, "trim clip", [&](Project& p) { edit::trimClip(p, id, a["start"], a["duration"], get<bool>(a, "linked", true)); });
              return clipToJson(*c.session.project().findClip(id));
          }});
     add({"clip.split", "Split a clip at a timeline time; returns the new right-hand ids",
-         {req("clip", "id"), req("time", "number"), opt("linked", "bool")}, [edit](A a, C c) -> json {
+         {req("clip", "id"), req("time", "time"), opt("linked", "bool")}, [edit](A a, C c) -> json {
              Id id = resolveClip(c.session.project(), a["clip"]);
              std::vector<Id> ids;
              edit(c.session, "split clip", [&](Project& p) { ids = edit::splitClip(p, id, a["time"], get<bool>(a, "linked", true)); });
@@ -684,7 +723,7 @@ void Commands::registerBuiltins() {
              edit(c.session, "unlink clip", [&](Project& p) { edit::unlinkClip(p, id); });
              return nullptr;
          }});
-    add({"clip.get", "Show a clip with its evaluated property values", {req("clip", "id"), opt("time", "number")}, [](A a, C c) -> json {
+    add({"clip.get", "Show a clip with its evaluated property values", {req("clip", "id"), opt("time", "time")}, [](A a, C c) -> json {
              Session& s = c.session;
              Evaluator& ev = s.evaluator();
              const Project& ep = ev.project();
@@ -719,7 +758,7 @@ void Commands::registerBuiltins() {
              return {{"errors", errorsJson(c.session, c.session.time())}};
          }});
     add({"prop.key", "Add or replace a keyframe at clip-local time",
-         {req("target", "id"), req("name", "string"), req("time", "number"), req("value", "number"),
+         {req("target", "id"), req("name", "string"), req("time", "time"), req("value", "number"),
           opt("ease", "string", "hold, linear, bezier, or a preset like ease-in-out")},
          [edit](A a, C c) -> json {
              Id id = resolveTarget(c.session.project(), a["target"]);
@@ -739,13 +778,13 @@ void Commands::registerBuiltins() {
              });
              return propertyToJson(propOf(c.session.project(), id, name));
          }});
-    add({"prop.unkey", "Remove the keyframe at clip-local time", {req("target", "id"), req("name", "string"), req("time", "number")},
+    add({"prop.unkey", "Remove the keyframe at clip-local time", {req("target", "id"), req("name", "string"), req("time", "time")},
          [edit](A a, C c) -> json {
              Id id = resolveTarget(c.session.project(), a["target"]);
              edit(c.session, "remove keyframe", [&](Project& p) { edit::removeKeyframe(p, id, a["name"], a["time"]); });
              return nullptr;
          }});
-    add({"prop.get", "Show a property definition and its value at a time", {req("target", "id"), req("name", "string"), opt("time", "number")},
+    add({"prop.get", "Show a property definition and its value at a time", {req("target", "id"), req("name", "string"), opt("time", "time")},
          [](A a, C c) -> json {
              Session& s = c.session;
              const Project& ep = s.evaluator().project();
@@ -786,7 +825,7 @@ void Commands::registerBuiltins() {
              return nullptr;
          }});
     add({"transition.add", "Add a transition across the cut from clip a to clip b",
-         {req("a", "id"), req("b", "id"), opt("type", "string", "crossfade, wipe, dip, slide"), opt("duration", "number")},
+         {req("a", "id"), req("b", "id"), opt("type", "string", "crossfade, wipe, dip, slide"), opt("duration", "time")},
          [edit](A a, C c) -> json {
              const Project& cur = c.session.project();
              Id ca = resolveClip(cur, a["a"]), cb = resolveClip(cur, a["b"]);
@@ -801,7 +840,7 @@ void Commands::registerBuiltins() {
              edit(c.session, "remove transition", [&](Project& p) { edit::removeTransition(p, id); });
              return nullptr;
          }});
-    add({"transition.set", "Change a transition's type or duration", {req("transition", "id"), opt("type", "string"), opt("duration", "number")},
+    add({"transition.set", "Change a transition's type or duration", {req("transition", "id"), opt("type", "string"), opt("duration", "time")},
          [edit](A a, C c) -> json {
              Id id = a["transition"].is_number() ? a["transition"].get<Id>() : throw EditError("transition needs an id");
              std::optional<std::string> type;
@@ -855,7 +894,7 @@ void Commands::registerBuiltins() {
              if (out.error) j["error"] = {{"line", out.error->line}, {"message", out.error->message}};
              return j;
          }});
-    add({"eval", "Evaluate a Lua expression or statement at a time", {req("code", "string"), opt("time", "number")}, [](A a, C c) -> json {
+    add({"eval", "Evaluate a Lua expression or statement at a time", {req("code", "string"), opt("time", "time")}, [](A a, C c) -> json {
              Evaluator& ev = c.session.evaluator();
              ev.setTime(get<double>(a, "time", c.session.time()));
              std::string err;
@@ -863,7 +902,7 @@ void Commands::registerBuiltins() {
              if (!err.empty()) throw EditError(err);
              return valueToJson(v);
          }});
-    add({"graph", "Show the reactive graph: nodes, values, and dependencies", {opt("time", "number")}, [](A a, C c) -> json {
+    add({"graph", "Show the reactive graph: nodes, values, and dependencies", {opt("time", "time")}, [](A a, C c) -> json {
              Evaluator& ev = c.session.evaluator();
              ev.setTime(get<double>(a, "time", c.session.time()));
              ev.refreshOutputs();
@@ -883,7 +922,7 @@ void Commands::registerBuiltins() {
     add({"errors", "List script, expression, and render errors", {}, [](A, C c) -> json { return errorsJson(c.session, c.session.time()); }});
 
     // ---- transport and output ----
-    add({"seek", "Move the playhead", {req("time", "number")}, [](A a, C c) -> json {
+    add({"seek", "Move the playhead", {req("time", "time")}, [](A a, C c) -> json {
              c.session.seek(a["time"]);
              return c.session.time();
          }});
@@ -904,7 +943,7 @@ void Commands::registerBuiltins() {
                      {"duration", c.session.evaluator().project().duration()}};
          }});
     add({"frame", "Render the frame at a time to a PNG",
-         {req("path", "path"), opt("time", "number"), opt("width", "int"), opt("height", "int")}, [](A a, C c) -> json {
+         {req("path", "path"), opt("time", "time"), opt("width", "int"), opt("height", "int")}, [](A a, C c) -> json {
              Session& s = c.session;
              const auto& st = s.project().settings;
              int w = get<int>(a, "width", 0), h = get<int>(a, "height", 0);
@@ -919,7 +958,7 @@ void Commands::registerBuiltins() {
              return {{"path", path}, {"time", t}, {"width", img->w}, {"height", img->h}, {"errors", errorsJson(s, t)}};
          }});
     add({"export", "Export MP4 (H.264 + AAC) or WAV in the background",
-         {req("path", "path"), opt("width", "int"), opt("height", "int"), opt("start", "number"), opt("end", "number"),
+         {req("path", "path"), opt("width", "int"), opt("height", "int"), opt("start", "time"), opt("end", "time"),
           opt("crf", "int"), opt("wait", "bool", "reply when the export finishes")},
          [](A a, C c) -> json {
              Session& s = c.session;

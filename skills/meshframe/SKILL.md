@@ -86,8 +86,10 @@ meshframe-cli help clip.add     # one command's arguments
   strings. Quote JSON objects for the shell: `'props={"text":"Hi","size":64}'`.
 - Clips, tracks, and other targets accept an id or a name. Names must be
   unique. Use ids after splitting a clip, because both halves keep the name.
-- Times are in seconds. Keyframe times are clip-local, measured from the
-  clip's start.
+- Times and durations are in seconds: `2.5`. They also accept frames at the
+  project frame rate (`90f`), timecode (`00:00:03:12`, HH:MM:SS:FF), and clock
+  time (`1:15.5` or `1:02:03.5`). Replies always use seconds. Keyframe times
+  are clip-local, measured from the clip's start.
 - On success, a string result prints raw and an object prints as JSON. With
   `--json`, the full reply is printed. On failure, `error: MESSAGE` goes to
   stderr. Exit status: 0 for success, 1 when the command fails, 2 for usage

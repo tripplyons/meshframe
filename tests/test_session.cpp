@@ -73,7 +73,7 @@ TEST(Commands, ArgumentsAndErrors) {
 
     EXPECT_NE(fails(c, {"nope"}).find("unknown command"), std::string::npos);
     EXPECT_NE(fails(c, {"clip.add", "text"}).find("missing argument 'track'"), std::string::npos);
-    EXPECT_NE(fails(c, {"seek", "abc"}).find("expected number"), std::string::npos);
+    EXPECT_NE(fails(c, {"seek", "abc"}).find("expected time"), std::string::npos);
     EXPECT_NE(fails(c, {"seek", "1", "2"}).find("too many"), std::string::npos);
     EXPECT_NE(fails(c, {"clip.add", "text", "V9", "0", "1"}).find("no track named 'V9'"), std::string::npos);
 
@@ -245,4 +245,29 @@ TEST(Commands, SchemaNamesAreAccepted) {
     EXPECT_FALSE(script.contains("error")) << script.dump();
     ok(c, {"frame", "schema_probe.png", "0", "64"});
     EXPECT_TRUE(ok(c, {"errors"}).empty()) << ok(c, {"errors"}).dump();
+}
+
+TEST(Commands, TimeArgumentsTakeFramesTimecodeAndClock) {
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "fps=30"});
+    auto at = [&](const char* time) { return ok(c, {"eval", "t", time}).get<double>(); };
+    EXPECT_DOUBLE_EQ(at("90f"), 3.0);
+    EXPECT_DOUBLE_EQ(at("00:00:03:00"), 3.0);
+    EXPECT_DOUBLE_EQ(at("00:01:02:15"), 62.5);
+    EXPECT_DOUBLE_EQ(at("1:15.5"), 75.5);
+    EXPECT_DOUBLE_EQ(at("1:00:01"), 3601.0);
+
+    // Durations, clip-local key times, and JSON requests take them too.
+    json clip = ok(c, {"clip.add", "solid", "V1", "15f", "0:02", "bg"});
+    EXPECT_EQ(clip["start"], 0.5);
+    EXPECT_EQ(clip["duration"], 2.0);
+    ok(c, {"prop.key", "bg", "opacity", "30f", "0.5"});
+    EXPECT_EQ(ok(c, {"prop.get", "bg", "opacity"})["property"]["curve"][0]["t"], 1.0);
+    json r = c.runSync({{"cmd", "clip.move"}, {"args", {{"clip", "bg"}, {"start", "60f"}}}});
+    ASSERT_TRUE(r["ok"]) << r.dump();
+    EXPECT_EQ(r["result"]["start"], 2.0);
+
+    for (const char* bad : {"1:60", "00:00:01:30", "1.5:00", "x f", "1::2", "1:2:3:4:5", "-1:00"})
+        EXPECT_NE(fails(c, {"seek", bad}).find("expected time"), std::string::npos) << bad;
 }
