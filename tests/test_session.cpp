@@ -1,6 +1,7 @@
 #include "fixtures.hpp"
 #include "model/edit.hpp"
 #include "render/image.hpp"
+#include "render/sheet.hpp"
 #include "session/commands.hpp"
 
 #include <SDL3/SDL.h>
@@ -8,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
 
 using namespace mf;
 
@@ -366,4 +368,76 @@ TEST(Commands, MarkersNameTimes) {
     Commands lc(loaded);
     ok(lc, {"open", "markers.mfproj"});
     EXPECT_EQ(ok(lc, {"show", "markers"}), ok(c, {"show", "markers"}));
+}
+
+namespace {
+
+// Width and height from a PNG's IHDR chunk.
+std::pair<int, int> pngSize(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    unsigned char b[24] = {};
+    in.read(reinterpret_cast<char*>(b), sizeof b);
+    auto be = [&](int i) { return (b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]; };
+    return {be(16), be(20)};
+}
+
+}  // namespace
+
+TEST(Commands, SheetSamplesFramesIntoAGrid) {
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "width=320", "height=180", "fps=10"});
+    ok(c, {"clip.add", "solid", "V1", "0", "4", "bg"});
+    ok(c, {"prop.expr", "bg", "color", "gray(t / 4)"});
+    ok(c, {"clip.add", "solid", "V2", "1", "2", "box", R"(props={"color":"#ff0000","scale":0.5})"});
+    ok(c, {"marker.add", "mid", "2"});
+
+    // The default is 12 frames across the project, first frame to last.
+    json r = ok(c, {"sheet", "sheet.png"});
+    ASSERT_EQ(r["cells"].size(), 12u);
+    EXPECT_EQ(r["cells"][0]["time"], 0.0);
+    EXPECT_DOUBLE_EQ(r["cells"][11]["time"].get<double>(), 3.9);
+    EXPECT_GE(r["columns"].get<int>() * r["rows"].get<int>(), 12);
+    EXPECT_EQ(pngSize(fixtures::dir() / "sheet.png"), std::make_pair(r["width"].get<int>(), r["height"].get<int>()));
+
+    // every= steps from the start; a cell on a marker names it.
+    EXPECT_NE(fails(c, {"sheet", "sheet.png", "every=1x"}).find("expected time"), std::string::npos);
+    r = ok(c, {"sheet", "sheet.png", "every=10f"});
+    ASSERT_EQ(r["cells"].size(), 4u);
+    EXPECT_EQ(r["cells"][2]["timecode"], "00:00:02:00");
+    EXPECT_EQ(r["cells"][2]["marker"], "mid");
+
+    // clip= uses the clip's range; start and end still override it.
+    r = ok(c, {"sheet", "sheet.png", "clip=box", "count=3", "columns=3", "width=64"});
+    ASSERT_EQ(r["cells"].size(), 3u);
+    EXPECT_EQ(r["cells"][0]["time"], 1.0);
+    EXPECT_DOUBLE_EQ(r["cells"][2]["time"].get<double>(), 2.9);
+    EXPECT_EQ(r["rows"], 1);
+    EXPECT_EQ(ok(c, {"sheet", "sheet.png", "clip=box", "start=@mid", "count=1"})["cells"][0]["time"], 2.0);
+
+    EXPECT_NE(fails(c, {"sheet", "sheet.png", "count=2", "every=1"}).find("not both"), std::string::npos);
+    EXPECT_NE(fails(c, {"sheet", "sheet.png", "start=5", "end=5"}).find("range is empty"), std::string::npos);
+}
+
+TEST(Sheet, CellsHoldTheFrames) {
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "width=320", "height=180"});
+    ok(c, {"clip.add", "solid", "V1", "0", "2", "bg", R"(props={"color":"#3366cc"})"});
+    ok(c, {"clip.add", "solid", "V2", "1", "1", "box", R"(props={"color":"#ff0000","scale":0.5})"});
+    std::vector<SheetCell> cells = {{s.renderFrame(0.5, 64, 36), "a"}, {s.renderFrame(1.5, 64, 36), "b"}, {s.renderFrame(1.5, 64, 36), "c"}};
+    SheetLayout l;
+    Image sheet = composeSheet(cells, 2, &l);
+    EXPECT_EQ(l.columns, 2);
+    EXPECT_EQ(l.rows, 2);
+    EXPECT_EQ(sheet.w, l.gap + 2 * (l.cellW + l.gap));
+    EXPECT_EQ(sheet.h, l.gap + 2 * (l.cellH + l.gap));
+    for (int i = 0; i < 3; ++i)
+        for (auto [x, y] : {std::pair{2, 2}, std::pair{32, 18}, std::pair{60, 33}}) {
+            const uint8_t* want = cells[i].frame->at(x, y);
+            const uint8_t* got = sheet.at(l.x(i) + x, l.y(i) + y);
+            EXPECT_EQ(std::vector<int>(want, want + 3), std::vector<int>(got, got + 3)) << i << " " << x << "," << y;
+        }
+    EXPECT_EQ(squareColumns(12, 16, 9), 3);
+    EXPECT_EQ(squareColumns(1, 16, 9), 1);
 }

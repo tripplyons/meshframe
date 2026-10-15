@@ -2,7 +2,9 @@
 
 #include "model/edit.hpp"
 #include "model/schema.hpp"
+#include "core/timecode.hpp"
 #include "render/image.hpp"
+#include "render/sheet.hpp"
 #include "script/lua_runtime.hpp"
 
 #include <fmt/format.h>
@@ -62,39 +64,6 @@ json specToJson(const CommandSpec& spec) {
     for (const auto& a : spec.args)
         args.push_back({{"name", a.name}, {"type", a.type}, {"required", a.required}, {"help", a.help}});
     return {{"name", spec.name}, {"summary", spec.summary}, {"usage", usage(spec)}, {"args", args}};
-}
-
-// Parses a time in seconds from "2.5", "90f" (frames), "1:15.5" or
-// "1:02:03.5" (clock), or "00:00:03:12" (HH:MM:SS:FF timecode).
-std::optional<double> parseTime(std::string_view s, double fps) {
-    if (s.starts_with('@')) return std::nullopt;
-    if (s.ends_with('f')) {
-        auto frames = parseNumber(s.substr(0, s.size() - 1));
-        if (!frames || fps <= 0) return std::nullopt;
-        return *frames / fps;
-    }
-    std::vector<std::string_view> parts;
-    for (size_t start = 0;;) {
-        size_t colon = s.find(':', start);
-        parts.push_back(s.substr(start, colon == std::string_view::npos ? colon : colon - start));
-        if (colon == std::string_view::npos) break;
-        start = colon + 1;
-    }
-    if (parts.size() == 1) return parseNumber(s);
-    if (parts.size() > 4) return std::nullopt;
-    std::vector<double> v;
-    for (size_t i = 0; i < parts.size(); ++i) {
-        auto n = parseNumber(parts[i]);
-        bool whole = parts.size() == 4 || i + 1 < parts.size();
-        if (!n || *n < 0 || parts[i].starts_with('+') || (whole && *n != std::floor(*n))) return std::nullopt;
-        v.push_back(*n);
-    }
-    if (parts.size() == 4) {
-        if (fps <= 0 || v[1] >= 60 || v[2] >= 60 || v[3] >= std::ceil(fps)) return std::nullopt;
-        return v[0] * 3600 + v[1] * 60 + v[2] + v[3] / fps;
-    }
-    if (v.back() >= 60 || (parts.size() == 3 && v[1] >= 60)) return std::nullopt;
-    return parts.size() == 3 ? v[0] * 3600 + v[1] * 60 + v[2] : v[0] * 60 + v[1];
 }
 
 // Parses "@name", "@name+2f", or "@name-0:01" as a marker's timeline time
@@ -1065,6 +1034,71 @@ void Commands::registerBuiltins() {
              std::string path = a["path"];
              if (!savePng(*img, path.c_str())) throw EditError("cannot write " + path);
              return {{"path", path}, {"time", t}, {"width", img->w}, {"height", img->h}, {"errors", errorsJson(s, t)}};
+         }});
+    add({"sheet", "Render a grid of frames with timecodes to a PNG (a contact sheet)",
+         {req("path", "path"), opt("start", "time", "default: project or clip start"), opt("end", "time", "default: project or clip end"),
+          opt("count", "int", "evenly spaced frames (default 12)"), opt("every", "time", "a frame at this step instead of count"),
+          opt("clip", "id", "use this clip's range"), opt("width", "int", "cell width (default 320)"), opt("columns", "int")},
+         [](A a, C c) -> json {
+             Session& s = c.session;
+             const Project& ep = s.evaluator().project();
+             const auto& st = ep.settings;
+             double start = 0, end = ep.duration();
+             if (a.contains("clip")) {
+                 const Clip& clip = *ep.findClip(resolveClip(ep, a["clip"]));
+                 start = clip.start, end = clip.end();
+             }
+             start = get<double>(a, "start", start);
+             end = get<double>(a, "end", end);
+             if (a.contains("count") && a.contains("every")) throw EditError("give count or every, not both");
+             double frame = 1 / st.fps;
+             auto snap = [&](double t) { return std::round(t * st.fps) / st.fps; };
+             double last = snap(end - frame);
+             start = snap(start);
+             if (last < start) throw EditError("the range is empty; give start and end, or add clips");
+             std::vector<double> times;
+             if (a.contains("every")) {
+                 double every = a["every"];
+                 if (every < frame) throw EditError("every must be at least one frame");
+                 for (double t = start; t <= last + 1e-9 && times.size() <= 400; t += every) times.push_back(snap(t));
+             } else {
+                 int count = get<int>(a, "count", 12);
+                 if (count < 1) throw EditError("count must be at least 1");
+                 for (int i = 0; i < count && i <= 400; ++i)
+                     times.push_back(snap(count == 1 ? start : start + (last - start) * i / (count - 1)));
+             }
+             times.erase(std::unique(times.begin(), times.end()), times.end());
+             if (times.size() > 400) throw EditError("a sheet holds at most 400 frames");
+
+             int w = get<int>(a, "width", 320);
+             if (w < 16 || w > 4096) throw EditError("width must be 16 to 4096");
+             int h = std::max(2, int(std::lround(double(w) * st.height / st.width)));
+             std::vector<SheetCell> cells;
+             json info = json::array();
+             json errors = json::array();
+             for (double t : times) {
+                 std::string label = formatTimecode(t, st.fps);
+                 json cell = {{"time", t}, {"timecode", label}};
+                 for (const Marker& m : ep.markers)
+                     if (std::llround(m.time * st.fps) == std::llround(t * st.fps)) {
+                         label += "  @" + m.name;
+                         cell["marker"] = m.name;
+                         break;
+                     }
+                 cells.push_back({s.renderFrame(t, w, h), label});
+                 for (auto& e : errorsJson(s, t)) {
+                     e["time"] = t;
+                     errors.push_back(std::move(e));
+                 }
+                 info.push_back(std::move(cell));
+             }
+             int columns = get<int>(a, "columns", squareColumns(int(cells.size()), w, h));
+             SheetLayout layout;
+             Image sheet = composeSheet(cells, columns, &layout);
+             std::string path = a["path"];
+             if (!savePng(sheet, path.c_str())) throw EditError("cannot write " + path);
+             return {{"path", path}, {"width", sheet.w}, {"height", sheet.h}, {"columns", layout.columns}, {"rows", layout.rows},
+                     {"cells", info}, {"errors", errors}};
          }});
     add({"export", "Export MP4 (H.264 + AAC) or WAV in the background",
          {req("path", "path"), opt("width", "int"), opt("height", "int"), opt("start", "time"), opt("end", "time"),

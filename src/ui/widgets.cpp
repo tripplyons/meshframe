@@ -26,14 +26,6 @@ std::string formatNumber(double v, int decimals) {
     return s;
 }
 
-std::string formatTimecode(double seconds, double fps) {
-    if (fps <= 0) fps = 30;
-    int perSecond = std::max(1, int(std::round(fps)));
-    int64_t frames = int64_t(std::floor(std::max(0.0, seconds) * fps + 1e-6));
-    int64_t s = frames / perSecond;
-    return fmt::format("{:02}:{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60, frames % perSecond);
-}
-
 void drawChevronDown(Context& ui, Vec c, float size, const Color& col) {
     float h = size * 0.5f;
     ui.painter.triangle({c.x - size, c.y - h}, {c.x + size, c.y - h}, {c.x, c.y + h}, col);

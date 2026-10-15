@@ -125,6 +125,12 @@ meshframe-cli help clip.add     # one command's arguments
 2. Edit with the commands below. Commands that set expressions or the script
    return `errors`. Check that it is empty.
 3. Verify what you made:
+   - `sheet out.png` renders a contact sheet: a grid of frames, each labeled
+     with its timecode and any marker on that frame. Read the image to check
+     motion, cuts, and timing in one look. By default it shows 12 frames
+     across the project. `clip=NAME` limits it to one clip, `start` and `end`
+     set the range, `count=N` or `every=15f` set the sampling, and `width`
+     and `columns` set the layout. The reply lists each cell's time.
    - `frame out.png TIME [WIDTH]` renders one frame to PNG. Read the image.
    - `clip.get CLIP TIME` shows evaluated values. `prop.get TARGET NAME TIME`
      shows one property's definition and value.
@@ -191,7 +197,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Reactive | `signal.set NAME value=V` or `expr=E`, `signal.remove NAME`, `script.get`, `script.set [SOURCE] [file=PATH]`, `eval CODE [TIME]`, `graph [TIME]`, `errors` |
 | Transport | `play`, `pause`, `toggle`, `seek TIME`, `time` |
 | History | `undo`, `redo`, `history`, `batch COMMANDS [LABEL]` |
-| Output | `frame PATH [TIME] [WIDTH] [HEIGHT]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
+| Output | `frame PATH [TIME] [WIDTH] [HEIGHT]`, `sheet PATH [start] [end] [count] [every] [clip] [width] [columns]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
 | Selection | `select [clips] [track] [media] [effect] [transition] [prop]` |
 | GUI | `ui.state`, `ui.space N`, `ui.swap N`, `ui.layout NAME [space]`, `ui.pane N VIEW [space]`, `ui.actions`, `ui.action ID`, `ui.dialog CHOICE`, `ui.bind ID [KEYS]`, `ui.theme [SLOT] [COLOR]`, `ui.settings [set]`, `ui.screenshot PATH` |
 
@@ -291,7 +297,7 @@ meshframe-cli $P prop.key title opacity 0 0
 meshframe-cli $P prop.key title opacity 0.6 1 ease-out
 meshframe-cli $P prop.expr title y "sin(t * 2) * 10"
 meshframe-cli $P effect.add title vignette
-meshframe-cli $P frame check.png 2      # look at it
+meshframe-cli $P sheet check.png       # look at it
 meshframe-cli $P export title.mp4 wait=true
 ```
 

@@ -107,6 +107,7 @@ The running editor listens on a Unix socket in `$MESHFRAME_RUNTIME_DIR` or
 ./build/meshframe-cli schema                         # clip props, effects, eases, Lua API
 ./build/meshframe-cli clip.add text V2 0 4 title 'props={"text":"Hello"}'
 ./build/meshframe-cli prop.expr title y "sin(t * 2) * 20"
+./build/meshframe-cli sheet frames.png count=12          # contact sheet
 ./build/meshframe-cli ui.screenshot window.png
 ```
 
