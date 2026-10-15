@@ -24,6 +24,8 @@ json trackToJson(const Track& t);
 json mediaToJson(const MediaSource& m);
 json settingsToJson(const ProjectSettings& s);
 json markerToJson(const Marker& m);
+json transcriptToJson(const Transcript& t);
+Transcript transcriptFromJson(const json& j);
 ProjectSettings settingsFromJson(const json& j, ProjectSettings base = {});
 
 json projectToJson(const Project& p);

@@ -73,6 +73,8 @@ void setTransitionCurve(Project& p, Id transition, Curve curve);
 
 void setSignal(Project& p, const std::string& name, Property value);
 void removeSignal(Project& p, const std::string& name);
+void setTranscript(Project& p, Id media, std::shared_ptr<const Transcript> transcript);
+
 // Marker names are Lua identifiers, so expressions can read marker.NAME.
 // An empty name picks the next free M1, M2, ...
 Id addMarker(Project& p, std::string name, double time);

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -47,6 +48,17 @@ using PropertyMap = std::map<std::string, Property>;
 enum class MediaKind { Video, Audio, Image };
 const char* mediaKindName(MediaKind k);
 
+// Speech in a media file, with times in source seconds.
+struct Transcript {
+    struct Span {
+        std::string text;
+        double start = 0, end = 0;
+    };
+    std::string model;            // the model file it came from
+    std::vector<Span> segments;  // phrases or sentences
+    std::vector<Span> words;
+};
+
 struct MediaSource {
     Id id = 0;
     std::string name;
@@ -57,6 +69,7 @@ struct MediaSource {
     double fps = 0;
     bool hasVideo = false, hasAudio = false;
     int sampleRate = 0, channels = 0;
+    std::shared_ptr<const Transcript> transcript;  // shared: undo snapshots copy projects
 };
 
 enum class TrackKind { Video, Audio };

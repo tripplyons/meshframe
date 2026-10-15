@@ -89,7 +89,7 @@ lines as one `batch` request. They become one undo step, and if any command
 fails, none of them take effect. The reply holds each command's result in
 order, or an error naming the command that failed. A batch cannot run
 `undo`, `redo`, `new`, `open`, `save`, `export`, `export.cancel`, `play`,
-`pause`, `toggle`, or `ui.*` commands. Refer to clips made in the same batch
+`pause`, `toggle`, `media.transcribe`, or `ui.*` commands. Refer to clips made in the same batch
 by name.
 
 ```sh
@@ -229,7 +229,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Files | `new`, `open PATH`, `save [PATH]`, `status`, `show [WHAT]`, `schema [SECTION]`, `quit` |
 | Project | `settings [width] [height] [fps] [sampleRate] [background]` |
 | Tracks | `track.add KIND [NAME]`, `track.set TRACK [name] [muted] [hidden] [locked]`, `track.move TRACK INDEX`, `track.remove TRACK` |
-| Media | `media.import PATH`, `media.list`, `media.remove MEDIA` |
+| Media | `media.import PATH`, `media.list`, `media.inspect MEDIA [sheet] [count] [threshold]`, `media.transcribe MEDIA [model] [language] [force]`, `transcript.get MEDIA [start] [end] [words]`, `transcript.find TEXT [media]`, `media.remove MEDIA` |
 | Clips | `clip.bounds CLIP [TIME]`, `text.measure TEXT [size] [font]`, `clip.add KIND TRACK START DURATION [NAME] [PROPS]`, `clip.media MEDIA [START] [TRACK] [AUDIOTRACK]`, `clip.get CLIP [TIME]`, `clip.move CLIP START [TRACK]`, `clip.trim CLIP START DURATION`, `clip.split CLIP TIME`, `clip.speed`, `clip.rename`, `clip.unlink`, `clip.remove` |
 | Properties | `prop.set TARGET NAME VALUE`, `prop.key TARGET NAME TIME VALUE [EASE]`, `prop.unkey TARGET NAME TIME`, `prop.expr TARGET NAME EXPR`, `prop.get TARGET NAME [TIME]` |
 | Effects | `effect.add TARGET TYPE [INDEX]`, `effect.enable EFFECT [ENABLED]`, `effect.move EFFECT DELTA`, `effect.remove EFFECT` |
@@ -254,6 +254,32 @@ Notes:
   runs in the background. Use `wait=true` to reply when it finishes, or poll
   `export.status`. `crf` is 0 to 51, and lower means higher quality.
 - `select` changes what the GUI's inspector, curves, and effects views show.
+
+## Working with footage
+
+Look at media before you place it:
+
+- `media.inspect MEDIA` reports the file's size, duration, and streams;
+  scene `cuts` (source times where the picture changes; `threshold=0.15`,
+  lower finds more); the audio's loudness, peaks, and silent ranges; and
+  whether it has a transcript. `sheet=PATH` also writes a contact sheet of
+  the file (`count=12`).
+- `media.transcribe MEDIA` turns speech into text with word timings and
+  stores it in the project, so later calls are instant (`force=true` redoes
+  it). It needs `whisper-cli` (`brew install whisper-cpp`) and a model file:
+  `model=PATH`, `$MESHFRAME_WHISPER_MODEL`, or
+  `~/.cache/meshframe/whisper/ggml-base.en.bin`. If either is missing, the
+  error says how to get it; ask the user before installing or downloading.
+  Transcription can take a while for long files, so over the socket pass
+  `--timeout 0` (or a long timeout) to the CLI.
+- `transcript.get MEDIA [start] [end] [words=true]` shows the transcript
+  between source times.
+- `transcript.find TEXT [media]` finds spoken words, ignoring case and
+  punctuation. Each match gives source `start` and `end` and, under
+  `timeline`, every clip that plays it with its timeline times (`partial`
+  when the clip trims part of it). Use these to cut by what people say: find
+  the first and last words of the part to keep, then `clip.split` and
+  `clip.trim` at those times.
 
 ## Expressions and scripting
 

@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <map>
@@ -65,6 +66,67 @@ AudioAnalysis analyzeMix(Session& s, double start, double end, const AudioAnalys
         done += n;
     }
     return analyzer.finish();
+}
+
+namespace {
+
+// Lowercase letters, digits, and apostrophes, so "Demo," matches "demo".
+std::string normalizeWord(std::string_view w) {
+    std::string out;
+    for (char ch : w) {
+        auto c = static_cast<unsigned char>(ch);
+        if (std::isalnum(c) || ch == '\'' || c >= 0x80) out += char(std::tolower(c));
+    }
+    return out;
+}
+
+}  // namespace
+
+json findSpeech(const Project& p, const std::string& text, Id media) {
+    std::vector<std::string> query;
+    for (size_t i = 0; i < text.size();) {
+        size_t j = text.find_first_of(" \t\n", i);
+        if (j == std::string::npos) j = text.size();
+        if (std::string w = normalizeWord(std::string_view(text).substr(i, j - i)); !w.empty()) query.push_back(std::move(w));
+        i = j + 1;
+    }
+    json out = json::array();
+    if (query.empty()) return out;
+    for (const MediaSource& m : p.media) {
+        if ((media && m.id != media) || !m.transcript) continue;
+        const auto& words = m.transcript->words;
+        std::vector<std::string> norm;
+        for (const auto& w : words) norm.push_back(normalizeWord(w.text));
+        for (size_t i = 0; i + query.size() <= words.size(); ++i) {
+            if (!std::equal(query.begin(), query.end(), norm.begin() + std::ptrdiff_t(i))) continue;
+            const auto& first = words[i];
+            const auto& last = words[i + query.size() - 1];
+            std::string spoken;
+            for (size_t k = i; k < i + query.size(); ++k) spoken += (k > i ? " " : "") + words[k].text;
+            // A linked pair is reported once, through its audio clip.
+            auto pairedWithAudio = [&](const Clip& c) {
+                const Track* t = p.findTrack(c.track);
+                if (!c.link || (t && t->kind == TrackKind::Audio)) return false;
+                return std::ranges::any_of(p.clips, [&](const Clip& o) {
+                    const Track* ot = p.findTrack(o.track);
+                    return &o != &c && o.link == c.link && o.media == c.media && ot && ot->kind == TrackKind::Audio;
+                });
+            };
+            json timeline = json::array();
+            for (const Clip& c : p.clips) {
+                if (c.kind != ClipKind::Media || c.media != m.id || c.speed <= 0 || pairedWithAudio(c)) continue;
+                double srcEnd = c.in + c.duration * c.speed;
+                double a = std::max(first.start, c.in), b = std::min(last.end, srcEnd);
+                if (b <= a) continue;
+                json j = {{"clip", c.id}, {"name", c.name}, {"start", c.start + (a - c.in) / c.speed}, {"end", c.start + (b - c.in) / c.speed}};
+                if (a > first.start || b < last.end) j["partial"] = true;
+                timeline.push_back(std::move(j));
+            }
+            out.push_back({{"media", m.id}, {"mediaName", m.name}, {"text", spoken}, {"start", first.start}, {"end", last.end},
+                           {"timeline", timeline}});
+        }
+    }
+    return out;
 }
 
 namespace {

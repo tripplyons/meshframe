@@ -29,6 +29,17 @@ cmake --build build
 
 The build produces `build/meshframe` and `build/meshframe-cli`.
 
+Transcription (`media.transcribe`) is optional. It runs `whisper-cli` from
+whisper.cpp with a model file, by default
+`~/.cache/meshframe/whisper/ggml-base.en.bin`:
+
+```sh
+brew install whisper-cpp
+mkdir -p ~/.cache/meshframe/whisper
+curl -L -o ~/.cache/meshframe/whisper/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+```
+
 To build a self-contained `meshframe.app` that runs without Homebrew:
 
 ```sh

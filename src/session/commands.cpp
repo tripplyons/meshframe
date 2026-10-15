@@ -4,6 +4,8 @@
 #include "model/schema.hpp"
 #include "audio/analysis.hpp"
 #include "core/timecode.hpp"
+#include "media/scenes.hpp"
+#include "media/transcribe.hpp"
 #include "render/font.hpp"
 #include "render/image.hpp"
 #include "render/raster.hpp"
@@ -20,6 +22,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <future>
 #include <set>
 #include <thread>
 
@@ -395,6 +399,14 @@ json analysisJson(const AudioAnalysis& a) {
             {"steps", steps}};
 }
 
+json transcriptSummary(const MediaSource& m) {
+    if (!m.transcript) return nullptr;
+    std::string text;
+    for (const auto& s : m.transcript->segments) text += (text.empty() ? "" : " ") + s.text;
+    return {{"media", m.id}, {"name", m.name}, {"model", m.transcript->model}, {"words", m.transcript->words.size()},
+            {"segments", m.transcript->segments.size()}, {"text", text}};
+}
+
 json errorsJson(Session& s, double t) {
     Evaluator& ev = s.evaluator();
     ev.setTime(t);
@@ -578,7 +590,7 @@ void Commands::registerBuiltins() {
              // These change files, history, or playback, or reply later.
              auto allowed = [](const std::string& name) {
                  static const std::set<std::string> excluded = {"batch", "undo", "redo", "new", "open", "save", "export",
-                                                                "export.cancel", "play", "pause", "toggle"};
+                                                                "export.cancel", "play", "pause", "toggle", "media.transcribe"};
                  return !excluded.contains(name) && !name.starts_with("ui.");
              };
              for (size_t i = 0; i < requests.size(); ++i) {
@@ -692,6 +704,114 @@ void Commands::registerBuiltins() {
                  out.push_back(j);
              }
              return out;
+         }});
+    add({"media.inspect", "Describe a media file: scene cuts, silence, loudness, transcript status, and a thumbnail sheet",
+         {req("media", "id"), opt("sheet", "path", "also write a contact sheet of the file"), opt("count", "int", "sheet frames (default 12)"),
+          opt("threshold", "number", "scene cut sensitivity, 0..1 (default 0.15; lower finds more)")},
+         [](A a, C c) -> json {
+             Session& s = c.session;
+             const MediaSource& m = *s.project().findMedia(resolveMedia(s.project(), a["media"]));
+             json j = mediaToJson(m);
+             std::string err;
+             if (m.hasVideo && m.kind != MediaKind::Image) {
+                 std::vector<SceneCut> cuts;
+                 if (!detectCuts(m.path, m.duration, get<double>(a, "threshold", 0.15), cuts, &err)) throw EditError(fmt::format("cannot read {}: {}", m.name, err));
+                 json list = json::array();
+                 for (const auto& cut : cuts) list.push_back({{"time", cut.time}, {"score", std::round(cut.score * 1000) / 1000}});
+                 j["cuts"] = list;
+             }
+             if (m.hasAudio) {
+                 int sr = s.project().settings.sampleRate;
+                 auto buffer = s.cache().audio(m, sr, true);
+                 if (!buffer) throw EditError(fmt::format("cannot decode audio of {}: {}", m.name, s.cache().error(m.path)));
+                 AudioAnalyzer analyzer(buffer->sampleRate, 0, int64_t(buffer->frames()), {.step = std::max(1.0, buffer->duration())});
+                 analyzer.push(buffer->samples.data(), int(buffer->frames()));
+                 json audio = analysisJson(analyzer.finish());
+                 audio.erase("steps");
+                 j["audio"] = audio;
+             }
+             j["transcript"] = transcriptSummary(m);
+             if (a.contains("sheet")) {
+                 if (!m.hasVideo) throw EditError(fmt::format("{} has no video", m.name));
+                 int count = get<int>(a, "count", 12);
+                 if (count < 1 || count > 400) throw EditError("count must be 1 to 400");
+                 VideoDecoder dec;
+                 if (!dec.open(m.path, 320, 320, &err)) throw EditError(fmt::format("cannot read {}: {}", m.name, err));
+                 double fps = m.fps > 0 ? m.fps : 30, last = std::max(0.0, m.duration - 1 / fps);
+                 std::vector<SheetCell> cells;
+                 for (int i = 0; i < count; ++i) {
+                     double t = count == 1 ? 0 : last * i / (count - 1);
+                     ImagePtr frame = dec.frameAt(t);
+                     if (!frame) break;
+                     if (!cells.empty() && (frame->w != cells[0].frame->w || frame->h != cells[0].frame->h)) break;
+                     cells.push_back({frame, formatTimecode(t, fps)});
+                 }
+                 if (cells.empty()) throw EditError(fmt::format("cannot decode frames of {}", m.name));
+                 Image sheet = composeSheet(cells, squareColumns(int(cells.size()), cells[0].frame->w, cells[0].frame->h));
+                 std::string path = a["sheet"];
+                 if (!savePng(sheet, path.c_str())) throw EditError("cannot write " + path);
+                 j["sheet"] = path;
+             }
+             return j;
+         }});
+    add({"media.transcribe", "Transcribe speech with whisper-cli; stores words with source times in the project",
+         {req("media", "id"), opt("model", "path", "whisper model file (default $MESHFRAME_WHISPER_MODEL or ~/.cache/meshframe/whisper/ggml-base.en.bin)"),
+          opt("language", "string", "spoken language, or auto (default en for .en models, else auto)"), opt("force", "bool", "transcribe again")},
+         [](A a, C c) -> json {
+             Session& s = c.session;
+             Id id = resolveMedia(s.project(), a["media"]);
+             const MediaSource& m = *s.project().findMedia(id);
+             if (!m.hasAudio) throw EditError(fmt::format("{} has no audio", m.name));
+             if (m.transcript && !get<bool>(a, "force", false)) return transcriptSummary(m);
+             std::string model = a.contains("model") ? a["model"].get<std::string>() : defaultWhisperModel();
+             std::string language = get<std::string>(a, "language", fs::path(model).stem().extension() == ".en" ? "en" : "auto");
+             auto job = std::make_shared<std::future<std::pair<std::optional<Transcript>, std::string>>>(
+                 std::async(std::launch::async, [path = m.path, model, language] {
+                     std::string err;
+                     auto t = transcribeFile(path, model, language, &err);
+                     return std::pair{std::move(t), err};
+                 }));
+             s.log(LogLine::Level::Info, "transcribing " + m.name);
+             Reply reply = c.defer();
+             s.pollers.push_back([&s, job, id, reply] {
+                 if (job->wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+                 auto [transcript, err] = job->get();
+                 if (!transcript) {
+                     reply({{"error", err}});
+                     return true;
+                 }
+                 try {
+                     auto shared = std::make_shared<const Transcript>(std::move(*transcript));
+                     s.apply("transcribe", [&](Project& p) { edit::setTranscript(p, id, shared); });
+                     reply(transcriptSummary(*s.project().findMedia(id)));
+                 } catch (const std::exception& e) {
+                     reply({{"error", e.what()}});
+                 }
+                 return true;
+             });
+             return nullptr;
+         }});
+    add({"transcript.get", "Show a media file's transcript between source times",
+         {req("media", "id"), opt("start", "time"), opt("end", "time"), opt("words", "bool", "include each word")},
+         [](A a, C c) -> json {
+             const MediaSource& m = *c.session.project().findMedia(resolveMedia(c.session.project(), a["media"]));
+             if (!m.transcript) throw EditError(fmt::format("{} has no transcript; run media.transcribe first", m.name));
+             double start = get<double>(a, "start", 0.0), end = get<double>(a, "end", std::numeric_limits<double>::infinity());
+             auto spans = [&](const std::vector<Transcript::Span>& v) {
+                 json out = json::array();
+                 for (const auto& sp : v)
+                     if (sp.end > start && sp.start < end) out.push_back({{"text", sp.text}, {"start", sp.start}, {"end", sp.end}});
+                 return out;
+             };
+             json j = {{"media", m.id}, {"name", m.name}, {"segments", spans(m.transcript->segments)}};
+             if (get<bool>(a, "words", false)) j["words"] = spans(m.transcript->words);
+             return j;
+         }});
+    add({"transcript.find", "Find spoken words in transcripts; returns source times and where they play on the timeline",
+         {req("text", "string"), opt("media", "id", "search one media file (default all)")}, [](A a, C c) -> json {
+             const Project& p = c.session.evaluator().project();
+             Id media = a.contains("media") ? resolveMedia(p, a["media"]) : 0;
+             return findSpeech(p, a["text"], media);
          }});
     add({"media.remove", "Remove a media source and its clips", {req("media", "id")}, [edit](A a, C c) -> json {
              Id id = resolveMedia(c.session.project(), a["media"]);

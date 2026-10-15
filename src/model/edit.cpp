@@ -571,6 +571,12 @@ Marker& markerOrFail(Project& p, Id id) {
 
 }  // namespace
 
+void setTranscript(Project& p, Id media, std::shared_ptr<const Transcript> transcript) {
+    MediaSource* m = p.findMedia(media);
+    if (!m) fail(fmt::format("no media {}", media));
+    m->transcript = std::move(transcript);
+}
+
 Id addMarker(Project& p, std::string name, double time) {
     if (time < 0) fail("marker time must be 0 or later");
     if (name.empty())

@@ -224,6 +224,25 @@ ProjectSettings settingsFromJson(const json& j, ProjectSettings s) {
     return s;
 }
 
+json transcriptToJson(const Transcript& t) {
+    // Spans are [text, start, end] to keep long transcripts compact.
+    auto spans = [](const std::vector<Transcript::Span>& v) {
+        json out = json::array();
+        for (const auto& s : v) out.push_back({s.text, s.start, s.end});
+        return out;
+    };
+    return {{"model", t.model}, {"segments", spans(t.segments)}, {"words", spans(t.words)}};
+}
+
+Transcript transcriptFromJson(const json& j) {
+    auto spans = [](const json& v) {
+        std::vector<Transcript::Span> out;
+        for (const auto& s : v) out.push_back({s.at(0).get<std::string>(), s.at(1).get<double>(), s.at(2).get<double>()});
+        return out;
+    };
+    return {j.value("model", ""), spans(j.value("segments", json::array())), spans(j.value("words", json::array()))};
+}
+
 json markerToJson(const Marker& m) { return {{"id", m.id}, {"name", m.name}, {"time", m.time}}; }
 
 json projectToJson(const Project& p) {
@@ -234,7 +253,11 @@ json projectToJson(const Project& p) {
     j["settings"] = settingsToJson(p.settings);
     j["nextId"] = p.nextId;
     j["media"] = json::array();
-    for (const auto& m : p.media) j["media"].push_back(mediaToJson(m));
+    for (const auto& m : p.media) {
+        json jm = mediaToJson(m);
+        if (m.transcript) jm["transcript"] = transcriptToJson(*m.transcript);
+        j["media"].push_back(std::move(jm));
+    }
     j["tracks"] = json::array();
     for (const auto& t : p.tracks) j["tracks"].push_back(trackToJson(t));
     j["clips"] = json::array();
@@ -273,6 +296,7 @@ Project projectFromJson(const json& j) {
         m.hasAudio = jm.value("hasAudio", false);
         m.sampleRate = jm.value("sampleRate", 0);
         m.channels = jm.value("channels", 0);
+        if (jm.contains("transcript")) m.transcript = std::make_shared<const Transcript>(transcriptFromJson(jm["transcript"]));
         p.media.push_back(m);
     }
     for (const auto& jt : j.value("tracks", json::array())) {

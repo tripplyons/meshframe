@@ -26,6 +26,11 @@ ClipBounds measureClip(Session& s, const Clip& c, double t, double scale = 1);
 // Measures the timeline mix from start to end.
 AudioAnalysis analyzeMix(Session& s, double start, double end, const AudioAnalysisOptions& options);
 
+// Finds `text` in media transcripts (all media when `media` is 0), ignoring
+// case and punctuation. Each match has the media, the words as spoken,
+// source start and end, and where it plays on the timeline.
+nlohmann::json findSpeech(const Project& p, const std::string& text, Id media);
+
 struct CheckOptions {
     double step = 0.5;  // seconds between sampled frames
     double lufs = -14, lufsTolerance = 2;

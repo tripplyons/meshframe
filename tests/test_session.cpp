@@ -1,4 +1,5 @@
 #include "fixtures.hpp"
+#include "media/transcribe.hpp"
 #include "model/edit.hpp"
 #include "render/image.hpp"
 #include "render/sheet.hpp"
@@ -638,4 +639,119 @@ TEST(Commands, CheckPassesACleanProject) {
     json r = ok(c, {"check"});
     EXPECT_TRUE(r["issues"].empty()) << r.dump(1);
     EXPECT_GE(r["samples"].get<int>(), 4);
+}
+
+TEST(Transcript, ParsesWhisperTokensIntoWords) {
+    json j = json::parse(R"({"transcription": [
+        {"offsets": {"from": 0, "to": 900}, "text": " [BLANK_AUDIO]", "tokens": []},
+        {"offsets": {"from": 1000, "to": 2500}, "text": " Hello meshframe, friends.", "tokens": [
+            {"text": "[_BEG_]", "offsets": {"from": 1000, "to": 1000}},
+            {"text": " Hello", "offsets": {"from": 1000, "to": 1300}},
+            {"text": " mesh", "offsets": {"from": 1300, "to": 1500}},
+            {"text": "frame", "offsets": {"from": 1500, "to": 1800}},
+            {"text": ",", "offsets": {"from": 1800, "to": 1800}},
+            {"text": " friends", "offsets": {"from": 1800, "to": 2400}},
+            {"text": ".", "offsets": {"from": 2400, "to": 2500}}]}]})");
+    Transcript t = parseWhisperJson(j, "m.bin");
+    EXPECT_EQ(t.model, "m.bin");
+    ASSERT_EQ(t.segments.size(), 1u) << "bracketed non-speech is dropped";
+    EXPECT_EQ(t.segments[0].text, "Hello meshframe, friends.");
+    EXPECT_DOUBLE_EQ(t.segments[0].start, 1.0);
+    ASSERT_EQ(t.words.size(), 3u);
+    EXPECT_EQ(t.words[1].text, "meshframe,");
+    EXPECT_DOUBLE_EQ(t.words[1].start, 1.3);
+    EXPECT_DOUBLE_EQ(t.words[1].end, 1.8);
+    EXPECT_EQ(t.words[2].text, "friends.");
+}
+
+TEST(Commands, TranscriptFindMapsSourceToTimeline) {
+    Session s;
+    Commands c(s);
+    ok(c, {"media.import", fixtures::videoWithAudio()});
+    Id media = s.project().media[0].id;
+    Transcript t;
+    t.segments = {{"Cut the boring part now.", 0, 1}};
+    t.words = {{"Cut", 0.0, 0.1}, {"the", 0.1, 0.2}, {"Boring", 0.4, 0.6}, {"part", 0.6, 0.8}, {"now.", 0.8, 1.0}};
+    s.apply("transcribe", [&](Project& p) { edit::setTranscript(p, media, std::make_shared<const Transcript>(t)); });
+
+    // One clip plays the whole file at double speed from 10 s; another starts mid-phrase.
+    json ids = ok(c, {"clip.media", "av.mp4", "10"});
+    for (const auto& id : ids) ok(c, {"clip.speed", std::to_string(id.get<Id>()), "2"});
+    json later = ok(c, {"clip.media", "av.mp4", "20"});
+    ok(c, {"clip.trim", std::to_string(later[0].get<Id>()), "20.5", "0.5"});
+
+    json found = ok(c, {"transcript.find", "boring PART"});
+    ASSERT_EQ(found.size(), 1u) << found.dump();
+    EXPECT_EQ(found[0]["text"], "Boring part");
+    EXPECT_DOUBLE_EQ(found[0]["start"].get<double>(), 0.4);
+    const json& tl = found[0]["timeline"];
+    ASSERT_EQ(tl.size(), 2u) << "one entry per linked pair: " << tl.dump();
+    EXPECT_DOUBLE_EQ(tl[0]["start"].get<double>(), 10.2);
+    EXPECT_DOUBLE_EQ(tl[0]["end"].get<double>(), 10.4);
+    EXPECT_FALSE(tl[0].contains("partial"));
+    EXPECT_DOUBLE_EQ(tl[1]["start"].get<double>(), 20.5);
+    EXPECT_TRUE(tl[1]["partial"].get<bool>());
+    EXPECT_TRUE(ok(c, {"transcript.find", "boring parts"}).empty());
+
+    json part = ok(c, {"transcript.get", "av.mp4", "start=0.3", "end=0.7", "words=true"});
+    EXPECT_EQ(part["words"].size(), 2u);
+    EXPECT_EQ(part["segments"].size(), 1u);
+
+    // Transcripts save with the project and undo with it.
+    ok(c, {"save", "transcript.mfproj"});
+    Session loaded;
+    Commands lc(loaded);
+    ok(lc, {"open", "transcript.mfproj"});
+    EXPECT_EQ(ok(lc, {"transcript.find", "boring part"}).size(), 1u);
+    EXPECT_FALSE(ok(lc, {"media.list"})[0].contains("transcript")) << "media.list stays short";
+}
+
+TEST(Commands, MediaInspectFindsCutsAndSilence) {
+    if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg is not installed";
+    Session s;
+    Commands c(s);
+    ok(c, {"media.import", fixtures::cutsVideo()});
+    ok(c, {"media.import", fixtures::countingVideo()});
+    ok(c, {"media.import", fixtures::toneThenSilence()});
+
+    json cuts = ok(c, {"media.inspect", "cuts.mp4", "sheet=media_sheet.png", "count=3"});
+    ASSERT_EQ(cuts["cuts"].size(), 2u) << cuts.dump();
+    EXPECT_NEAR(cuts["cuts"][0]["time"].get<double>(), 1, 0.01);
+    EXPECT_NEAR(cuts["cuts"][1]["time"].get<double>(), 2, 0.01);
+    EXPECT_TRUE(std::filesystem::exists(fixtures::dir() / "media_sheet.png"));
+    EXPECT_TRUE(cuts["transcript"].is_null());
+    EXPECT_TRUE(ok(c, {"media.inspect", "counting.mp4"})["cuts"].empty()) << "a slow fade is not a cut";
+
+    json audio = ok(c, {"media.inspect", "tone_silence.wav"})["audio"];
+    ASSERT_EQ(audio["silence"].size(), 1u) << audio.dump();
+    EXPECT_NEAR(audio["silence"][0]["start"].get<double>(), 1, 0.02);
+    EXPECT_NEAR(audio["silence"][0]["end"].get<double>(), 2, 0.02);
+    EXPECT_FALSE(ok(c, {"media.inspect", "tone_silence.wav"}).contains("cuts"));
+}
+
+TEST(Commands, MediaTranscribeRunsWhisper) {
+    std::string speech = fixtures::speech();
+    if (speech.empty() || findWhisperCli().empty() || !std::filesystem::exists(defaultWhisperModel()))
+        GTEST_SKIP() << "needs macOS say, whisper-cli, and " << defaultWhisperModel();
+    Session s;
+    Commands c(s);
+    ok(c, {"media.import", speech});
+    EXPECT_NE(fails(c, {"media.transcribe", "speech.aiff", "model=/nope.bin"}).find("no whisper model"), std::string::npos);
+
+    json r = ok(c, {"media.transcribe", "speech.aiff"});
+    EXPECT_GT(r["words"].get<int>(), 10);
+    EXPECT_NE(r["text"].get<std::string>().find("boring"), std::string::npos) << r.dump();
+    EXPECT_EQ(s.history().undoLabels().back(), "transcribe");
+
+    ok(c, {"clip.media", "speech.aiff", "3"});
+    json found = ok(c, {"transcript.find", "boring part"});
+    ASSERT_EQ(found.size(), 1u);
+    double start = found[0]["start"].get<double>();
+    EXPECT_GT(start, 1);
+    EXPECT_DOUBLE_EQ(found[0]["timeline"][0]["start"].get<double>(), 3 + start);
+
+    // A second request uses the stored transcript.
+    size_t steps = s.history().undoLabels().size();
+    EXPECT_EQ(ok(c, {"media.transcribe", "speech.aiff"})["words"], r["words"]);
+    EXPECT_EQ(s.history().undoLabels().size(), steps);
 }

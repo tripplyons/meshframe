@@ -55,4 +55,27 @@ inline std::string redImage() {
     return make("red.png", "-f lavfi -i color=red:s=32x16:d=1 -frames:v 1");
 }
 
+// 3 s, 10 fps: 1 s each of red, blue, and white, so cuts fall at 1 s and 2 s.
+inline std::string cutsVideo() {
+    return make("cuts.mp4",
+                "-f lavfi -i color=red:s=64x48:r=10:d=1 -f lavfi -i color=blue:s=64x48:r=10:d=1 "
+                "-f lavfi -i color=white:s=64x48:r=10:d=1 -filter_complex \"[0][1][2]concat=n=3:v=1:a=0\" "
+                "-c:v libx264 -pix_fmt yuv420p");
+}
+
+// 1 s of tone, then 1 s of silence.
+inline std::string toneThenSilence() {
+    return make("tone_silence.wav", "-f lavfi -i sine=frequency=440:sample_rate=48000:duration=1 -af apad=pad_dur=1");
+}
+
+// Spoken English from macOS `say`; empty when `say` is missing.
+inline std::string speech() {
+    auto path = dir() / "speech.aiff";
+    if (!std::filesystem::exists(path)) {
+        std::string cmd = "say -o '" + path.string() + "' 'Welcome to the demo. Today we cut the boring part. Then we add a title.' 2>/dev/null";
+        if (std::system(cmd.c_str()) != 0) return {};
+    }
+    return path.string();
+}
+
 }  // namespace fixtures
