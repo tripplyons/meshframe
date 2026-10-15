@@ -2,9 +2,12 @@
 
 #include "model/edit.hpp"
 #include "model/schema.hpp"
+#include "audio/analysis.hpp"
+#include "audio/mixer.hpp"
 #include "core/timecode.hpp"
 #include "render/image.hpp"
 #include "render/sheet.hpp"
+#include "render/waveform.hpp"
 #include "script/lua_runtime.hpp"
 
 #include <fmt/format.h>
@@ -365,6 +368,31 @@ json selectionJson(const Selection& sel) {
 
 // Errors after evaluating the frame at time t, so expression errors on
 // visible clips are current.
+// Decibels rounded to 0.01, or null for silence.
+json db(double v) {
+    if (!std::isfinite(v)) return nullptr;
+    return std::round(v * 100) / 100;
+}
+json db(std::optional<double> v) { return v ? db(*v) : json(); }
+
+json analysisJson(const AudioAnalysis& a) {
+    auto sec = [](double t) { return std::round(t * 1e6) / 1e6; };
+    json silence = json::array(), clipping = json::array(), steps = json::array();
+    for (const auto& r : a.silence) silence.push_back({{"start", sec(r.start)}, {"end", sec(r.end)}});
+    for (const auto& r : a.clipping) clipping.push_back({{"start", sec(r.start)}, {"end", sec(r.end)}, {"samples", r.samples}});
+    for (const auto& s : a.steps) steps.push_back({{"time", sec(s.time)}, {"lufs", db(s.lufs)}, {"peakDbfs", db(dbOf(s.peak))}});
+    return {{"start", sec(a.start)},
+            {"end", sec(a.start + a.duration)},
+            {"integratedLufs", db(a.integrated)},
+            {"loudnessRangeLu", db(a.range)},
+            {"truePeakDbtp", db(dbOf(a.truePeak))},
+            {"samplePeakDbfs", db(dbOf(a.samplePeak))},
+            {"rmsDbfs", db(dbOf(a.rms))},
+            {"silence", silence},
+            {"clipping", clipping},
+            {"steps", steps}};
+}
+
 json errorsJson(Session& s, double t) {
     Evaluator& ev = s.evaluator();
     ev.setTime(t);
@@ -1099,6 +1127,70 @@ void Commands::registerBuiltins() {
              if (!savePng(sheet, path.c_str())) throw EditError("cannot write " + path);
              return {{"path", path}, {"width", sheet.w}, {"height", sheet.h}, {"columns", layout.columns}, {"rows", layout.rows},
                      {"cells", info}, {"errors", errors}};
+         }});
+    add({"audio.analyze", "Measure loudness, peaks, silence, and clipping of the mix or a media file",
+         {opt("start", "time", "default: project, clip, or media start"), opt("end", "time", "default: project, clip, or media end"),
+          opt("clip", "id", "use this clip's range of the mix"), opt("media", "id", "analyze a media file; times are source times"),
+          opt("step", "time", "loudness step (default 0.5)"), opt("silence", "number", "silence threshold in dBFS (default -50)"),
+          opt("waveform", "path", "also draw a waveform PNG"), opt("width", "int", "waveform width (default 1200)")},
+         [](A a, C c) -> json {
+             Session& s = c.session;
+             const Project& ep = s.evaluator().project();
+             int sr = ep.settings.sampleRate;
+             if (a.contains("clip") && a.contains("media")) throw EditError("give clip or media, not both");
+             std::shared_ptr<const AudioBuffer> buffer;
+             double start = 0, end = ep.duration();
+             if (a.contains("media")) {
+                 const MediaSource& m = *ep.findMedia(resolveMedia(ep, a["media"]));
+                 if (!m.hasAudio) throw EditError(fmt::format("{} has no audio", m.name));
+                 buffer = s.cache().audio(m, sr, true);
+                 if (!buffer) throw EditError(fmt::format("cannot decode audio of {}: {}", m.name, s.cache().error(m.path)));
+                 end = buffer->duration();
+             } else if (a.contains("clip")) {
+                 const Clip& clip = *ep.findClip(resolveClip(ep, a["clip"]));
+                 start = clip.start, end = clip.end();
+             }
+             start = std::max(0.0, get<double>(a, "start", start));
+             end = get<double>(a, "end", end);
+             if (buffer) end = std::min(end, buffer->duration()), sr = buffer->sampleRate;
+             int64_t first = std::llround(start * sr), frames = std::llround(end * sr) - first;
+             if (frames <= 0) throw EditError("the range is empty; give start and end, or add clips");
+
+             AudioAnalysisOptions opt;
+             opt.step = get<double>(a, "step", 0.5);
+             if (opt.step <= 0) throw EditError("step must be positive");
+             opt.silenceDb = get<double>(a, "silence", -50.0);
+             int width = get<int>(a, "width", 1200);
+             if (a.contains("waveform")) {
+                 if (width < 16 || width > 8192) throw EditError("width must be 16 to 8192");
+                 opt.columns = width;
+             }
+             AudioAnalyzer analyzer(sr, double(first) / sr, frames, opt);
+             if (buffer) {
+                 analyzer.push(buffer->samples.data() + first * 2, int(frames));
+             } else {
+                 AudioMixer mixer(s.cache());
+                 std::vector<float> block(size_t(AudioMixer::kBlock) * 16 * 2);
+                 for (int64_t done = 0; done < frames;) {
+                     int n = int(std::min<int64_t>(frames - done, int64_t(block.size() / 2)));
+                     mixer.render(s.evaluator(), double(first + done) / sr, n, block.data(), true);
+                     analyzer.push(block.data(), n);
+                     done += n;
+                 }
+             }
+             AudioAnalysis result = analyzer.finish();
+             json j = analysisJson(result);
+             j["source"] = buffer ? "media" : "mix";
+             if (a.contains("waveform")) {
+                 std::vector<std::pair<double, std::string>> marks;
+                 if (!buffer)
+                     for (const Marker& m : ep.markers) marks.push_back({m.time, m.name});
+                 Image img = drawWaveform(result, 200, marks);
+                 std::string path = a["waveform"];
+                 if (!savePng(img, path.c_str())) throw EditError("cannot write " + path);
+                 j["waveform"] = path;
+             }
+             return j;
          }});
     add({"export", "Export MP4 (H.264 + AAC) or WAV in the background",
          {req("path", "path"), opt("width", "int"), opt("height", "int"), opt("start", "time"), opt("end", "time"),

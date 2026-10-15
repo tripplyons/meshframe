@@ -441,3 +441,57 @@ TEST(Sheet, CellsHoldTheFrames) {
     EXPECT_EQ(squareColumns(12, 16, 9), 3);
     EXPECT_EQ(squareColumns(1, 16, 9), 1);
 }
+
+TEST(Commands, AudioAnalyzeMeasuresTheMix) {
+    Session s;
+    Commands c(s);
+    ok(c, {"script.set", "mf.synth('tone', function(time) return sin(time * 2 * pi * 1000) * 0.5 end)\n"
+                         "mf.synth('hot', function(time) return sin(time * 2 * pi * 100) * 1.5 end)"});
+    ok(c, {"clip.add", "synth", "A1", "0", "2", "tone", R"(props={"synth":"tone"})"});
+    ok(c, {"clip.add", "synth", "A1", "3", "1", "hot", R"(props={"synth":"hot"})"});
+    ok(c, {"marker.add", "hit", "3"});
+
+    // A stereo 1 kHz sine at -6.02 dBFS peak reads -6.02 LUFS (BS.1770).
+    json tone = ok(c, {"audio.analyze", "clip=tone"});
+    EXPECT_EQ(tone["source"], "mix");
+    EXPECT_NEAR(tone["integratedLufs"].get<double>(), -6.02, 0.1);
+    EXPECT_TRUE(tone["loudnessRangeLu"].is_null()) << "loudness range needs 3 s";
+    EXPECT_NEAR(tone["truePeakDbtp"].get<double>(), -6.02, 0.1);
+    EXPECT_NEAR(tone["samplePeakDbfs"].get<double>(), -6.02, 0.01);
+    EXPECT_NEAR(tone["rmsDbfs"].get<double>(), -9.03, 0.01);
+    EXPECT_TRUE(tone["silence"].empty());
+    EXPECT_TRUE(tone["clipping"].empty());
+    EXPECT_EQ(tone["steps"].size(), 4u);
+
+    // The whole mix: a gap of silence, then a clipping tone.
+    json mix = ok(c, {"audio.analyze", "step=1", "waveform=wave.png", "width=400"});
+    ASSERT_EQ(mix["silence"].size(), 1u) << mix.dump();
+    EXPECT_NEAR(mix["silence"][0]["start"].get<double>(), 2, 0.02);
+    EXPECT_NEAR(mix["silence"][0]["end"].get<double>(), 3, 0.02);
+    ASSERT_EQ(mix["clipping"].size(), 1u) << mix.dump();
+    EXPECT_NEAR(mix["clipping"][0]["start"].get<double>(), 3, 0.01);
+    EXPECT_NEAR(mix["clipping"][0]["end"].get<double>(), 4, 0.01);
+    EXPECT_GT(mix["clipping"][0]["samples"].get<int>(), 1000);
+    EXPECT_NEAR(mix["samplePeakDbfs"].get<double>(), 3.52, 0.01);
+    ASSERT_EQ(mix["steps"].size(), 4u);
+    EXPECT_LT(mix["steps"][2]["lufs"].get<double>(), -40) << "only the filter's tail is left";
+    EXPECT_TRUE(mix["steps"][2]["peakDbfs"].is_null());
+    EXPECT_EQ(mix["waveform"], (fixtures::dir() / "wave.png").string());
+    EXPECT_EQ(pngSize(fixtures::dir() / "wave.png").first, 400);
+
+    EXPECT_NEAR(ok(c, {"audio.analyze", "start=@hit", "end=3.5"})["samplePeakDbfs"].get<double>(), 3.52, 0.01);
+    EXPECT_NE(fails(c, {"audio.analyze", "start=5", "end=5"}).find("range is empty"), std::string::npos);
+    EXPECT_NE(fails(c, {"audio.analyze", "clip=tone", "media=x"}).find("not both"), std::string::npos);
+}
+
+TEST(Commands, AudioAnalyzeReadsMedia) {
+    if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg is not installed";
+    Session s;
+    Commands c(s);
+    ok(c, {"media.import", fixtures::sineAudio()});
+    json r = ok(c, {"audio.analyze", "media=sine.wav"});
+    EXPECT_EQ(r["source"], "media");
+    EXPECT_NEAR(r["end"].get<double>(), 2, 0.01);
+    EXPECT_NEAR(r["samplePeakDbfs"].get<double>(), -18.06, 0.1);  // ffmpeg's sine is 1/8 full scale
+    EXPECT_TRUE(r["integratedLufs"].is_number());
+}

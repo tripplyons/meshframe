@@ -145,6 +145,16 @@ meshframe-cli help clip.add     # one command's arguments
    - `frame out.png TIME [WIDTH]` renders one frame to PNG. Read the image.
    - `clip.get CLIP TIME` shows evaluated values. `prop.get TARGET NAME TIME`
      shows one property's definition and value.
+   - `audio.analyze` measures the mix, since you cannot listen to it:
+     integrated loudness (`integratedLufs`, BS.1770), loudness range (needs
+     3 s), true and sample peak, RMS, silent ranges (below `silence=-50`
+     dBFS for 0.3 s), clipping ranges (samples at full scale, which clip on
+     export), and loudness per `step` (default 0.5 s). Use `clip=NAME` or
+     `start` and `end` for part of the mix, or `media=NAME` to measure an
+     imported file before you place it (times are then source times).
+     `waveform=PATH` also draws a PNG with silence shaded, clipping in red,
+     and markers labeled. Values in dB are null for silence. Common targets:
+     about -14 LUFS for online video, true peak below -1 dBTP.
    - `levels` shows audio meters at the current time. `errors` lists script,
      expression, and render errors at the current frame.
    - In a GUI session, `ui.screenshot shot.png` saves the whole window.
@@ -208,7 +218,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Reactive | `signal.set NAME value=V` or `expr=E`, `signal.remove NAME`, `script.get`, `script.set [SOURCE] [file=PATH]`, `eval CODE [TIME]`, `graph [TIME]`, `errors` |
 | Transport | `play`, `pause`, `toggle`, `seek TIME`, `time` |
 | History | `undo`, `redo`, `history`, `batch COMMANDS [LABEL]` |
-| Output | `frame PATH [TIME] [WIDTH] [HEIGHT]`, `sheet PATH [start] [end] [count] [every] [clip] [width] [columns]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
+| Output | `audio.analyze [start] [end] [clip] [media] [step] [silence] [waveform] [width]`, `frame PATH [TIME] [WIDTH] [HEIGHT]`, `sheet PATH [start] [end] [count] [every] [clip] [width] [columns]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
 | Selection | `select [clips] [track] [media] [effect] [transition] [prop]` |
 | GUI | `ui.state`, `ui.space N`, `ui.swap N`, `ui.layout NAME [space]`, `ui.pane N VIEW [space]`, `ui.actions`, `ui.action ID`, `ui.dialog CHOICE`, `ui.bind ID [KEYS]`, `ui.theme [SLOT] [COLOR]`, `ui.settings [set]`, `ui.screenshot PATH` |
 
