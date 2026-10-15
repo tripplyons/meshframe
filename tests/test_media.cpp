@@ -82,6 +82,45 @@ TEST(Media, VideoDecoderScalesToFit) {
     EXPECT_EQ(img->h, 24);
 }
 
+TEST(Media, VideoDecoderStopsAtEndAfterRepeatedReadsAndSeeks) {
+    REQUIRE_FFMPEG();
+    VideoDecoder dec;
+    std::string err;
+    ASSERT_TRUE(dec.open(fixtures::countingVideo(), 64, 48, &err)) << err;
+    auto last = dec.frameAt(2.95);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(frameIndexOf(*last), 29);
+    for (double t : {3.0, 3.01, 3.2, 10.0}) EXPECT_FALSE(dec.frameAt(t)) << t;
+
+    // An out-of-range read must not prevent later reads within the file.
+    auto first = dec.frameAt(0.05);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(frameIndexOf(*first), 0);
+    EXPECT_FALSE(dec.frameAt(10));
+    last = dec.frameAt(2.99999);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(frameIndexOf(*last), 29);
+    EXPECT_FALSE(dec.frameAt(3.0));
+    EXPECT_FALSE(dec.frameAt(3.01));
+
+    VideoDecoder cold;
+    ASSERT_TRUE(cold.open(fixtures::countingVideo(), 64, 48, &err)) << err;
+    EXPECT_FALSE(cold.frameAt(3.0));
+}
+
+TEST(Media, CacheDoesNotRepeatTheLastFramePastEnd) {
+    REQUIRE_FFMPEG();
+    MediaSource video;
+    std::string err;
+    ASSERT_TRUE(probeMedia(fixtures::countingVideo(), video, &err)) << err;
+    MediaCache cache;
+    ASSERT_TRUE(cache.frame(video, 2.95, 64, 48));
+    for (double t : {3.0, 3.05, 3.2, 10.0}) EXPECT_FALSE(cache.frame(video, t, 64, 48)) << t;
+    auto first = cache.frame(video, 0.05, 64, 48);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(frameIndexOf(*first), 0);
+}
+
 TEST(Media, DecodesAudioToStereoAtTargetRateWithPeaks) {
     REQUIRE_FFMPEG();
     std::string err;

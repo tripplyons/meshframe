@@ -281,7 +281,12 @@ void VideoDecoder::seek(double t) {
 ImagePtr VideoDecoder::frameAt(double t) {
     if (!fmt_) return nullptr;
     constexpr double eps = 1e-4;
-    bool inCur = haveCur_ && t + eps >= curPts_ && (t < curPts_ + frameDur_ - eps || eof_);
+    auto frameEnd = [&] {
+        if (cur_->duration > 0 && cur_->best_effort_timestamp != AV_NOPTS_VALUE)
+            return (cur_->best_effort_timestamp + cur_->duration) * timeBase_ - startTime_;
+        return curPts_ + frameDur_;
+    };
+    bool inCur = haveCur_ && t + eps >= curPts_ && t < frameEnd() - eps;
     if (inCur) {
         if (!curImage_) curImage_ = convert(cur_);
         return curImage_;
@@ -305,7 +310,7 @@ ImagePtr VideoDecoder::frameAt(double t) {
         advanced = true;
     }
     if (!haveCur_) return nullptr;
-    if (eof_ && t > curPts_ + frameDur_ * 2) return nullptr;
+    if (eof_ && t >= frameEnd()) return nullptr;
     if (advanced || !curImage_) curImage_ = convert(cur_);
     return curImage_;
 }
