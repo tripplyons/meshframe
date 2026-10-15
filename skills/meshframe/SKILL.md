@@ -73,6 +73,26 @@ request `{"cmd": "...", "args": {...}, "id": ...}`. Lines starting with `#`
 are comments. Each reply is printed as one JSON line: `{"ok":true,"result":...}`
 or `{"ok":false,"error":"..."}`, plus the `id` you sent.
 
+Use `--batch -` to make a group of edits atomic. The CLI sends all stdin
+lines as one `batch` request. They become one undo step, and if any command
+fails, none of them take effect. The reply holds each command's result in
+order, or an error naming the command that failed. A batch cannot run
+`undo`, `redo`, `new`, `open`, `save`, `export`, `export.cancel`, `play`,
+`pause`, `toggle`, or `ui.*` commands. Refer to clips made in the same batch
+by name.
+
+```sh
+meshframe-cli --project demo.mfproj --batch - <<'EOF'
+clip.add solid V1 0 4 bg
+clip.add text V2 0 4 title 'props={"text":"Hello"}'
+prop.key title opacity 0 0
+EOF
+```
+
+Over the socket or in JSON, send `{"cmd": "batch", "args": {"commands":
+[...], "label": "..."}}`, where each item is a command line or a request
+object.
+
 ## Calling commands
 
 ```sh
@@ -162,7 +182,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Transitions | `transition.add A B [TYPE] [DURATION]`, `transition.set TR [TYPE] [DURATION]`, `transition.curve TR CURVE`, `transition.remove TR` |
 | Reactive | `signal.set NAME value=V` or `expr=E`, `signal.remove NAME`, `script.get`, `script.set [SOURCE] [file=PATH]`, `eval CODE [TIME]`, `graph [TIME]`, `errors` |
 | Transport | `play`, `pause`, `toggle`, `seek TIME`, `time` |
-| History | `undo`, `redo`, `history` |
+| History | `undo`, `redo`, `history`, `batch COMMANDS [LABEL]` |
 | Output | `frame PATH [TIME] [WIDTH] [HEIGHT]`, `export PATH [width] [height] [start] [end] [crf] [wait]`, `export.status`, `export.cancel`, `levels`, `log [SINCE]` |
 | Selection | `select [clips] [track] [media] [effect] [transition] [prop]` |
 | GUI | `ui.state`, `ui.space N`, `ui.swap N`, `ui.layout NAME [space]`, `ui.pane N VIEW [space]`, `ui.actions`, `ui.action ID`, `ui.dialog CHOICE`, `ui.bind ID [KEYS]`, `ui.theme [SLOT] [COLOR]`, `ui.settings [set]`, `ui.screenshot PATH` |

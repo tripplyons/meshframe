@@ -34,6 +34,8 @@ list and "help COMMAND" for one command's arguments.
 
 With "-", reads one request per line from stdin: words as on the command line,
 or a JSON object {"cmd": ..., "args": {...}}. Prints one JSON reply per line.
+With "--batch -", sends all stdin lines as one batch: one undo step, and no
+changes if any command fails. Prints one JSON reply.
 
 options:
   --session PID     use the session of this meshframe process
@@ -42,6 +44,7 @@ options:
                     changes. GUI commands (ui.*) need a running session.
   --no-save         with --project, do not save
   --json            print the full JSON reply
+  --batch           with "-", run stdin as one batch
   --timeout SEC     seconds to wait for a reply (default 120, 0 waits forever)
   -h, --help        show this help
 
@@ -51,7 +54,7 @@ exit status: 0 on success, 1 when a command fails, 2 for usage or connection err
 struct Options {
     std::optional<int> session;
     std::string socket, project;
-    bool noSave = false, rawJson = false, stdinMode = false;
+    bool noSave = false, rawJson = false, stdinMode = false, batch = false;
     double timeout = 120;
     std::vector<std::string> words;
 };
@@ -84,6 +87,7 @@ Options parseOptions(int argc, char** argv) {
         else if (a == "--project") o.project = value("--project");
         else if (a == "--no-save") o.noSave = true;
         else if (a == "--json") o.rawJson = true;
+        else if (a == "--batch") o.batch = true;
         else if (a == "--timeout") {
             try {
                 o.timeout = std::stod(value("--timeout"));
@@ -98,6 +102,7 @@ Options parseOptions(int argc, char** argv) {
     for (; i < argc; ++i) o.words.push_back(argv[i]);
     if (o.stdinMode && !o.words.empty()) usageError("\"-\" reads commands from stdin; do not also pass a command");
     if (!o.stdinMode && o.words.empty()) usageError("no command");
+    if (o.batch && !o.stdinMode) usageError("--batch reads commands from stdin; pass \"-\"");
     if (!o.project.empty() && (o.session || !o.socket.empty())) usageError("--project runs headless; do not combine it with --session or --socket");
     return o;
 }
@@ -240,8 +245,17 @@ int runRequests(const Options& o, const std::function<std::optional<json>(const 
     }
     int status = 0;
     std::string line;
+    json batch = json::array();
     while (std::getline(std::cin, line)) {
         if (line.find_first_not_of(" \t\r") == std::string::npos || line.starts_with("#")) continue;
+        if (o.batch) {
+            try {
+                batch.push_back(requestFromLine(line, cwd));
+            } catch (const std::exception& e) {
+                usageError(fmt::format("line \"{}\": {}", line, e.what()));
+            }
+            continue;
+        }
         json reply;
         try {
             std::string err;
@@ -253,6 +267,12 @@ int runRequests(const Options& o, const std::function<std::optional<json>(const 
         }
         if (!reply.value("ok", false)) status = 1;
         printReply(reply, true);
+    }
+    if (o.batch) {
+        std::string err;
+        auto reply = call({{"cmd", "batch"}, {"args", {{"commands", batch}}}, {"cwd", cwd}}, &err);
+        if (!reply) usageError(err);
+        status = printReply(*reply, true) ? 0 : 1;
     }
     return status;
 }

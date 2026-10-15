@@ -23,8 +23,9 @@ using Reply = std::function<void(json)>;
 
 class CommandContext {
 public:
-    CommandContext(Session& s, Reply reply) : session(s), reply_(std::move(reply)) {}
+    CommandContext(Session& s, Reply reply, std::string cwd = "") : session(s), cwd(std::move(cwd)), reply_(std::move(reply)) {}
     Session& session;
+    const std::string cwd;  // the client's working directory
     // Takes over the reply; the handler's return value is ignored. Call the
     // returned function once with the result (or throw-free {"error": ...}).
     Reply defer() {

@@ -57,6 +57,13 @@ public:
     void endGesture();
     bool inGesture() const { return gesture_.has_value(); }
 
+    // Groups the edits made until commitBatch into one undo step.
+    // rollbackBatch restores the project, history, and selection instead.
+    void beginBatch();
+    // Returns whether the batch changed the project and added an undo step.
+    bool commitBatch(const std::string& label);
+    void rollbackBatch();
+
     bool undo();
     bool redo();
     const History& history() const { return history_; }
@@ -107,6 +114,14 @@ private:
     std::optional<Project> gesture_;
     std::string gestureLabel_;
     bool gestureChanged_ = false;
+    struct BatchStart {
+        Project project;
+        History history;
+        Selection selection;
+        uint64_t revision;
+        bool clean;
+    };
+    std::optional<BatchStart> batch_;
     uint64_t revision_ = 1, savedRevision_ = 1, evaluated_ = 0;
     std::string path_;
     std::unique_ptr<MediaCache> cache_;

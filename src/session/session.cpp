@@ -74,6 +74,37 @@ void Session::endGesture() {
     gesture_.reset();
 }
 
+void Session::beginBatch() {
+    if (gesture_) endGesture();
+    batch_ = BatchStart{project_, history_, selection, revision_, !dirty()};
+}
+
+bool Session::commitBatch(const std::string& label) {
+    if (!batch_) return false;
+    if (gesture_) endGesture();
+    bool edited = revision_ != batch_->revision;
+    if (edited) {
+        history_ = std::move(batch_->history);
+        history_.push(label, std::move(batch_->project));
+    }
+    batch_.reset();
+    return edited;
+}
+
+void Session::rollbackBatch() {
+    if (!batch_) return;
+    gesture_.reset();
+    bool edited = revision_ != batch_->revision;
+    project_ = std::move(batch_->project);
+    history_ = std::move(batch_->history);
+    selection = std::move(batch_->selection);
+    if (edited) {
+        changed();
+        if (batch_->clean) savedRevision_ = revision_;
+    }
+    batch_.reset();
+}
+
 bool Session::undo() {
     if (gesture_) endGesture();
     if (!history_.canUndo()) return false;

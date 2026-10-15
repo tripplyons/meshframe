@@ -271,3 +271,50 @@ TEST(Commands, TimeArgumentsTakeFramesTimecodeAndClock) {
     for (const char* bad : {"1:60", "00:00:01:30", "1.5:00", "x f", "1::2", "1:2:3:4:5", "-1:00"})
         EXPECT_NE(fails(c, {"seek", bad}).find("expected time"), std::string::npos) << bad;
 }
+
+TEST(Commands, BatchIsOneUndoStepOrNothing) {
+    Session s;
+    Commands c(s);
+    size_t steps = s.history().undoLabels().size();
+    json batch = {{"cmd", "batch"},
+                  {"args",
+                   {{"label", "titles"},
+                    {"commands",
+                     {"clip.add solid V1 0 4 bg",
+                      R"(clip.add text V2 0 4 title 'props={"text":"Hi"}')",
+                      {{"cmd", "prop.key"}, {"args", {{"target", "title"}, {"name", "opacity"}, {"time", 0}, {"value", 0}}}},
+                      "frame batch.png 1 32"}}}},
+                  {"cwd", fixtures::dir().string()}};
+    json r = c.runSync(batch);
+    ASSERT_TRUE(r["ok"]) << r.dump();
+    const json& results = r["result"]["results"];
+    ASSERT_EQ(results.size(), 4u);
+    EXPECT_EQ(results[1]["name"], "title");
+    EXPECT_EQ(results[3]["path"], (fixtures::dir() / "batch.png").string());
+    EXPECT_EQ(r["result"]["undo"], "titles");
+    EXPECT_EQ(s.history().undoLabels().size(), steps + 1);
+    EXPECT_EQ(s.history().undoLabels().back(), "titles");
+    ASSERT_TRUE(s.undo());
+    EXPECT_EQ(s.project().clips.size(), 0u);
+
+    // A failing command undoes the ones before it and leaves history alone.
+    Session clean;
+    Commands cc(clean);
+    json before = ok(cc, {"show", "project"});
+    std::string err = fails(cc, {"batch", R"(["clip.add solid V1 0 4 bg", "select clips=bg", "clip.move nope 1"])"});
+    EXPECT_NE(err.find("command 3 (clip.move) failed: no clip named 'nope'"), std::string::npos) << err;
+    EXPECT_NE(err.find("no changes were made"), std::string::npos);
+    EXPECT_EQ(ok(cc, {"show", "project"}), before);
+    EXPECT_TRUE(clean.history().undoLabels().empty());
+    EXPECT_TRUE(clean.selection.clips.empty());
+    EXPECT_FALSE(clean.dirty());
+
+    // Commands that touch files, history, or playback are refused up front.
+    EXPECT_NE(fails(cc, {"batch", R"(["clip.add solid V1 0 4 bg", "undo"])"}).find("command 2 (undo) cannot run in a batch"),
+              std::string::npos);
+    EXPECT_EQ(cc.runSync({{"cmd", "show"}, {"args", {{"what", "clips"}}}})["result"].size(), 0u);
+
+    // A batch of reads adds no undo step.
+    EXPECT_TRUE(ok(cc, {"batch", R"(["status", "show clips"])"})["undo"].is_null());
+    EXPECT_TRUE(clean.history().undoLabels().empty());
+}

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <thread>
 
 namespace mf {
@@ -300,7 +301,7 @@ void Commands::run(const json& request, Reply reply) {
             reply({{"ok", false}, {"error", result["error"]}});
         else
             reply({{"ok", true}, {"result", std::move(result)}});
-    });
+    }, request.value("cwd", ""));
     try {
         json args = normalize(it->second, request);
         json result = it->second.fn(args, ctx);
@@ -520,6 +521,45 @@ void Commands::registerBuiltins() {
              std::string section = a["section"];
              if (!j.contains(section)) throw EditError(fmt::format("unknown section '{}'", section));
              return j[section];
+         }});
+    add({"batch", "Run commands as one undo step; if any fails, none take effect",
+         {req("commands", "json", "list of command lines or {cmd, args} objects"), opt("label", "string", "undo label")},
+         [this](A a, C c) -> json {
+             const json& list = a["commands"];
+             if (!list.is_array()) throw EditError("commands must be a list");
+             std::vector<json> requests;
+             for (const auto& item : list) {
+                 json r = item.is_string() ? requestFromWords(splitWords(item.get<std::string>()), c.cwd) : item;
+                 if (r.is_object() && !r.contains("cwd")) r["cwd"] = c.cwd;
+                 requests.push_back(std::move(r));
+             }
+             // These change files, history, or playback, or reply later.
+             auto allowed = [](const std::string& name) {
+                 static const std::set<std::string> excluded = {"batch", "undo", "redo", "new", "open", "save", "export",
+                                                                "export.cancel", "play", "pause", "toggle"};
+                 return !excluded.contains(name) && !name.starts_with("ui.");
+             };
+             for (size_t i = 0; i < requests.size(); ++i) {
+                 const json& r = requests[i];
+                 std::string name = r.is_object() && r.contains("cmd") && r["cmd"].is_string() ? r["cmd"].get<std::string>() : "";
+                 if (!name.empty() && !allowed(name)) throw EditError(fmt::format("command {} ({}) cannot run in a batch", i + 1, name));
+             }
+             Session& s = c.session;
+             s.beginBatch();
+             json results = json::array();
+             for (size_t i = 0; i < requests.size(); ++i) {
+                 json r = runSync(requests[i]);
+                 if (!r.value("ok", false)) {
+                     s.rollbackBatch();
+                     std::string name = requests[i].is_object() ? requests[i].value("cmd", "") : "";
+                     throw EditError(fmt::format("command {} ({}) failed: {}; no changes were made", i + 1, name,
+                                                 r.value("error", std::string("unknown error"))));
+                 }
+                 results.push_back(r.contains("result") ? r["result"] : json());
+             }
+             std::string label = get<std::string>(a, "label", "batch");
+             bool edited = s.commitBatch(label);
+             return {{"results", results}, {"undo", edited ? json(label) : json()}};
          }});
     add({"status", "Session summary: file, time, size, counts, errors, export", {}, [](A, C c) -> json {
              Session& s = c.session;
