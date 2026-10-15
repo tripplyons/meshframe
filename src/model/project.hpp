@@ -84,7 +84,7 @@ struct Track {
     bool locked = false;
 };
 
-enum class ClipKind { Media, Text, Solid, Generator, Synth };
+enum class ClipKind { Media, Text, Solid, Generator, Synth, Path };
 const char* clipKindName(ClipKind k);
 std::optional<ClipKind> parseClipKind(std::string_view s);
 

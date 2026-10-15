@@ -94,6 +94,8 @@ public:
     void clearRecentProjects();
     void saveProject(bool saveAs, std::function<void()> then = {});
     void importMedia();
+    void importPaths(Id track = 0, std::optional<double> start = std::nullopt);
+    void addPath();
 
     // Runs `next` now when the project has no unsaved changes. Otherwise a
     // dialog asks to save them, discard them, or cancel; `next` runs after

@@ -31,7 +31,7 @@ dependencies come from Homebrew, plus `librsvg` for the icon), then copy it
 to `/Applications`:
 
 ```sh
-brew install cmake ninja sdl3 luajit ffmpeg freetype nlohmann-json fmt googletest pkgconf librsvg
+brew install cmake ninja sdl3 luajit ffmpeg freetype libxml2 nlohmann-json fmt googletest pkgconf librsvg
 scripts/build-macos-app.sh
 ditto build-app/meshframe.app /Applications/meshframe.app
 ```
@@ -197,7 +197,7 @@ from the same specs the editor uses, so read it instead of guessing names.
   Higher video tracks draw over lower ones. Track kinds: `video` or `audio`.
 - **Clips** have a kind, track, start, duration, properties, and effect
   chains. Video tracks hold `text`, `solid`, `generator` (drawn by a script
-  generator), and `media` clips. Audio tracks hold `synth` (a script synth)
+  generator), `path`, and `media` clips. Audio tracks hold `synth` (a script synth)
   and `media` clips.
   - `media` clips are placed with `clip.media`. `media.import` names media by
     file name, extension included (`clip.mp4`). Video and audio stay linked as
@@ -250,6 +250,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Tracks | `track.add KIND [NAME]`, `track.set TRACK [name] [muted] [hidden] [locked]`, `track.move TRACK INDEX`, `track.remove TRACK` |
 | Media | `media.import PATH`, `media.list`, `media.inspect MEDIA [sheet] [count] [threshold]`, `media.transcribe MEDIA [model] [language] [force]`, `transcript.get MEDIA [start] [end] [words]`, `transcript.find TEXT [media]`, `media.remove MEDIA` |
 | Clips | `clip.bounds CLIP [TIME]`, `text.measure TEXT [size] [font]`, `clip.add KIND TRACK START DURATION [NAME] [PROPS] [insert]`, `clip.media MEDIA [START] [TRACK] [AUDIOTRACK] [insert]`, `clip.get CLIP [TIME]`, `clip.move CLIP START [TRACK]`, `clip.trim CLIP START DURATION [ripple]`, `clip.split CLIP TIME`, `clip.speed`, `clip.rename`, `clip.unlink`, `clip.remove CLIP [ripple]`, `close-gaps [start] [end]` |
+| Paths | `path.import PATH TRACK START DURATION [NAME]` |
 | Properties | `prop.set TARGET NAME VALUE`, `prop.key TARGET NAME TIME VALUE [EASE]`, `prop.unkey TARGET NAME TIME`, `prop.expr TARGET NAME EXPR`, `prop.get TARGET NAME [TIME]` |
 | Effects | `effect.add TARGET TYPE [INDEX]`, `effect.enable EFFECT [ENABLED]`, `effect.move EFFECT DELTA`, `effect.remove EFFECT` |
 | Transitions | `transition.add A B [TYPE] [DURATION]`, `transition.set TR [TYPE] [DURATION]`, `transition.curve TR CURVE`, `transition.remove TR` |
@@ -293,6 +294,84 @@ Notes:
   it replies with `timedOut: true`. Use it to see what the user changes in
   the GUI: read `revision` from `status`, then call `wait` in a loop with the
   last reply's `revision`.
+
+## Shapes and path animation
+
+Use `clip.add path` for vector objects. Choose `shape=rectangle`, `ellipse`,
+`line`, or `triangle`, with `width` and `height` in local pixels. Choose
+`shape=path` and set `path` to SVG path data for custom geometry. Coordinates
+are relative to the object's origin; positive y points down. The clip origin
+starts at the frame center. `fill`, `stroke`, `strokeWidth`, and `fillRule`
+control paint. The default stroke is 2 pixels. `strokeLinecap` chooses
+`butt`, `round`, or `square`; `strokeLinejoin` chooses `miter`, `round`, or
+`bevel`. `strokeMiterLimit` limits sharp corners. Use `#00000000` for
+transparent paint. A nonempty `path` overrides the procedural `shape`.
+
+`path.import drawing.svg V2 0 4` creates one editable clip per SVG element,
+in paint order, as one undo step. It embeds geometry and paint in the project.
+The original file is not required for rendering. The importer applies SVG
+viewBox scaling and `preserveAspectRatio` alignment, then centers the viewport
+at the clip origin. Without explicit viewport dimensions, it uses the viewBox
+size. It retains geometry outside the viewport without clipping, including
+with `slice`. `.path` and `.txt` files contain raw SVG path data in local
+coordinates. Use these formats for geometry; use `media.import` for ordinary
+raster images and video.
+
+SVG import supports paths (including curves and arcs), rectangles with rounded
+corners, circles, ellipses, lines, polylines, and polygons. It preserves group
+transforms, inherited paint, fill rules, and standard stroke caps and joins.
+Lengths must be numbers or pixels. Paint accepts hex colors, `none`, and the
+names black, white, red, green, and blue.
+
+The importer reports an error for unsupported features: gradients, text,
+embedded images, references (`use`), CSS classes, filters, masks, clip paths,
+dashed strokes, nested SVGs, document types, and group opacity other than 1.
+Stroked objects require transforms with uniform scale and no shear. Element
+opacity other than 1 requires either fill or stroke; use separate paint opacity
+when both are present. Convert unsupported artwork to plain paths first.
+Files and individual flattened path strings have a 1 MiB limit. SVGs have
+limits of 32,768 sampled points, 4,096 elements, and 64 nesting levels. Rendering
+also limits raster dimensions and work, and reports excessive geometry in
+`errors` instead of rendering it.
+
+Animate numeric properties with the usual keyframes, expressions, or signals:
+
+```sh
+meshframe-cli clip.add path V2 0 4 drawing 'props={"shape":"path","path":"M -120 0 Q 0 -120 120 0","fill":"#00000000","stroke":"#65d5d0","strokeWidth":4}'
+meshframe-cli prop.key drawing trimEnd 0 0
+meshframe-cli prop.key drawing trimEnd 2 1 ease-in-out
+meshframe-cli effect.add drawing drop_shadow
+meshframe-cli prop.set drawing motionPath 'M -200 0 C -100 -100 100 100 200 0'
+meshframe-cli prop.expr drawing motionProgress progress
+meshframe-cli prop.set drawing motionRotate 1
+```
+
+`trimStart` and `trimEnd` reveal the stroke by distance, from 0 to 1. The fill
+appears when the full stroke is visible (`trimStart=0`, `trimEnd=1`).
+`targetPath` holds a second SVG path; animate `morph`
+from 0 to 1 to interpolate sampled points along corresponding contours.
+Contour counts and open/closed status must match. Contour order, direction,
+and start points determine correspondence. Use fill/opacity keys for fades.
+
+All visual clips, including text and media, accept `motionPath`,
+`motionProgress`, and `motionRotate`. Positions along the path add to `x`
+and `y`. With `motionRotate=1`, the path's tangent adds to `rotation`.
+Path clips use the same effects, blend modes, clip edits, and transitions
+as other visual clips. Inspect the evaluated properties with `clip.get`,
+then render `sheet` and `frame`. Run `check` and inspect `errors` before export.
+
+Lua uses the same properties:
+
+```lua
+mf.clip{kind="path", track="V2", start=0, duration=4, shape="ellipse",
+        width=40, height=40, fill="#65d5d0",
+        motionPath="M -200 0 C -100 -100 100 100 200 0",
+        motionProgress=function() return progress end}
+```
+
+`examples/path-animation.sh` creates a project, a contact sheet, and a video
+with SVG import, draw-on, motion, morphing, a shadow, and a crossfade. Pass a
+new output directory; it refuses to overwrite an existing project.
 
 ## Working with footage
 

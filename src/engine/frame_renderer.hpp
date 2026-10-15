@@ -23,6 +23,7 @@ public:
 private:
     struct Layer {
         std::shared_ptr<Image> image;
+        double offsetX = 0, offsetY = 0;  // layer center relative to the object origin, in output pixels
         double displayW = 0, displayH = 0;  // size in output pixels before the clip's scale
     };
     Layer content(Evaluator& ev, const Clip& c, double t, double unit, int w, int h);

@@ -1,4 +1,5 @@
 #include "model/edit.hpp"
+#include "render/path.hpp"
 
 #include <fmt/format.h>
 
@@ -52,6 +53,24 @@ Value coerceOr(const PropSpec& s, const Value& v) {
         return coerce(s, v);
     } catch (const std::runtime_error& e) {
         fail(e.what());
+    }
+}
+
+// Validate path data before mutating a project. Animated strings are checked at render time.
+void validateGeometry(const Clip& c, const std::string& name, const Property& prop) {
+    if (prop.mode != PropMode::Constant) return;
+    bool pathData = name == "motionPath" || (c.kind == ClipKind::Path && (name == "path" || name == "targetPath"));
+    if (pathData && !asString(prop.constant).empty()) {
+        try { (void)parsePath(asString(prop.constant)); }
+        catch (const std::exception& e) { fail(name + ": " + e.what()); }
+    }
+    if (c.kind == ClipKind::Path && name == "strokeMiterLimit") {
+        double v = asNumber(prop.constant);
+        if (!std::isfinite(v) || v < 1) fail("strokeMiterLimit must be finite and at least 1");
+    }
+    if (c.kind == ClipKind::Path && (name == "width" || name == "height" || name == "strokeWidth")) {
+        double v = asNumber(prop.constant);
+        if (!std::isfinite(v) || v < 0) fail(name + " must be finite and nonnegative");
     }
 }
 
@@ -182,6 +201,7 @@ Id addClip(Project& p, Clip c) {
             if (name == sp.name) s = &sp;
         if (!s) fail(fmt::format("{} clips have no property '{}'", clipKindName(c.kind), name));
         if (prop.mode == PropMode::Constant) prop.constant = coerceOr(*s, prop.constant);
+        validateGeometry(c, name, prop);
     }
     applyDefaults(c.props, specs);
     c.id = p.newId();
@@ -479,6 +499,7 @@ void setProp(Project& p, Id target, const std::string& name, Property prop) {
     if (prop.mode == PropMode::Curve && s.type != ValueType::Number) fail(fmt::format("only number properties take curves; '{}' is a {}", name, typeName(s.type)));
     if (prop.mode == PropMode::Constant) prop.constant = coerceOr(s, prop.constant);
     if (prop.mode == PropMode::Expression && prop.expr.empty()) fail("expression is empty");
+    if (const Clip* c = p.findClip(target)) validateGeometry(*c, name, prop);
     prop.curve.sort();
     propsOf(p, target)[name] = std::move(prop);
 }

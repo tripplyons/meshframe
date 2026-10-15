@@ -1,6 +1,7 @@
 #include "ui/shell.hpp"
 
 #include "model/edit.hpp"
+#include "model/path_edit.hpp"
 #include "render/image.hpp"
 #include "ui/widgets.hpp"
 
@@ -436,6 +437,47 @@ void Shell::importMedia() {
     });
 }
 
+void Shell::addPath() {
+    const Project& p = session_.project();
+    const Track* track = p.findTrack(session_.selection.track);
+    if (!track || track->kind != TrackKind::Video) {
+        track = nullptr;
+        for (const auto& t : p.tracks) if (t.kind == TrackKind::Video) { track = &t; break; }
+    }
+    if (!track) return notify("Add a video track before creating a shape", true);
+    Clip c;
+    c.kind = ClipKind::Path;
+    c.name = "Shape";
+    c.track = track->id;
+    c.start = session_.time();
+    c.duration = 3;
+    edit("Add shape", [&](Project& next) { session_.selection.clips = {edit::addClip(next, c)}; });
+}
+
+void Shell::importPaths(Id track, std::optional<double> start) {
+    if (!hooks.fileDialog) return notify("No file dialog available; use the CLI path.import command", true);
+    if (!track) track = session_.selection.track;
+    if (const Track* t = session_.project().findTrack(track); !t || t->kind != TrackKind::Video) {
+        track = 0;
+        for (const auto& t : session_.project().tracks) if (t.kind == TrackKind::Video) { track = t.id; break; }
+    }
+    if (!track) return notify("Add a video track before importing paths", true);
+    double time = start.value_or(session_.time());
+    hooks.fileDialog(false, "Import paths", {"svg", "path", "txt"}, [this, track, time](std::string path) {
+        if (path.empty()) return;
+        try {
+            auto paths = mf::importPaths(path);
+            std::vector<Id> ids;
+            if (edit("Import paths", [&](Project& next) { ids = edit::addImportedPaths(next, paths, track, time, 3); })) {
+                session_.selection.clips = ids;
+                notify("Imported " + std::to_string(ids.size()) + " paths");
+            }
+        } catch (const std::exception& e) {
+            notify(e.what(), true);
+        }
+    });
+}
+
 // ---- views -------------------------------------------------------------------------
 
 View* Shell::paneView(int pane) {
@@ -672,6 +714,8 @@ void Shell::drawFileMenu(WidgetId id) {
     item("Save", "file.save");
     item("Save as...", "file.save-as");
     item("Import media...", "file.import");
+    item("Import paths...", "file.import-paths");
+    item("Add shape", "edit.add-path");
     item("Export...", "file.export");
     menuSeparator(ui_);
     item("Undo", "edit.undo");
@@ -910,6 +954,8 @@ void Shell::registerActions() {
     add("file.open", "Open project", "File", {{SDL_SCANCODE_O, ModGui}}, [this] { openProject(); });
     add("file.save", "Save project", "File", {{SDL_SCANCODE_S, ModGui}}, [this] { saveProject(false); }, true);
     add("file.save-as", "Save project as", "File", {{SDL_SCANCODE_S, ModGui | ModShift}}, [this] { saveProject(true); }, true);
+    add("file.import-paths", "Import paths", "File", {}, [this] { importPaths(); });
+    add("edit.add-path", "Add shape", "Edit", {}, [this] { addPath(); });
     add("file.import", "Import media", "File", {{SDL_SCANCODE_I, ModGui}}, [this] { importMedia(); });
     add("file.export", "Show export", "File", {{SDL_SCANCODE_E, ModGui}}, [this] { showView("export"); });
 

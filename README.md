@@ -17,11 +17,11 @@ Created in [T3 Code](https://t3.codes).
 
 ## Build
 
-meshframe uses C++23, CMake, SDL3, LuaJIT, FFmpeg, and FreeType. On macOS
+meshframe uses C++23, CMake, SDL3, LuaJIT, FFmpeg, FreeType, and libxml2. On macOS
 with Homebrew:
 
 ```sh
-brew install cmake ninja sdl3 luajit ffmpeg freetype nlohmann-json fmt googletest pkgconf
+brew install cmake ninja sdl3 luajit ffmpeg freetype libxml2 nlohmann-json fmt googletest pkgconf
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ./build/meshframe_tests
@@ -131,6 +131,51 @@ the background so separate calls share one undo history; while any session
 has FILE open, `--project FILE` sends commands to it. `quit` stops it. Use `-` to read many commands from stdin in one session, or
 `--batch -` to run them as one undo step that has no effect if any command fails.
 `examples/demo.sh` builds, renders, and exports a demo project this way.
+
+## Path animation
+
+Path clips hold editable vector geometry. Create rectangles, ellipses, lines,
+triangles, or custom SVG path data. In the timeline's video-track menu, add a
+shape and edit its properties in the inspector. Use **Import paths** to import
+an SVG or a text file containing SVG path data. Imported elements become
+separate clips in paint order, with their geometry stored in the project.
+
+The CLI exposes the same objects and undo history:
+
+```sh
+./build/meshframe-cli --project shapes.mfproj clip.add path V2 0 4 box 'props={"shape":"rectangle","width":180,"height":100,"fill":"#65d5d0","stroke":"#ffffff","strokeWidth":3}'
+./build/meshframe-cli --project shapes.mfproj path.import drawing.svg V3 0 4
+./build/meshframe-cli --project shapes.mfproj prop.key box trimEnd 0 0
+./build/meshframe-cli --project shapes.mfproj prop.key box trimEnd 2 1 ease-in-out
+```
+
+`trimStart` and `trimEnd` reveal a fraction of the stroke by distance. The fill
+appears at full reveal. Use a transparent fill (`#00000000`) for line drawings.
+`targetPath` and `morph`
+interpolate geometry by distance along corresponding contours. Both paths
+must have the same number of contours, with matching open or closed status.
+Morphing uses sampled geometry, so contour order and direction affect the
+result. This is not automatic matching between unrelated illustrations.
+
+Every visual clip can follow a `motionPath`. Animate `motionProgress` from
+0 to 1, and set `motionRotate` to 1 to follow the tangent. Path coordinates
+are local pixels, with the origin at the frame center and positive y down.
+The usual `x`, `y`, `scale`, and `rotation` apply as well. You can use curves,
+Lua expressions, and signals for the numeric animation properties:
+
+```sh
+./build/meshframe-cli --project shapes.mfproj prop.set box motionPath 'M -200 0 C -100 -150 100 150 200 0'
+./build/meshframe-cli --project shapes.mfproj prop.expr box motionProgress 'progress'
+./build/meshframe-cli --project shapes.mfproj prop.set box motionRotate 1
+```
+
+Path clips use the standard video effect chain, opacity, blend modes,
+transitions, timeline edits, bounds inspection, contact sheets, and export.
+Lua scripts can declare them with `mf.clip{kind="path", ...}`. Run
+`schema clips` and `help path.import` for the current property and command
+definitions. See [the agent guide](skills/meshframe/SKILL.md) for import limits
+and [examples/path-animation.sh](examples/path-animation.sh) for a complete
+SVG import, draw-on, motion, morph, effect, and transition example.
 
 ## Agent skill
 

@@ -106,6 +106,10 @@ private:
         if (c.link) text(ui, list, "Linked", "Moves with its linked clip");
 
         section(ui, list, "Properties");
+        if (c.kind == ClipKind::Path) {
+            text(ui, list, "Draw / morph", "Animate trimEnd or morph in Curves.");
+            text(ui, list, "Path", "SVG path data; coordinates from clip center.");
+        }
         props(env, list, id, clipPropSpecs(c.kind, tk), ro);
 
         section(ui, list, "Effects");

@@ -783,6 +783,7 @@ int mfClip(lua_State* L) {
         else if (spec.props.contains("generator")) spec.kind = ClipKind::Generator;
         else if (spec.props.contains("synth")) spec.kind = ClipKind::Synth;
         else if (spec.props.contains("text")) spec.kind = ClipKind::Text;
+        else if (spec.props.contains("path") || spec.props.contains("shape")) spec.kind = ClipKind::Path;
         else spec.kind = ClipKind::Solid;
     }
     out.clips.push_back(std::move(spec));

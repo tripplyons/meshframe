@@ -46,6 +46,7 @@ Slot clipSlot(const Clip& c, TrackKind track) {
     case ClipKind::Media: return track == TrackKind::Audio ? Slot::ClipAudio : Slot::ClipMedia;
     case ClipKind::Text: return Slot::ClipText;
     case ClipKind::Solid: return Slot::ClipSolid;
+    case ClipKind::Path: return Slot::ClipGenerator;
     case ClipKind::Generator: return Slot::ClipGenerator;
     case ClipKind::Synth: return Slot::ClipAudio;
     }

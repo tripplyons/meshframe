@@ -38,6 +38,7 @@ const char* clipKindName(ClipKind k) {
         case ClipKind::Solid: return "solid";
         case ClipKind::Generator: return "generator";
         case ClipKind::Synth: return "synth";
+        case ClipKind::Path: return "path";
     }
     return "media";
 }
@@ -48,6 +49,7 @@ std::optional<ClipKind> parseClipKind(std::string_view s) {
     if (s == "solid") return ClipKind::Solid;
     if (s == "generator") return ClipKind::Generator;
     if (s == "synth") return ClipKind::Synth;
+    if (s == "path") return ClipKind::Path;
     return std::nullopt;
 }
 

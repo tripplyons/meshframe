@@ -662,6 +662,8 @@ private:
             if (track && track->kind == TrackKind::Video) {
                 if (menuItem(ui, "Add text")) add(ClipKind::Text, "Text");
                 if (menuItem(ui, "Add solid")) add(ClipKind::Solid, "Solid");
+                if (menuItem(ui, "Add shape")) add(ClipKind::Path, "Shape");
+                if (menuItem(ui, "Import paths...")) shell.importPaths(trackId, t);
                 menuSeparator(ui);
                 for (const auto& g : out.generators)
                     if (menuItem(ui, fmt::format("Add generator \"{}\"", g))) add(ClipKind::Generator, g, "generator");

@@ -3,12 +3,15 @@
 #include "render/compositor.hpp"
 #include "render/font.hpp"
 #include "render/raster.hpp"
+#include "render/path.hpp"
 
 #include <fmt/format.h>
 
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <limits>
+#include <stdexcept>
 
 namespace mf {
 
@@ -107,6 +110,65 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
             layer.displayH = h;
             break;
         }
+        case ClipKind::Path: {
+            const std::string key = fmt::format("clip:{}:path", c.id);
+            try {
+                double width = ev.num(c, "width", 240), height = ev.num(c, "height", 160);
+                double strokeWidth = ev.num(c, "strokeWidth");
+                double miterLimit = ev.num(c, "strokeMiterLimit", 4);
+                if (!std::isfinite(miterLimit) || miterLimit < 1)
+                    throw std::runtime_error("strokeMiterLimit must be finite and at least 1");
+                if (!std::isfinite(width) || !std::isfinite(height) || !std::isfinite(strokeWidth) ||
+                    width < 0 || height < 0 || strokeWidth < 0)
+                    throw std::runtime_error("path dimensions must be finite and nonnegative");
+                std::string data = ev.str(c, "path");
+                std::string shape = ev.str(c, "shape");
+                VectorPath path = data.empty() ? (shape == "path" ? VectorPath{} : shapePath(shape, width, height)) : parsePath(data);
+                double morph = ev.num(c, "morph");
+                double trimStart = ev.num(c, "trimStart"), trimEnd = ev.num(c, "trimEnd", 1);
+                if (!std::isfinite(morph) || !std::isfinite(trimStart) || !std::isfinite(trimEnd))
+                    throw std::runtime_error("morph and trim progress must be finite");
+                std::string target = ev.str(c, "targetPath");
+                if (!target.empty()) path = morphPath(path, parsePath(target), morph);
+                double minX = std::numeric_limits<double>::infinity(), minY = minX;
+                double maxX = -minX, maxY = -minX;
+                for (const auto& contour : path.contours) for (const auto& point : contour.points) {
+                    if (!std::isfinite(point.x) || !std::isfinite(point.y)) throw std::runtime_error("nonfinite path coordinate");
+                    minX = std::min(minX, point.x);
+                    maxX = std::max(maxX, point.x);
+                    minY = std::min(minY, point.y);
+                    maxY = std::max(maxY, point.y);
+                }
+                ev.clearRuntimeError(key);
+                if (!std::isfinite(minX)) break;
+                // Keep geometry coordinates relative to its origin, while allocating only its bounds.
+                double centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
+                double strokeFactor = ev.str(c, "strokeLinejoin") == "miter" ? miterLimit : 1;
+                if (ev.str(c, "strokeLinecap") == "square") strokeFactor = std::max(strokeFactor, std::sqrt(2.0));
+                double strokeExtent = strokeWidth * strokeFactor;
+                double pw = std::ceil((maxX - minX + strokeExtent) * unit) + 4;
+                double ph = std::ceil((maxY - minY + strokeExtent) * unit) + 4;
+                if (!std::isfinite(pw) || !std::isfinite(ph) || pw > 16384 || ph > 16384 || pw * ph > 64000000)
+                    throw std::runtime_error("path raster exceeds 16384 pixels per side or 64 million pixels");
+                for (auto& contour : path.contours) for (auto& point : contour.points) {
+                    point.x -= centerX;
+                    point.y -= centerY;
+                }
+                layer.image = std::make_shared<Image>(std::max(1, int(pw)), std::max(1, int(ph)));
+                drawPath(*layer.image, path, unit, ev.color(c, "fill", Color::gray(1)),
+                         ev.color(c, "stroke", Color::gray(1)), strokeWidth,
+                         trimStart, trimEnd, ev.str(c, "fillRule"),
+                         ev.str(c, "strokeLinecap"), ev.str(c, "strokeLinejoin"), miterLimit);
+                layer.displayW = layer.image->w;
+                layer.displayH = layer.image->h;
+                layer.offsetX = centerX * unit;
+                layer.offsetY = centerY * unit;
+            } catch (const std::exception& e) {
+                ev.reportRuntimeError(key, e.what());
+                layer.image.reset();
+            }
+            break;
+        }
         case ClipKind::Synth: break;
     }
     return layer;
@@ -120,7 +182,25 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
     // Room for effects that draw past the edges, such as a drop shadow.
     int margin = 0;
     for (const auto& e : c.videoEffects)
-        if (e.enabled) margin += effectMargin(e.type, ev.effectParams(e, false), effectUnit);
+        if (e.enabled) {
+            margin += effectMargin(e.type, ev.effectParams(e, false), effectUnit);
+            if (c.kind == ClipKind::Path && e.type == "blur") {
+                double radius = asNumber(ev.effectParams(e, false)("radius"), 4);
+                double extent = std::max(0.0, radius) * effectUnit * 2;
+                if (!std::isfinite(radius) || !std::isfinite(extent) || extent > 16384) {
+                    ev.reportRuntimeError(fmt::format("clip:{}:path", c.id), "path blur exceeds raster limits");
+                    return false;
+                }
+                margin += int(std::ceil(extent)) + 1;
+            }
+        }
+    if (c.kind == ClipKind::Path) {
+        double paddedW = layer.image->w + 2.0 * margin, paddedH = layer.image->h + 2.0 * margin;
+        if (paddedW > 16384 || paddedH > 16384 || paddedW * paddedH > 64000000) {
+            ev.reportRuntimeError(fmt::format("clip:{}:path", c.id), "path effects exceed raster limits");
+            return false;
+        }
+    }
     PixelBox content{margin, margin, layer.image->w, layer.image->h};
     if (margin > 0) {
         auto padded = std::make_shared<Image>(layer.image->w + 2 * margin, layer.image->h + 2 * margin);
@@ -131,15 +211,45 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
     }
     for (const auto& e : c.videoEffects) {
         if (!e.enabled) continue;
-        applyEffect(*layer.image, e.type, ev.effectParams(e, false), effectUnit, content);
+        auto params = ev.effectParams(e, false);
+        if (c.kind == ClipKind::Path && e.type == "mask") {
+            // Mask x/y use the object's origin, even when the path bounds are off-center.
+            ParamFn local = [&](std::string_view name) -> Value {
+                if (name == "x") return asNumber(params(name)) - layer.offsetX / unit;
+                if (name == "y") return asNumber(params(name)) - layer.offsetY / unit;
+                return params(name);
+            };
+            applyEffect(*layer.image, e.type, local, effectUnit, content);
+        } else applyEffect(*layer.image, e.type, params, effectUnit, content);
     }
     double scale = ev.num(c, "scale", 1);
     Placement at;
-    at.cx = dst.w / 2.0 + ev.num(c, "x") * unit;
-    at.cy = dst.h / 2.0 + ev.num(c, "y") * unit;
+    double motionX = 0, motionY = 0, motionAngle = 0;
+    const std::string motionKey = fmt::format("clip:{}:motionPath", c.id);
+    try {
+        std::string data = ev.str(c, "motionPath");
+        if (!data.empty()) {
+            VectorPath path = parsePath(data);
+            double progress = ev.num(c, "motionProgress");
+            double rotate = ev.num(c, "motionRotate");
+            if (!std::isfinite(progress) || !std::isfinite(rotate))
+                throw std::runtime_error("motion progress and orientation must be finite");
+            auto point = pointOnPath(path, progress);
+            motionX = point.x;
+            motionY = point.y;
+            if (rotate >= 0.5) motionAngle = pathAngle(path, progress);
+        }
+        ev.clearRuntimeError(motionKey);
+    } catch (const std::exception& e) {
+        ev.reportRuntimeError(motionKey, e.what());
+        return false;
+    }
+    at.rotation = (ev.num(c, "rotation") + motionAngle) * std::numbers::pi / 180;
+    double ox = layer.offsetX * scale, oy = layer.offsetY * scale;
+    at.cx = dst.w / 2.0 + (ev.num(c, "x") + motionX) * unit + ox * std::cos(at.rotation) - oy * std::sin(at.rotation);
+    at.cy = dst.h / 2.0 + (ev.num(c, "y") + motionY) * unit + ox * std::sin(at.rotation) + oy * std::cos(at.rotation);
     at.sx = scale * layer.displayW / layer.image->w;
     at.sy = scale * layer.displayH / layer.image->h;
-    at.rotation = ev.num(c, "rotation") * std::numbers::pi / 180;
     float opacity = float(std::clamp(ev.num(c, "opacity", 1), 0.0, 1.0));
     drawLayer(dst, *layer.image, at, opacity, useBlend ? parseBlend(ev.str(c, "blend")) : Blend::Normal);
     return true;

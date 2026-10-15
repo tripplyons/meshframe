@@ -18,6 +18,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Freetype REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(LUAJIT REQUIRED IMPORTED_TARGET luajit)
+pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
   libavformat libavcodec libavutil libswscale libswresample)
 
@@ -31,7 +32,7 @@ target_include_directories(meshframe_core PUBLIC src)
 target_compile_options(meshframe_core PRIVATE ${MF_WARNINGS})
 target_link_libraries(meshframe_core PUBLIC
   SDL3::SDL3 fmt::fmt nlohmann_json::nlohmann_json Freetype::Freetype
-  PkgConfig::LUAJIT PkgConfig::FFMPEG Threads::Threads)
+  PkgConfig::LUAJIT PkgConfig::LIBXML2 PkgConfig::FFMPEG Threads::Threads)
 
 file(GLOB_RECURSE MF_UI_SOURCES CONFIGURE_DEPENDS src/ui/*.cpp)
 add_library(meshframe_ui STATIC ${MF_UI_SOURCES})

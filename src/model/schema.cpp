@@ -27,6 +27,9 @@ std::vector<PropSpec> visualProps() {
         num("scale", 1, 0, 10, 0.01),
         num("rotation", 0, -360, 360, 0.1, "deg"),
         num("opacity", 1, 0, 1, 0.01),
+        str("motionPath", ""),
+        num("motionProgress", 0, 0, 1, 0.01),
+        num("motionRotate", 0, 0, 1, 1),
         str("blend", "normal", {"normal", "add", "multiply", "screen"}),
     };
 }
@@ -59,6 +62,23 @@ struct ClipSpecs {
     });
     std::vector<PropSpec> solid = concat(visualProps(), {color("color", Color::gray(0.5f))});
     std::vector<PropSpec> generator = concat(visualProps(), {str("generator", "", {}, false)});
+    std::vector<PropSpec> path = concat(visualProps(), {
+        str("shape", "rectangle", {"path", "rectangle", "ellipse", "line", "triangle"}),
+        str("path", ""),
+        num("width", 240, 0, 8000, 1, "px"),
+        num("height", 160, 0, 8000, 1, "px"),
+        color("fill", Color::gray(1.0f)),
+        color("stroke", Color::gray(1.0f)),
+        num("strokeWidth", 2, 0, 1000, 0.5, "px"),
+        str("strokeLinecap", "round", {"round", "butt", "square"}),
+        str("strokeLinejoin", "round", {"round", "bevel", "miter"}),
+        num("strokeMiterLimit", 4, 1, 100, 0.1),
+        str("fillRule", "nonzero", {"nonzero", "evenodd"}),
+        num("trimStart", 0, 0, 1, 0.01),
+        num("trimEnd", 1, 0, 1, 0.01),
+        str("targetPath", ""),
+        num("morph", 0, 0, 1, 0.01),
+    });
     std::vector<PropSpec> synth = concat(audioProps(), {str("synth", "", {}, false)});
 };
 
@@ -77,6 +97,7 @@ std::span<const PropSpec> clipPropSpecs(ClipKind kind, TrackKind track) {
         case ClipKind::Solid: return s.solid;
         case ClipKind::Generator: return s.generator;
         case ClipKind::Synth: return s.synth;
+        case ClipKind::Path: return s.path;
     }
     return {};
 }

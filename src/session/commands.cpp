@@ -1,6 +1,7 @@
 #include "session/commands.hpp"
 
 #include "model/edit.hpp"
+#include "model/path_edit.hpp"
 #include "model/schema.hpp"
 #include "audio/analysis.hpp"
 #include "core/timecode.hpp"
@@ -574,6 +575,7 @@ json schemaJson() {
     };
     clip(ClipKind::Text, TrackKind::Video);
     clip(ClipKind::Solid, TrackKind::Video);
+    clip(ClipKind::Path, TrackKind::Video);
     clip(ClipKind::Generator, TrackKind::Video);
     clip(ClipKind::Media, TrackKind::Video);
     clip(ClipKind::Media, TrackKind::Audio);
@@ -928,13 +930,13 @@ void Commands::registerBuiltins() {
          }});
 
     // ---- clips ----
-    add({"clip.add", "Add a text, solid, generator, or synth clip",
-         {req("kind", "string", "text, solid, generator, synth"), req("track", "id"), req("start", "time"),
+    add({"clip.add", "Add a text, solid, path, generator, or synth clip",
+         {req("kind", "string", "text, solid, path, generator, synth"), req("track", "id"), req("start", "time"),
           req("duration", "time"), opt("name", "string"), opt("props", "json", "object of property name to value"),
           opt("insert", "bool", "push later clips right to make room")},
          [edit](A a, C c) -> json {
              auto kind = parseClipKind(a["kind"].get<std::string>());
-             if (!kind || *kind == ClipKind::Media) throw EditError("kind must be text, solid, generator, or synth; use clip.media for media");
+             if (!kind || *kind == ClipKind::Media) throw EditError("kind must be text, solid, path, generator, or synth; use clip.media for media");
              Clip clip;
              clip.kind = *kind;
              clip.track = resolveTrack(c.session.project(), a["track"]);
@@ -950,6 +952,19 @@ void Commands::registerBuiltins() {
                  if (get<bool>(a, "insert", false)) edit::rippleInsert(p, {id});
              });
              return clipToJson(*c.session.project().findClip(id));
+         }});
+    add({"path.import", "Import SVG or raw .path/.txt paths as editable clips in paint order",
+         {req("path", "path"), req("track", "id"), req("start", "time"), req("duration", "time"), opt("name", "string")},
+         [edit](A a, C c) -> json {
+             auto paths = importPaths(a["path"].get<std::string>());
+             Id track = resolveTrack(c.session.project(), a["track"]);
+             std::vector<Id> ids;
+             edit(c.session, "import paths", [&](Project& p) {
+                 ids = edit::addImportedPaths(p, paths, track, a["start"], a["duration"], get<std::string>(a, "name", ""));
+             });
+             json result = json::array();
+             for (Id id : ids) result.push_back(clipToJson(*c.session.project().findClip(id)));
+             return result;
          }});
     add({"clip.media", "Place a media source on the timeline (linked A/V pair when it has both)",
          {req("media", "id"), opt("start", "time"), opt("track", "id", "video track"), opt("audioTrack", "id"),
