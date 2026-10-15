@@ -1087,15 +1087,19 @@ void Commands::registerBuiltins() {
              return checkProject(c.session, o);
          }});
     add({"text.measure", "Measure a text clip's block before scale and rotation",
-         {req("text", "string"), opt("size", "number", "default 96"), opt("font", "path", "font file; default the built-in sans")},
+         {req("text", "string"), opt("size", "number", "default 96"), opt("font", "path", "font file; default the built-in sans"),
+          opt("wrap", "number", "width in px to wrap at"), opt("lineHeight", "number", "multiple of the font's line height"),
+          opt("outline", "number", "outline width in px")},
          [](A a, C) -> json {
              std::string err;
              std::shared_ptr<Font> font = a.contains("font") ? Font::load(a["font"], &err) : Font::sans();
              if (!font) throw EditError(err.empty() ? "cannot load the font" : err);
              double size = get<double>(a, "size", 96.0);
              if (size < 1) throw EditError("size must be at least 1");
-             TextBlock b = layoutTextBlock(*font, a["text"], float(size));
-             return {{"width", b.w}, {"height", b.h}, {"lines", b.lines.size()}, {"lineHeight", b.lineHeight}};
+             TextLayout layout{float(size), float(get<double>(a, "wrap", 0.0)), float(get<double>(a, "lineHeight", 1.0)),
+                               float(get<double>(a, "outline", 0.0))};
+             TextBlock b = layoutTextBlock(*font, a["text"], layout);
+             return {{"width", b.w}, {"height", b.h}, {"lines", b.lines}, {"lineHeight", b.lineHeight}};
          }});
 
     // ---- properties ----

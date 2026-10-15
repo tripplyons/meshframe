@@ -23,9 +23,19 @@ void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity,
 
 void fill(Image& img, Color c);
 
-// Applies a video effect in place. `unit` converts project pixels to image pixels.
-// Unknown types are ignored.
-void applyEffect(Image& img, std::string_view type, const ParamFn& param, double unit);
+// The part of a layer image that holds the clip, inside any margin added
+// for effects. Empty means the whole image.
+struct PixelBox {
+    int x = 0, y = 0, w = 0, h = 0;
+};
+
+// Applies a video effect in place. `unit` converts project pixels to image
+// pixels. Crop and vignette measure from `content`. Unknown types are ignored.
+void applyEffect(Image& img, std::string_view type, const ParamFn& param, double unit, PixelBox content = {});
+
+// Pixels an effect draws past the clip's edges (a drop shadow's offset and
+// blur), so the layer can be padded before effects run.
+int effectMargin(std::string_view type, const ParamFn& param, double unit);
 
 // Mixes two full frames by a transition at mix m (0 = all A, 1 = all B).
 void mixTransition(Image& out, const Image& a, const Image& b, std::string_view type, double m, const ParamFn& param);

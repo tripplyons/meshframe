@@ -14,13 +14,29 @@ namespace mf {
 
 namespace {
 
-std::shared_ptr<Image> renderTextBlock(Font& font, const std::string& text, float px, Color color) {
-    TextBlock b = layoutTextBlock(font, text, px);
+// Draws a text clip's lines with their alignment, over an outline when it
+// has one. `unit` converts project pixels to image pixels.
+std::shared_ptr<Image> renderText(Evaluator& ev, const Clip& c, Font& font, double unit) {
+    TextLayout layout;
+    layout.px = float(ev.num(c, "size", 96) * unit);
+    if (layout.px < 1) return nullptr;
+    layout.wrap = float(std::max(0.0, ev.num(c, "wrap", 0)) * unit);
+    layout.lineSpacing = float(ev.num(c, "lineHeight", 1));
+    layout.outline = float(std::max(0.0, ev.num(c, "outline", 0)) * unit);
+    TextBlock b = layoutTextBlock(font, ev.str(c, "text"), layout);
     if (b.lines.empty()) return nullptr;
+    std::string align = ev.str(c, "align");
     auto img = std::make_shared<Image>(b.w, b.h);
+    Color color = ev.color(c, "color", Color::gray(1));
     for (size_t i = 0; i < b.lines.size(); ++i) {
-        float lw = font.measure(b.lines[i], px);
-        drawText(*img, font, b.lines[i], (b.w - lw) / 2, 1 + b.lineHeight * i, px, color);
+        float inner = b.w - 2 * b.margin;
+        float x = b.margin + (align == "left" ? 0 : align == "right" ? inner - b.widths[i] : (inner - b.widths[i]) / 2);
+        drawText(*img, font, b.lines[i], x, b.margin + b.lineHeight * float(i), layout.px, color);
+    }
+    if (layout.outline > 0) {
+        Image under = outlineOf(*img, layout.outline, ev.color(c, "outlineColor", Color::gray(0)));
+        drawLayer(under, *img, Placement{under.w / 2.0, under.h / 2.0}, 1, Blend::Normal);
+        *img = std::move(under);
     }
     return img;
 }
@@ -37,10 +53,19 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
             double src = c.in + (t - c.start) * c.speed;
             double frameDur = 1.0 / (m->fps > 0 ? m->fps : 30);
             src = std::clamp(src, 0.0, std::max(0.0, m->duration - frameDur));
-            // Fit the media inside the frame, keeping its aspect.
-            double fit = std::min(double(w) / m->width, double(h) / m->height);
-            layer.displayW = m->width * fit;
-            layer.displayH = m->height * fit;
+            // Contain fits inside the frame and cover fills it, both keeping the
+            // aspect; stretch fills it exactly; none keeps one media pixel per
+            // project pixel.
+            std::string fit = ev.str(c, "fit");
+            double sx = double(w) / m->width, sy = double(h) / m->height;
+            if (fit == "stretch") {
+            } else if (fit == "none") {
+                sx = sy = unit;
+            } else {
+                sx = sy = fit == "cover" ? std::max(sx, sy) : std::min(sx, sy);
+            }
+            layer.displayW = m->width * sx;
+            layer.displayH = m->height * sy;
             ImagePtr frame = cache_.frame(*m, src, int(std::ceil(layer.displayW)), int(std::ceil(layer.displayH)));
             if (frame) layer.image = std::make_shared<Image>(*frame);
             break;
@@ -53,9 +78,7 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
                 font = Font::sans();
             }
             if (!font) break;
-            float px = float(ev.num(c, "size", 96) * unit);
-            if (px < 1) break;
-            layer.image = renderTextBlock(*font, ev.str(c, "text"), px, ev.color(c, "color", Color::gray(1)));
+            layer.image = renderText(ev, c, *font, unit);
             if (layer.image) {
                 layer.displayW = layer.image->w;
                 layer.displayH = layer.image->h;
@@ -93,9 +116,22 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
     Layer layer = content(ev, c, t, unit, dst.w - 2 * padX, dst.h - 2 * padY);
     if (!layer.image || layer.image->empty()) return false;
     double toDisplay = layer.displayW / layer.image->w;
+    double effectUnit = unit / toDisplay;
+    // Room for effects that draw past the edges, such as a drop shadow.
+    int margin = 0;
+    for (const auto& e : c.videoEffects)
+        if (e.enabled) margin += effectMargin(e.type, ev.effectParams(e, false), effectUnit);
+    PixelBox content{margin, margin, layer.image->w, layer.image->h};
+    if (margin > 0) {
+        auto padded = std::make_shared<Image>(layer.image->w + 2 * margin, layer.image->h + 2 * margin);
+        for (int y = 0; y < layer.image->h; ++y) std::copy_n(layer.image->row(y), layer.image->w * 4, padded->at(margin, margin + y));
+        layer.displayW *= double(padded->w) / layer.image->w;
+        layer.displayH *= double(padded->h) / layer.image->h;
+        layer.image = std::move(padded);
+    }
     for (const auto& e : c.videoEffects) {
         if (!e.enabled) continue;
-        applyEffect(*layer.image, e.type, ev.effectParams(e, false), unit / toDisplay);
+        applyEffect(*layer.image, e.type, ev.effectParams(e, false), effectUnit, content);
     }
     double scale = ev.num(c, "scale", 1);
     Placement at;

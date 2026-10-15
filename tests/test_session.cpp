@@ -557,10 +557,10 @@ TEST(Commands, TextMeasureMatchesTheRenderedBlock) {
     Commands c(s);
     ok(c, {"settings", "width=640", "height=360"});
     json one = ok(c, {"text.measure", "Hello", "size=60"});
-    EXPECT_EQ(one["lines"], 1);
+    EXPECT_EQ(one["lines"], json::array({"Hello"}));
     json r = c.runSync({{"cmd", "text.measure"}, {"args", {{"text", "Hello\nworld"}, {"size", 60}}}});
     ASSERT_TRUE(r["ok"]) << r.dump();
-    EXPECT_EQ(r["result"]["lines"], 2);
+    EXPECT_EQ(r["result"]["lines"], json::array({"Hello", "world"}));
     EXPECT_NEAR(r["result"]["height"].get<double>(), 2 * r["result"]["lineHeight"].get<double>() + 2, 1);
     EXPECT_GT(ok(c, {"text.measure", "Hello", "size=120"})["width"].get<double>(), 1.9 * one["width"].get<double>());
 
@@ -903,4 +903,143 @@ TEST(Commands, InsertMediaSplitsLinkedPairs) {
     std::map<double, int> starts;
     for (const auto& clip : ok(c, {"show", "clips"})) ++starts[clip["start"].get<double>()];
     EXPECT_EQ(starts, (std::map<double, int>{{0, 2}, {0.5, 2}, {1.5, 2}}));
+}
+
+namespace {
+
+json bounds(Commands& c, const std::string& clip) { return ok(c, {"clip.bounds", clip, "0.5"})["box"]; }
+
+// Leftmost and rightmost lit columns of the frame in rows y0 to y1.
+std::pair<int, int> litColumns(const Image& img, int y0, int y1) {
+    int lo = img.w, hi = -1;
+    for (int y = std::max(0, y0); y < std::min(img.h, y1); ++y)
+        for (int x = 0; x < img.w; ++x)
+            if (img.at(x, y)[0] > 128) lo = std::min(lo, x), hi = std::max(hi, x);
+    return {lo, hi};
+}
+
+}  // namespace
+
+TEST(Commands, TextAlignWrapSpacingAndOutline) {
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "width=640", "height=360"});
+    ok(c, {"clip.add", "text", "V1", "0", "1", "t", R"(props={"text":"Wide line\nx","size":40})"});
+
+    // Short lines sit at the left, middle, or right of the block.
+    std::map<std::string, std::pair<int, int>> lastLine;
+    json box;
+    for (std::string align : {"left", "center", "right"}) {
+        ok(c, {"prop.set", "t", "align", align});
+        box = bounds(c, "t");
+        auto frame = s.renderFrame(0.5, 640, 360);
+        int mid = int((box["top"].get<double>() + box["bottom"].get<double>()) / 2);
+        lastLine[align] = litColumns(*frame, mid + 4, int(box["bottom"].get<double>()) + 1);
+    }
+    double left = box["left"], right = box["right"];
+    EXPECT_NEAR(lastLine["left"].first, left, 4);
+    EXPECT_NEAR(lastLine["right"].second, right, 4);
+    EXPECT_NEAR((lastLine["center"].first + lastLine["center"].second) / 2.0, (left + right) / 2, 4);
+
+    // Line height spaces the baselines by a multiple of the font's.
+    double base = ok(c, {"text.measure", "x", "size=40"})["lineHeight"];
+    double h1 = box["height"];
+    ok(c, {"prop.set", "t", "lineHeight", "2"});
+    EXPECT_NEAR(bounds(c, "t")["height"].get<double>() - h1, base, 2);
+    json spaced = ok(c, {"text.measure", "Wide line\nx", "size=40", "lineHeight=2"});
+    EXPECT_DOUBLE_EQ(spaced["lineHeight"], 2 * base);
+    ok(c, {"prop.set", "t", "lineHeight", "1"});
+
+    // Wrapping breaks at spaces to fit the width.
+    ok(c, {"prop.set", "t", "text", "one two three four five"});
+    double unwrapped = bounds(c, "t")["width"];
+    ok(c, {"prop.set", "t", "wrap", "150"});
+    EXPECT_LE(bounds(c, "t")["width"].get<double>(), 150);
+    EXPECT_LT(bounds(c, "t")["width"].get<double>(), unwrapped);
+    json wrapped = ok(c, {"text.measure", "one two three four five", "size=40", "wrap=150"});
+    EXPECT_GT(wrapped["lines"].size(), 1u);
+    for (const auto& line : wrapped["lines"]) EXPECT_LE(ok(c, {"text.measure", line, "size=40"})["width"].get<double>(), 152);
+
+    // An outline colors pixels around the glyphs and widens the block.
+    ok(c, {"prop.set", "t", "wrap", "0"});
+    ok(c, {"prop.set", "t", "text", "HI"});
+    json plain = bounds(c, "t");
+    ok(c, {"prop.set", "t", "outline", "4"});
+    ok(c, {"prop.set", "t", "outlineColor", "#ff0000"});
+    json outlined = bounds(c, "t");
+    EXPECT_NEAR(outlined["width"].get<double>() - plain["width"].get<double>(), 8, 2);
+    auto frame = s.renderFrame(0.5, 640, 360);
+    int red = 0, white = 0;
+    for (size_t i = 0; i < frame->px.size(); i += 4) {
+        const uint8_t* p = frame->px.data() + i;
+        red += p[0] > 200 && p[1] < 50;
+        white += p[0] > 200 && p[1] > 200;
+    }
+    EXPECT_GT(red, 100);
+    EXPECT_GT(white, 100);
+}
+
+TEST(Commands, ShadowCropAndMaskEffects) {
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "width=640", "height=360"});
+
+    // A drop shadow draws past the clip, offset from it.
+    ok(c, {"clip.add", "text", "V1", "0", "1", "t", R"(props={"text":"HI","size":60})"});
+    json plain = bounds(c, "t");
+    Id shadow = ok(c, {"effect.add", "t", "drop_shadow"})["id"];
+    for (auto [k, v] : {std::pair{"x", "20"}, {"y", "10"}, {"blur", "0"}, {"opacity", "1"}, {"color", "#ff0000"}})
+        ok(c, {"prop.set", std::to_string(shadow), k, v});
+    json shadowed = bounds(c, "t");
+    EXPECT_NEAR(shadowed["right"].get<double>() - plain["right"].get<double>(), 20, 1.5);
+    EXPECT_NEAR(shadowed["bottom"].get<double>() - plain["bottom"].get<double>(), 10, 1.5);
+    EXPECT_NEAR(shadowed["left"].get<double>(), plain["left"].get<double>(), 1);
+    ok(c, {"clip.remove", "t"});
+
+    // Crop edges are fractions of the clip.
+    ok(c, {"clip.add", "solid", "V1", "0", "1", "bg", R"(props={"color":"#ffffff"})"});
+    Id crop = ok(c, {"effect.add", "bg", "crop"})["id"];
+    ok(c, {"prop.set", std::to_string(crop), "left", "0.25"});
+    ok(c, {"prop.set", std::to_string(crop), "bottom", "0.5"});
+    json cropped = bounds(c, "bg");
+    EXPECT_NEAR(cropped["left"].get<double>(), 160, 1);
+    EXPECT_NEAR(cropped["right"].get<double>(), 640, 1);
+    EXPECT_NEAR(cropped["bottom"].get<double>(), 180, 1);
+    ok(c, {"effect.remove", std::to_string(crop)});
+
+    // A mask keeps the inside or the outside of a shape around the clip's center.
+    Id mask = ok(c, {"effect.add", "bg", "mask"})["id"];
+    for (auto [k, v] : {std::pair{"shape", "ellipse"}, {"width", "200"}, {"height", "100"}, {"x", "50"}})
+        ok(c, {"prop.set", std::to_string(mask), k, v});
+    json masked = bounds(c, "bg");
+    EXPECT_NEAR(masked["left"].get<double>(), 270, 1.5);
+    EXPECT_NEAR(masked["right"].get<double>(), 470, 1.5);
+    EXPECT_NEAR(masked["top"].get<double>(), 130, 1.5);
+    auto frame = s.renderFrame(0.5, 640, 360);
+    EXPECT_EQ(frame->at(370, 180)[0], 255);
+    EXPECT_EQ(frame->at(275, 135)[0], 0);  // inside the box, outside the ellipse
+    ok(c, {"prop.set", std::to_string(mask), "keep", "outside"});
+    frame = s.renderFrame(0.5, 640, 360);
+    EXPECT_EQ(frame->at(370, 180)[0], 0);
+    EXPECT_EQ(frame->at(275, 135)[0], 255);
+}
+
+TEST(Commands, MediaFitModes) {
+    if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg not found";
+    Session s;
+    Commands c(s);
+    ok(c, {"settings", "width=640", "height=360"});
+    json m = ok(c, {"media.import", fixtures::redImage()});
+    Id id = ok(c, {"clip.media", m["name"], "0"})[0];
+    std::string clip = std::to_string(id);
+    // The 32x16 image in a 640x360 frame.
+    std::map<std::string, std::pair<double, double>> sizes = {
+        {"contain", {640, 320}}, {"cover", {720, 360}}, {"stretch", {640, 360}}, {"none", {32, 16}}};
+    for (auto [fit, size] : sizes) {
+        ok(c, {"prop.set", clip, "fit", fit});
+        json b = bounds(c, clip);
+        EXPECT_NEAR(b["width"].get<double>(), size.first, 1) << fit;
+        EXPECT_NEAR(b["height"].get<double>(), size.second, 1) << fit;
+    }
+    EXPECT_NE(fails(c, {"prop.set", clip, "fit", "zoom"}).find("invalid value"), std::string::npos);
 }

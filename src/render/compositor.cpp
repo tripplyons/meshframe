@@ -139,6 +139,21 @@ void shiftInto(Image& out, const Image& src, int dx, int dy) {
     });
 }
 
+// Multiplies each premultiplied pixel by f(x, y).
+template <class F>
+void scaleAlpha(Image& img, F f) {
+    forRows(img.h, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            uint8_t* p = img.row(y);
+            for (int x = 0; x < img.w; ++x, p += 4) {
+                float k = f(x, y);
+                if (k >= 1) continue;
+                for (int c = 0; c < 4; ++c) p[c] = u8(p[c] * k);
+            }
+        }
+    });
+}
+
 }  // namespace
 
 Blend parseBlend(std::string_view s) {
@@ -208,7 +223,14 @@ void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity,
     });
 }
 
-void applyEffect(Image& img, std::string_view type, const ParamFn& param, double unit) {
+int effectMargin(std::string_view type, const ParamFn& param, double unit) {
+    if (type != "drop_shadow") return 0;
+    double offset = std::max(std::abs(numParam(param, "x", 6)), std::abs(numParam(param, "y", 6)));
+    return int(std::ceil((offset + 1.5 * std::max(0.0, numParam(param, "blur", 8))) * unit)) + 1;
+}
+
+void applyEffect(Image& img, std::string_view type, const ParamFn& param, double unit, PixelBox content) {
+    if (content.w <= 0 || content.h <= 0) content = {0, 0, img.w, img.h};
     if (type == "brightness_contrast") {
         float bright = float(numParam(param, "brightness", 0)), contrast = float(numParam(param, "contrast", 1));
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
@@ -238,7 +260,8 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
         });
     } else if (type == "vignette") {
         float amount = float(numParam(param, "amount", 0.5)), soft = float(numParam(param, "softness", 0.5));
-        float cx = img.w / 2.0f, cy = img.h / 2.0f, maxd = std::hypot(cx, cy);
+        float cx = content.x + content.w / 2.0f, cy = content.y + content.h / 2.0f;
+        float maxd = std::hypot(content.w / 2.0f, content.h / 2.0f);
         float inner = 1 - std::clamp(soft, 0.01f, 1.0f);
         mapStraight(img, [&](float& r, float& g, float& b, int x, int y) {
             float d = std::hypot(x + 0.5f - cx, y + 0.5f - cy) / maxd;
@@ -251,6 +274,46 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
             float v = luma(r, g, b) >= level ? 1.0f : 0.0f;
             r = g = b = v;
+        });
+    } else if (type == "drop_shadow") {
+        Color c = asColor(param("color"), Color::gray(0));
+        float a = float(std::clamp(numParam(param, "opacity", 0.6), 0.0, 1.0)) * c.a;
+        Image shadow(img.w, img.h);
+        for (size_t i = 0; i < img.px.size(); i += 4) {
+            float k = img.px[i + 3] / 255.0f * a;
+            shadow.px[i] = u8(c.r * k * 255), shadow.px[i + 1] = u8(c.g * k * 255), shadow.px[i + 2] = u8(c.b * k * 255);
+            shadow.px[i + 3] = u8(k * 255);
+        }
+        blur(shadow, numParam(param, "blur", 8) * unit);
+        Image out(img.w, img.h);
+        shiftInto(out, shadow, int(std::lround(numParam(param, "x", 6) * unit)), int(std::lround(numParam(param, "y", 6) * unit)));
+        shiftInto(out, img, 0, 0);
+        img = std::move(out);
+    } else if (type == "crop") {
+        // Edges as fractions of the content; partly covered pixels fade.
+        auto clamp01 = [&](const char* name) { return std::clamp(numParam(param, name, 0), 0.0, 1.0); };
+        double l = content.x + clamp01("left") * content.w, r = content.x + (1 - clamp01("right")) * content.w;
+        double t = content.y + clamp01("top") * content.h, b = content.y + (1 - clamp01("bottom")) * content.h;
+        auto overlap = [](int i, double lo, double hi) { return float(std::clamp(std::min(hi, i + 1.0) - std::max(lo, double(i)), 0.0, 1.0)); };
+        scaleAlpha(img, [&](int x, int y) { return overlap(x, l, r) * overlap(y, t, b); });
+    } else if (type == "mask") {
+        bool ellipse = asString(param("shape")) == "ellipse", outside = asString(param("keep")) == "outside";
+        double cx = content.x + content.w / 2.0 + numParam(param, "x", 0) * unit;
+        double cy = content.y + content.h / 2.0 + numParam(param, "y", 0) * unit;
+        double hw = std::max(0.0, numParam(param, "width", 400)) * unit / 2, hh = std::max(0.0, numParam(param, "height", 300)) * unit / 2;
+        double feather = std::max(1.0, numParam(param, "feather", 0) * unit);
+        scaleAlpha(img, [&](int x, int y) {
+            double px = x + 0.5 - cx, py = y + 0.5 - cy, d;
+            if (ellipse) {
+                // Distance to the ellipse, scaled near its edge by the smaller radius.
+                double rx = std::max(hw, 1e-6), ry = std::max(hh, 1e-6);
+                d = (std::hypot(px / rx, py / ry) - 1) * std::min(rx, ry);
+            } else {
+                double qx = std::abs(px) - hw, qy = std::abs(py) - hh;
+                d = std::hypot(std::max(qx, 0.0), std::max(qy, 0.0)) + std::min(std::max(qx, qy), 0.0);
+            }
+            float k = float(std::clamp(0.5 - d / feather, 0.0, 1.0));
+            return outside ? 1 - k : k;
         });
     }
 }

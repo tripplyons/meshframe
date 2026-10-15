@@ -202,10 +202,28 @@ from the same specs the editor uses, so read it instead of guessing names.
   - `media` clips are placed with `clip.media`. `media.import` names media by
     file name, extension included (`clip.mp4`). Video and audio stay linked as
     a pair until `clip.unlink`. Use `clip.speed` to change playback speed.
+  - Image files (PNG, JPEG, and others FFmpeg reads) import as `image`
+    media. `clip.media` places them as a 5-second video clip; change the
+    length with `clip.trim`. They show the same picture throughout.
+  - `fit` sizes a media clip before `scale`: `contain` (default) fits the
+    whole picture inside the frame, `cover` fills the frame and crops the
+    overflow, `stretch` fills it exactly, and `none` keeps one source pixel
+    per project pixel.
+  - Text clips: `align` (`left`, `center`, `right`) places shorter lines in
+    the block. `wrap` breaks lines at spaces to fit a width in pixels (0
+    for none). `lineHeight` multiplies the line spacing. `outline` (pixels)
+    and `outlineColor` draw a border around the glyphs. `text.measure` takes
+    the same `wrap`, `lineHeight`, and `outline` and returns the lines.
   - Video clips share `x`, `y` (pixels from the frame center; +y is down),
     `scale`, `rotation` (degrees), `opacity`, and `blend`. Audio clips share
     `gain` (dB) and `pan`.
 - **Effects** run in chain order. Audio effects can also go on `master`.
+  Video effects work on any video clip, including text and images.
+  `drop_shadow` draws a blurred, offset copy of the clip's shape behind it.
+  `crop` removes edges as fractions of the clip (`left=0.1`). `mask` keeps
+  the `inside` or `outside` of a `rectangle` or `ellipse` with a `feather`;
+  its `x` and `y` are pixels from the clip's center, so it moves with the
+  clip.
   Effect parameters are properties, so they can be keyed or driven by
   expressions too.
 - **Transitions** blend clip A into clip B over a window centered on B's

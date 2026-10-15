@@ -119,17 +119,93 @@ void fillPolygon(Image& dst, std::span<const Vec2> pts, Color color) {
     cov.fill(dst, color);
 }
 
-TextBlock layoutTextBlock(Font& font, const std::string& text, float px) {
+TextBlock layoutTextBlock(Font& font, const std::string& text, const TextLayout& layout) {
     TextBlock b;
+    float px = layout.px;
     std::istringstream in(text);
-    for (std::string line; std::getline(in, line);) b.lines.push_back(line);
+    for (std::string para; std::getline(in, para);) {
+        if (layout.wrap <= 0) {
+            b.lines.push_back(para);
+            continue;
+        }
+        // Greedy wrap at spaces; a word wider than the limit keeps its own line.
+        std::istringstream words(para);
+        std::string line;
+        for (std::string word; words >> word;) {
+            std::string next = line.empty() ? word : line + " " + word;
+            if (!line.empty() && font.measure(next, px) > layout.wrap) {
+                b.lines.push_back(line);
+                line = word;
+            } else {
+                line = std::move(next);
+            }
+        }
+        b.lines.push_back(line);
+    }
     if (b.lines.empty()) return b;
-    b.lineHeight = font.metrics(px).lineHeight;
+    float base = font.metrics(px).lineHeight;
+    b.lineHeight = base * std::max(0.0f, layout.lineSpacing);
+    b.margin = 1 + std::max(0.0f, layout.outline);
     float width = 0;
-    for (const auto& l : b.lines) width = std::max(width, font.measure(l, px));
-    b.w = std::max(2, int(std::ceil(width)) + 2);
-    b.h = std::max(2, int(std::ceil(b.lineHeight * b.lines.size())) + 2);
+    for (const auto& l : b.lines) {
+        b.widths.push_back(font.measure(l, px));
+        width = std::max(width, b.widths.back());
+    }
+    b.w = std::max(2, int(std::ceil(width + 2 * b.margin)));
+    b.h = std::max(2, int(std::ceil(b.lineHeight * float(b.lines.size() - 1) + base + 2 * b.margin)));
     return b;
+}
+
+Image outlineOf(const Image& src, float width, Color color) {
+    // Squared distance from each pixel to the nearest mostly covered pixel,
+    // by two passes of the 1D lower-envelope transform (Felzenszwalb).
+    int w = src.w, h = src.h;
+    constexpr float kFar = 1e20f;
+    std::vector<float> d(size_t(w) * h);
+    for (size_t i = 0; i < d.size(); ++i) d[i] = src.px[i * 4 + 3] >= 128 ? 0 : kFar;
+    auto transform = [](std::vector<float>& f, int n) {
+        std::vector<float> out(n), z(n + 1);
+        std::vector<int> v(n);
+        auto meet = [&](int q, int p) { return ((f[q] + float(q) * q) - (f[p] + float(p) * p)) / (2.0f * float(q - p)); };
+        int k = 0;
+        v[0] = 0;
+        z[0] = -kFar, z[1] = kFar;
+        for (int q = 1; q < n; ++q) {
+            float s = meet(q, v[k]);
+            while (k > 0 && s <= z[k]) s = meet(q, v[--k]);
+            v[++k] = q;
+            z[k] = s, z[k + 1] = kFar;
+        }
+        k = 0;
+        for (int q = 0; q < n; ++q) {
+            while (z[k + 1] < float(q)) ++k;
+            out[q] = float(q - v[k]) * float(q - v[k]) + f[v[k]];
+        }
+        f = std::move(out);
+    };
+    std::vector<float> line;
+    for (int x = 0; x < w; ++x) {
+        line.resize(h);
+        for (int y = 0; y < h; ++y) line[y] = d[size_t(y) * w + x];
+        transform(line, h);
+        for (int y = 0; y < h; ++y) d[size_t(y) * w + x] = line[y];
+    }
+    for (int y = 0; y < h; ++y) {
+        line.assign(d.begin() + size_t(y) * w, d.begin() + size_t(y + 1) * w);
+        transform(line, w);
+        std::copy(line.begin(), line.end(), d.begin() + size_t(y) * w);
+    }
+    Image out(w, h);
+    for (size_t i = 0; i < d.size(); ++i) {
+        float a = std::clamp(width + 0.5f - std::sqrt(d[i]), 0.0f, 1.0f);
+        a = std::max(a, src.px[i * 4 + 3] / 255.0f) * color.a;
+        uint8_t* o = out.px.data() + i * 4;
+        o[0] = uint8_t(color.r * a * 255 + 0.5f);
+        o[1] = uint8_t(color.g * a * 255 + 0.5f);
+        o[2] = uint8_t(color.b * a * 255 + 0.5f);
+        o[3] = uint8_t(a * 255 + 0.5f);
+    }
+    return out;
 }
 
 void drawText(Image& dst, Font& font, std::string_view text, float x, float y, float px, Color c) {

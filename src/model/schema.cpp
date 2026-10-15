@@ -44,13 +44,18 @@ std::vector<PropSpec> concat(std::vector<PropSpec> a, std::vector<PropSpec> b) {
 }
 
 struct ClipSpecs {
-    std::vector<PropSpec> mediaVideo = visualProps();
+    std::vector<PropSpec> mediaVideo = concat(visualProps(), {str("fit", "contain", {"contain", "cover", "stretch", "none"}, false)});
     std::vector<PropSpec> mediaAudio = audioProps();
     std::vector<PropSpec> text = concat(visualProps(), {
         str("text", "Text"),
         num("size", 96, 4, 800, 1, "px"),
         color("color", Color::gray(1.0f)),
         str("font", "", {}, false),
+        str("align", "center", {"left", "center", "right"}, false),
+        num("lineHeight", 1, 0.5, 4, 0.01),
+        num("wrap", 0, 0, 8000, 1, "px"),
+        num("outline", 0, 0, 100, 0.5, "px"),
+        color("outlineColor", Color::gray(0.0f)),
     });
     std::vector<PropSpec> solid = concat(visualProps(), {color("color", Color::gray(0.5f))});
     std::vector<PropSpec> generator = concat(visualProps(), {str("generator", "", {}, false)});
@@ -91,6 +96,15 @@ const std::vector<EffectSpec>& videoEffectSpecs() {
         {"tint", "Tint", {color("color", Color{1.0f, 0.8f, 0.6f, 1.0f}), num("amount", 0.5, 0, 1, 0.01)}},
         {"vignette", "Vignette", {num("amount", 0.5, 0, 1, 0.01), num("softness", 0.5, 0.01, 1, 0.01)}},
         {"threshold", "Threshold", {num("level", 0.5, 0, 1, 0.01)}},
+        {"drop_shadow", "Drop shadow",
+         {color("color", Color::gray(0.0f)), num("opacity", 0.6, 0, 1, 0.01), num("x", 6, -500, 500, 1, "px"),
+          num("y", 6, -500, 500, 1, "px"), num("blur", 8, 0, 200, 0.5, "px")}},
+        {"crop", "Crop",
+         {num("left", 0, 0, 1, 0.001), num("right", 0, 0, 1, 0.001), num("top", 0, 0, 1, 0.001), num("bottom", 0, 0, 1, 0.001)}},
+        {"mask", "Mask",
+         {str("shape", "rectangle", {"rectangle", "ellipse"}, false), num("x", 0, -4000, 4000, 1, "px"),
+          num("y", 0, -4000, 4000, 1, "px"), num("width", 400, 0, 8000, 1, "px"), num("height", 300, 0, 8000, 1, "px"),
+          num("feather", 0, 0, 1000, 0.5, "px"), str("keep", "inside", {"inside", "outside"}, false)}},
     };
     return specs;
 }
