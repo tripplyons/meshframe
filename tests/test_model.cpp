@@ -5,6 +5,7 @@
 #include "model/serialize.hpp"
 
 #include <filesystem>
+#include <fstream>
 
 using namespace mf;
 
@@ -150,6 +151,37 @@ TEST(Model, JsonRoundTrip) {
     Project r = loadProject(file);
     EXPECT_EQ(projectToJson(r), j);
     std::filesystem::remove_all(dir);
+}
+
+TEST(Model, MediaPathsSurviveMoves) {
+    namespace fs = std::filesystem;
+    auto dir = fs::weakly_canonical(fs::temp_directory_path()) / "mf_test_media_paths";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "repo/broll");
+    fs::create_directories(dir / "repo/videos/demo");
+    fs::create_directories(dir / "elsewhere");
+    std::ofstream(dir / "repo/broll/clip.mp4") << "x";
+
+    Project p = withAvMedia();
+    p.media[0].path = (dir / "repo/broll/clip.mp4").string();
+    auto file = dir / "repo/videos/demo/demo.mfproj";
+    saveProject(p, file.string());
+
+    std::ifstream in(file);
+    json saved = json::parse(in);
+    EXPECT_EQ(saved["media"][0]["path"], "../../broll/clip.mp4");
+    EXPECT_EQ(saved["media"][0]["absolutePath"], p.media[0].path);
+    EXPECT_EQ(loadProject(file.string()).media[0].path, p.media[0].path);
+
+    // The project moves without its media: the absolute path still finds them.
+    fs::copy_file(file, dir / "elsewhere/demo.mfproj");
+    EXPECT_EQ(loadProject((dir / "elsewhere/demo.mfproj").string()).media[0].path, p.media[0].path);
+
+    // The project moves with its media: the relative path finds them.
+    fs::rename(dir / "repo", dir / "moved");
+    EXPECT_EQ(loadProject((dir / "moved/videos/demo/demo.mfproj").string()).media[0].path,
+              (dir / "moved/broll/clip.mp4").string());
+    fs::remove_all(dir);
 }
 
 TEST(Model, HistoryUndoRedo) {

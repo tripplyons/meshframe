@@ -216,6 +216,10 @@ from the same specs the editor uses, so read it instead of guessing names.
   - `media` clips are placed with `clip.media`. `media.import` names media by
     file name, extension included (`clip.mp4`). Video and audio stay linked as
     a pair until `clip.unlink`. Use `clip.speed` to change playback speed.
+  - Project files store each media path relative to the project file, plus
+    its absolute path. On open, the relative path wins if the file is there,
+    so a folder holding a project and its media can move as a whole; a
+    project file moved alone still finds media by the absolute path.
   - Image files (PNG, JPEG, and others FFmpeg reads) import as `image`
     media. `clip.media` places them as a 5-second video clip; change the
     length with `clip.trim`. They show the same picture throughout.

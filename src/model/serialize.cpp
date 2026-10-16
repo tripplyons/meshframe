@@ -14,18 +14,30 @@ namespace mf {
 namespace {
 constexpr int kFormatVersion = 1;
 
-// Paths are stored relative to the project file when possible.
-std::string relativize(const std::string& path, const std::filesystem::path& base) {
-    if (base.empty() || path.empty()) return path;
+// Media paths are stored relative to the project file, so a project and its
+// media can move together. The absolute path is stored too, so a project file
+// moved without its media still finds them.
+void storeMediaPath(json& jm, const std::filesystem::path& base) {
+    std::string path = jm.value("path", "");
+    if (path.empty() || !std::filesystem::path(path).is_absolute()) return;
     std::error_code ec;
     auto rel = std::filesystem::relative(path, base, ec);
-    if (ec || rel.empty() || rel.native().starts_with("..")) return path;
-    return rel.string();
+    if (ec || rel.empty()) return;
+    jm["path"] = rel.string();
+    jm["absolutePath"] = path;
 }
 
-std::string absolutize(const std::string& path, const std::filesystem::path& base) {
-    if (base.empty() || path.empty() || std::filesystem::path(path).is_absolute()) return path;
-    return (base / path).lexically_normal().string();
+// Resolves a stored media path to an absolute one: the relative path if the
+// file exists there, else the stored absolute path if that file exists.
+std::string resolveMediaPath(const json& jm, const std::filesystem::path& base) {
+    std::string path = jm.value("path", "");
+    if (path.empty() || std::filesystem::path(path).is_absolute()) return path;
+    auto resolved = (base / path).lexically_normal();
+    std::error_code ec;
+    if (std::filesystem::exists(resolved, ec)) return resolved.string();
+    std::string fallback = jm.value("absolutePath", "");
+    if (!fallback.empty() && std::filesystem::exists(fallback, ec)) return fallback;
+    return resolved.string();
 }
 
 void coerceProps(PropertyMap& props, std::span<const PropSpec> specs) {
@@ -374,7 +386,7 @@ Project projectFromJson(const json& j) {
 void saveProject(const Project& p, const std::string& path) {
     json j = projectToJson(p);
     auto base = std::filesystem::absolute(path).parent_path();
-    for (auto& m : j["media"]) m["path"] = relativize(m["path"].get<std::string>(), base);
+    for (auto& m : j["media"]) storeMediaPath(m, base);
     std::string tmp = path + ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
@@ -396,10 +408,10 @@ Project loadProject(const std::string& path) {
     } catch (const json::parse_error& e) {
         throw std::runtime_error(fmt::format("{}: invalid JSON: {}", path, e.what()));
     }
-    Project p = projectFromJson(j);
     auto base = std::filesystem::absolute(path).parent_path();
-    for (auto& m : p.media) m.path = absolutize(m.path, base);
-    return p;
+    if (j.contains("media") && j["media"].is_array())
+        for (auto& m : j["media"]) m["path"] = resolveMediaPath(m, base);
+    return projectFromJson(j);
 }
 
 }  // namespace mf
