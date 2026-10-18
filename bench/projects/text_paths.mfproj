@@ -1,0 +1,419 @@
+{
+  "clips": [
+    {
+      "duration": 3.0,
+      "id": 8,
+      "in": 0.0,
+      "kind": "media",
+      "media": 6,
+      "name": "clip_b.mp4",
+      "props": {
+        "blend": "normal",
+        "fit": "cover",
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "rotation": 0.0,
+        "scale": 1.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 0.0,
+      "track": 3,
+      "videoEffects": [
+        {
+          "enabled": true,
+          "id": 9,
+          "props": {
+            "radius": 10.0
+          },
+          "type": "blur"
+        }
+      ]
+    },
+    {
+      "duration": 3.0,
+      "id": 10,
+      "in": 0.0,
+      "kind": "text",
+      "name": "title",
+      "props": {
+        "align": "center",
+        "blend": "normal",
+        "color": "#ffffff",
+        "font": "",
+        "lineHeight": 1.0,
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "outline": 10.0,
+        "outlineColor": "#000000",
+        "rotation": 0.0,
+        "scale": 1.0,
+        "size": 132.0,
+        "text": "meshframe renders on the CPU",
+        "wrap": 1500.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 0.0,
+      "track": 4,
+      "videoEffects": [
+        {
+          "enabled": true,
+          "id": 11,
+          "props": {
+            "blur": 26.0,
+            "color": "#000000",
+            "opacity": 0.7,
+            "x": 8.0,
+            "y": 10.0
+          },
+          "type": "drop_shadow"
+        }
+      ]
+    },
+    {
+      "duration": 3.0,
+      "id": 12,
+      "in": 0.0,
+      "kind": "text",
+      "name": "sub",
+      "props": {
+        "align": "right",
+        "blend": "normal",
+        "color": "#ffffff",
+        "font": "",
+        "lineHeight": 1.0,
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "outline": 0.0,
+        "outlineColor": "#000000",
+        "rotation": 0.0,
+        "scale": 1.0,
+        "size": 72.0,
+        "text": "every pixel counted",
+        "wrap": 0.0,
+        "x": 0.0,
+        "y": {
+          "expr": "380 + 20 * sin(t * 2)"
+        }
+      },
+      "speed": 1.0,
+      "start": 0.0,
+      "track": 5,
+      "videoEffects": [
+        {
+          "enabled": true,
+          "id": 13,
+          "props": {
+            "amount": 0.6,
+            "color": "#ffcc99"
+          },
+          "type": "tint"
+        }
+      ]
+    },
+    {
+      "duration": 2.8,
+      "id": 14,
+      "in": 0.0,
+      "kind": "path",
+      "name": "star",
+      "props": {
+        "blend": "normal",
+        "fill": "#f5c542",
+        "fillRule": "nonzero",
+        "height": 520.0,
+        "morph": 0.0,
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "path": "M 0 -260 L 70 -80 L 250 -80 L 110 40 L 160 240 L 0 130 L -160 240 L -110 40 L -250 -80 L -70 -80 Z",
+        "rotation": 0.0,
+        "scale": 1.0,
+        "shape": "rectangle",
+        "stroke": "#1b1b1b",
+        "strokeLinecap": "round",
+        "strokeLinejoin": "miter",
+        "strokeMiterLimit": 4.0,
+        "strokeWidth": 14.0,
+        "targetPath": "",
+        "trimEnd": 1.0,
+        "trimStart": 0.0,
+        "width": 520.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 0.2,
+      "track": 4,
+      "videoEffects": [
+        {
+          "enabled": true,
+          "id": 15,
+          "props": {
+            "blur": 30.0,
+            "color": "#000000",
+            "opacity": 0.8,
+            "x": 10.0,
+            "y": 14.0
+          },
+          "type": "drop_shadow"
+        }
+      ]
+    },
+    {
+      "duration": 2.6,
+      "id": 16,
+      "in": 0.0,
+      "kind": "path",
+      "name": "morph",
+      "props": {
+        "blend": "normal",
+        "fill": "#3b7dd8",
+        "fillRule": "nonzero",
+        "height": 420.0,
+        "morph": {
+          "expr": "0.5 + 0.5 * sin(t * 1.1)"
+        },
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "path": "",
+        "rotation": 0.0,
+        "scale": 1.0,
+        "shape": "rectangle",
+        "stroke": "#0b1b2a",
+        "strokeLinecap": "round",
+        "strokeLinejoin": "round",
+        "strokeMiterLimit": 4.0,
+        "strokeWidth": 10.0,
+        "targetPath": "",
+        "trimEnd": {
+          "expr": "fmod(t * 0.35, 1)"
+        },
+        "trimStart": 0.0,
+        "width": 700.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 0.4,
+      "track": 5
+    },
+    {
+      "duration": 2.4,
+      "id": 17,
+      "in": 0.0,
+      "kind": "path",
+      "name": "orbit",
+      "props": {
+        "blend": "normal",
+        "fill": "#00000000",
+        "fillRule": "nonzero",
+        "height": 260.0,
+        "morph": 0.0,
+        "motionPath": "M -700 -300 C -200 -420 240 380 700 260",
+        "motionProgress": {
+          "expr": "fmod(t * 0.2, 1)"
+        },
+        "motionRotate": 1.0,
+        "opacity": 1.0,
+        "path": "M -260 0 C -120 -180 120 180 260 0 Z",
+        "rotation": 0.0,
+        "scale": 1.0,
+        "shape": "rectangle",
+        "stroke": "#e0503a",
+        "strokeLinecap": "round",
+        "strokeLinejoin": "round",
+        "strokeMiterLimit": 4.0,
+        "strokeWidth": 18.0,
+        "targetPath": "",
+        "trimEnd": 1.0,
+        "trimStart": 0.0,
+        "width": 420.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 0.6,
+      "track": 5
+    },
+    {
+      "duration": 2.0,
+      "id": 18,
+      "in": 0.0,
+      "kind": "path",
+      "name": "ellipse",
+      "props": {
+        "blend": "normal",
+        "fill": "#ffffff",
+        "fillRule": "evenodd",
+        "height": 300.0,
+        "morph": 0.0,
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "path": "",
+        "rotation": 0.0,
+        "scale": 1.0,
+        "shape": "ellipse",
+        "stroke": "#000000",
+        "strokeLinecap": "round",
+        "strokeLinejoin": "round",
+        "strokeMiterLimit": 4.0,
+        "strokeWidth": 8.0,
+        "targetPath": "",
+        "trimEnd": 1.0,
+        "trimStart": 0.0,
+        "width": 300.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 1.0,
+      "track": 4,
+      "videoEffects": [
+        {
+          "enabled": true,
+          "id": 19,
+          "props": {
+            "blur": 18.0,
+            "color": "#000000",
+            "opacity": 0.5,
+            "x": -6.0,
+            "y": -8.0
+          },
+          "type": "drop_shadow"
+        }
+      ]
+    }
+  ],
+  "format": "meshframe",
+  "markers": [],
+  "masterAudio": [],
+  "media": [
+    {
+      "absolutePath": "/Users/tripp/.t3/projects/meshframe/bench/media/clip_b.mp4",
+      "channels": 0,
+      "duration": 3.0,
+      "fps": 30.0,
+      "hasAudio": false,
+      "hasVideo": true,
+      "height": 1080,
+      "id": 6,
+      "kind": "video",
+      "name": "clip_b.mp4",
+      "path": "../media/clip_b.mp4",
+      "sampleRate": 0,
+      "width": 1920
+    },
+    {
+      "absolutePath": "/Users/tripp/.t3/projects/meshframe/bench/media/clip_a.mp4",
+      "channels": 0,
+      "duration": 3.0,
+      "fps": 30.0,
+      "hasAudio": false,
+      "hasVideo": true,
+      "height": 720,
+      "id": 7,
+      "kind": "video",
+      "name": "clip_a.mp4",
+      "path": "../media/clip_a.mp4",
+      "sampleRate": 0,
+      "width": 1280
+    }
+  ],
+  "name": "untitled",
+  "nextId": 21,
+  "script": "-- Project script. Runs again whenever it changes.\n-- mf.signal(name, fn) defines a reactive signal; read it as sig.name.\n-- Read time as t. See the meshframe skill for the full API.\n\nmf.signal(\"pulse\", function()\n  return 0.5 + 0.5 * math.sin(t * math.pi * 2)\nend)\n",
+  "settings": {
+    "background": "#000000",
+    "fps": 30.0,
+    "height": 1080,
+    "sampleRate": 48000,
+    "width": 1920
+  },
+  "signals": [],
+  "tracks": [
+    {
+      "hidden": false,
+      "id": 1,
+      "kind": "audio",
+      "locked": false,
+      "muted": false,
+      "name": "A1"
+    },
+    {
+      "hidden": false,
+      "id": 2,
+      "kind": "audio",
+      "locked": false,
+      "muted": false,
+      "name": "A2"
+    },
+    {
+      "hidden": false,
+      "id": 3,
+      "kind": "video",
+      "locked": false,
+      "muted": false,
+      "name": "V1"
+    },
+    {
+      "hidden": false,
+      "id": 4,
+      "kind": "video",
+      "locked": false,
+      "muted": false,
+      "name": "V2"
+    },
+    {
+      "hidden": false,
+      "id": 5,
+      "kind": "video",
+      "locked": false,
+      "muted": false,
+      "name": "V3"
+    }
+  ],
+  "transitions": [
+    {
+      "clipA": 10,
+      "clipB": 14,
+      "curve": [
+        {
+          "bezier": [
+            0.41999998688697815,
+            0.0,
+            0.5799999833106995,
+            1.0
+          ],
+          "interp": "bezier",
+          "t": 0.0,
+          "v": 0.0
+        },
+        {
+          "interp": "linear",
+          "t": 1.0,
+          "v": 1.0
+        }
+      ],
+      "duration": 0.4,
+      "id": 20,
+      "props": {},
+      "type": "crossfade"
+    }
+  ],
+  "version": 1
+}

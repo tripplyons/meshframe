@@ -1,6 +1,7 @@
 #include "render/compositor.hpp"
 
 #include "core/thread_pool.hpp"
+#include "core/work_counter.hpp"
 
 #include <algorithm>
 #include <array>
@@ -47,6 +48,7 @@ inline void blendPixel(uint8_t* d, float sr, float sg, float sb, float sa, Blend
             a = sa + da * (1 - sa);
             break;
     }
+    work::addBlend(1);
     d[0] = u8(r * 255);
     d[1] = u8(g * 255);
     d[2] = u8(b * 255);
@@ -65,6 +67,7 @@ void mapStraight(Image& img, Fn fn) {
             uint8_t* p = img.row(y);
             for (int x = 0; x < img.w; ++x, p += 4) {
                 if (!p[3]) continue;
+                work::addMap(1);
                 float a = p[3] / 255.0f;
                 float r = p[0] / 255.0f / a, g = p[1] / 255.0f / a, b = p[2] / 255.0f / a;
                 fn(r, g, b, x, y);
@@ -90,6 +93,7 @@ void boxBlurRows(const Image& src, Image& dst, int r) {
                 for (int c = 0; c < 4; ++c) sum[c] += px(x)[c];
             for (int x = 0; x < src.w; ++x) {
                 for (int c = 0; c < 4; ++c) d[x * 4 + c] = uint8_t(sum[c] * norm + 0.5f);
+                work::addBlur(1);
                 const uint8_t* add = px(x + r + 1);
                 const uint8_t* sub = px(x - r);
                 for (int c = 0; c < 4; ++c) sum[c] += add[c] - sub[c];
@@ -101,8 +105,10 @@ void boxBlurRows(const Image& src, Image& dst, int r) {
 void transpose(const Image& src, Image& dst) {
     dst.resize(src.h, src.w);
     forRows(src.h, [&](int y0, int y1) {
-        for (int y = y0; y < y1; ++y)
+        for (int y = y0; y < y1; ++y) {
+            work::addCopy(uint64_t(src.w));
             for (int x = 0; x < src.w; ++x) std::copy_n(src.at(x, y), 4, dst.at(y, x));
+        }
     });
 }
 
@@ -132,6 +138,7 @@ void shiftInto(Image& out, const Image& src, int dx, int dy) {
             for (int x = 0; x < out.w; ++x) {
                 int sx = x - dx;
                 if (sx < 0 || sx >= src.w) continue;
+                work::addCopy(1);
                 const uint8_t* s = src.at(sx, sy);
                 blendPixel(out.at(x, y), s[0] / 255.0f, s[1] / 255.0f, s[2] / 255.0f, s[3] / 255.0f, Blend::Normal);
             }
@@ -146,6 +153,7 @@ void scaleAlpha(Image& img, F f) {
         for (int y = y0; y < y1; ++y) {
             uint8_t* p = img.row(y);
             for (int x = 0; x < img.w; ++x, p += 4) {
+                work::addMask(1);
                 float k = f(x, y);
                 if (k >= 1) continue;
                 for (int c = 0; c < 4; ++c) p[c] = u8(p[c] * k);
@@ -164,6 +172,7 @@ Blend parseBlend(std::string_view s) {
 }
 
 void fill(Image& img, Color c) {
+    work::addCopy(img.px.size() / 4);
     uint8_t px[4] = {u8(c.r * c.a * 255), u8(c.g * c.a * 255), u8(c.b * c.a * 255), u8(c.a * 255)};
     for (size_t i = 0; i < img.px.size(); i += 4) std::copy_n(px, 4, img.px.data() + i);
 }
@@ -206,6 +215,7 @@ void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity,
                     float fu = float(u - iu), fv = float(v - iv);
                     std::fill_n(s, 4, 0.0f);
                     auto tap = [&](int tx, int ty, float wgt) {
+                        work::addTaps(1);
                         if (tx < 0 || ty < 0 || tx >= src.w || ty >= src.h || wgt == 0) return;
                         const uint8_t* p = src.at(tx, ty);
                         for (int c = 0; c < 4; ++c) s[c] += p[c] * wgt;
@@ -279,6 +289,7 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
         Color c = asColor(param("color"), Color::gray(0));
         float a = float(std::clamp(numParam(param, "opacity", 0.6), 0.0, 1.0)) * c.a;
         Image shadow(img.w, img.h);
+        work::addCopy(img.px.size() / 4);
         for (size_t i = 0; i < img.px.size(); i += 4) {
             float k = img.px[i + 3] / 255.0f * a;
             shadow.px[i] = u8(c.r * k * 255), shadow.px[i + 1] = u8(c.g * k * 255), shadow.px[i + 2] = u8(c.b * k * 255);
@@ -326,6 +337,7 @@ void mixTransition(Image& out, const Image& a, const Image& b, std::string_view 
             for (int row = y0; row < y1; ++row) {
                 const uint8_t *p = x.row(row), *q = y.row(row);
                 uint8_t* o = out.row(row);
+                work::addCopy(uint64_t(out.w));
                 for (int i = 0; i < out.w * 4; ++i) o[i] = u8(p[i] + (q[i] - p[i]) * t);
             }
         });
@@ -342,6 +354,7 @@ void mixTransition(Image& out, const Image& a, const Image& b, std::string_view 
                     // s is how far along the wipe this pixel lies; B covers pixels with s < m.
                     float s = dir == "right" ? nx : dir == "up" ? 1 - ny : dir == "down" ? ny : 1 - nx;
                     float k = soft > 0 ? std::clamp((mf * (1 + soft) - s) / soft, 0.0f, 1.0f) : (s < mf ? 1.0f : 0.0f);
+                    work::addCopy(1);
                     for (int c = 0; c < 4; ++c) o[x * 4 + c] = u8(p[x * 4 + c] + (q[x * 4 + c] - p[x * 4 + c]) * k);
                 }
             }

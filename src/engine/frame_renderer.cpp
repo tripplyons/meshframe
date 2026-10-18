@@ -1,5 +1,6 @@
 #include "engine/frame_renderer.hpp"
 
+#include "core/work_counter.hpp"
 #include "render/compositor.hpp"
 #include "render/font.hpp"
 #include "render/raster.hpp"
@@ -47,6 +48,7 @@ std::shared_ptr<Image> renderText(Evaluator& ev, const Clip& c, Font& font, doub
 }  // namespace
 
 FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double t, double unit, int w, int h) {
+    work::addLayer(1);
     const Project& p = ev.project();
     Layer layer;
     switch (c.kind) {

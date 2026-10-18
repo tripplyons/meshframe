@@ -1,5 +1,7 @@
 #include "render/font.hpp"
 
+#include "core/work_counter.hpp"
+
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
@@ -129,6 +131,7 @@ const Glyph& Font::glyph(uint32_t codepoint, float px) {
         g->top = slot->bitmap_top;
         g->advance = slot->advance.x / 64.0f;
         g->alpha.resize(size_t(g->w) * g->h);
+        work::addGlyph(g->alpha.size());
         for (int y = 0; y < g->h; ++y)
             std::copy_n(bm.buffer + y * bm.pitch, g->w, g->alpha.data() + size_t(y) * g->w);
     }

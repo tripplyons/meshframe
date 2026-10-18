@@ -1,5 +1,7 @@
 #include "media/decoder.hpp"
 
+#include "core/work_counter.hpp"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -251,7 +253,10 @@ bool VideoDecoder::open(const std::string& path, int maxW, int maxH, std::string
 bool VideoDecoder::decodeNext(AVFrame* into) {
     for (;;) {
         int rc = avcodec_receive_frame(codec_, into);
-        if (rc == 0) return true;
+        if (rc == 0) {
+            work::addDecode(1);
+            return true;
+        }
         if (rc == AVERROR_EOF) {
             eof_ = true;
             return false;
@@ -336,6 +341,7 @@ ImagePtr VideoDecoder::convert(AVFrame* f) {
         sws_setColorspaceDetails(sws_, sws_getCoefficients(cs), srcFull, sws_getCoefficients(SWS_CS_DEFAULT), 1, 0,
                                  1 << 16, 1 << 16);
     }
+    work::addScaled(uint64_t(outW_) * uint64_t(outH_));
     auto img = std::make_shared<Image>(outW_, outH_);
     uint8_t* dst[4] = {img->px.data(), nullptr, nullptr, nullptr};
     int stride[4] = {outW_ * 4, 0, 0, 0};

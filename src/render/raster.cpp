@@ -1,5 +1,6 @@
 #include "render/raster.hpp"
 
+#include "core/work_counter.hpp"
 #include "render/font.hpp"
 
 #include <algorithm>
@@ -32,6 +33,7 @@ public:
         if (p0.y < 0) x -= p0.y * dxdy;
         int yend = std::min(h_, int(std::ceil(p1.y)));
         for (int y = ystart; y < yend; ++y) {
+            work::addEdge(1);
             float* row = acc_.data() + size_t(y) * (w_ + 2);
             float dy = std::min(float(y + 1), p1.y) - std::max(float(y), p0.y);
             float xnext = x + dxdy * dy;
@@ -58,6 +60,7 @@ public:
                 } else {
                     float a1 = s * (1.5f - x0f);
                     row[xai + 1] += d * (a1 - a0);
+                    work::addEdge(uint64_t(std::max(0, xbi - 1 - (xai + 2))));
                     for (int xi = xai + 2; xi < xbi - 1; ++xi) row[xi] += d * s;
                     float a2 = a1 + float(xbi - xai - 3) * s;
                     row[xbi - 1] += d * (1 - a2 - am);
@@ -75,6 +78,7 @@ public:
             uint8_t* out = dst.at(x0_, y0_ + y);
             float acc = 0;
             for (int x = 0; x < w_; ++x, out += 4) {
+                work::addRaster(1);
                 acc += row[x];
                 float cov = std::min(1.0f, std::abs(acc));
                 if (cov <= 0.002f) continue;
@@ -166,6 +170,7 @@ Image outlineOf(const Image& src, float width, Color color) {
     auto transform = [](std::vector<float>& f, int n) {
         std::vector<float> out(n), z(n + 1);
         std::vector<int> v(n);
+        work::addDistance(uint64_t(n));
         auto meet = [&](int q, int p) { return ((f[q] + float(q) * q) - (f[p] + float(p) * p)) / (2.0f * float(q - p)); };
         int k = 0;
         v[0] = 0;
@@ -196,6 +201,7 @@ Image outlineOf(const Image& src, float width, Color color) {
         std::copy(line.begin(), line.end(), d.begin() + size_t(y) * w);
     }
     Image out(w, h);
+    work::addDistance(d.size());
     for (size_t i = 0; i < d.size(); ++i) {
         float a = std::clamp(width + 0.5f - std::sqrt(d[i]), 0.0f, 1.0f);
         a = std::max(a, src.px[i * 4 + 3] / 255.0f) * color.a;
@@ -218,6 +224,7 @@ void drawText(Image& dst, Font& font, std::string_view text, float x, float y, f
         for (int row = 0; row < g.h; ++row) {
             int dy = gy + row;
             if (dy < 0 || dy >= dst.h) continue;
+            work::addGlyph(uint64_t(g.w) * uint64_t(g.h));
             for (int col = 0; col < g.w; ++col) {
                 int dx = gx + col;
                 if (dx < 0 || dx >= dst.w) continue;
@@ -239,6 +246,7 @@ void drawList(Image& dst, const DrawList& list, float s) {
     for (const auto& cmd : list.cmds) {
         switch (cmd.type) {
             case DrawCmd::Type::Clear: {
+                work::addCopy(dst.px.size() / 4);
                 Color c = cmd.color;
                 uint8_t px[4] = {uint8_t(c.r * c.a * 255 + 0.5f), uint8_t(c.g * c.a * 255 + 0.5f),
                                  uint8_t(c.b * c.a * 255 + 0.5f), uint8_t(c.a * 255 + 0.5f)};

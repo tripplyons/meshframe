@@ -1,5 +1,6 @@
 #include "engine/evaluator.hpp"
 
+#include "core/work_counter.hpp"
 #include "model/edit.hpp"
 
 #include <fmt/format.h>
@@ -276,6 +277,7 @@ bool Evaluator::clipVisibleAt(const Clip& c, double t) const {
 }
 
 Value Evaluator::lookup(uint64_t owner, std::string_view name, const PropertyMap& props) {
+    work::addEval(1);
     auto it = props.find(std::string(name));
     if (it == props.end()) return std::monostate{};
     if (it->second.mode == PropMode::Constant) return it->second.constant;

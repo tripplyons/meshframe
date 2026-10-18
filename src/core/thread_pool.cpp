@@ -1,5 +1,7 @@
 #include "core/thread_pool.hpp"
 
+#include "core/work_counter.hpp"
+
 #include <algorithm>
 
 namespace mf {
@@ -63,6 +65,8 @@ void ThreadPool::parallelFor(size_t begin, size_t end, const std::function<void(
         fn(begin, end);
         return;
     }
+    size_t chunk = std::max(minChunk, count / (size() * 4) + 1);
+    work::addChunk((count + chunk - 1) / chunk);
     std::lock_guard submitLock(submit_);
     {
         std::lock_guard lock(mutex_);
@@ -70,7 +74,7 @@ void ThreadPool::parallelFor(size_t begin, size_t end, const std::function<void(
         next_ = begin;
         end_ = end;
         pending_ = count;
-        chunk_ = std::max(minChunk, count / (size() * 4) + 1);
+        chunk_ = chunk;
         ++generation_;
     }
     wake_.notify_all();

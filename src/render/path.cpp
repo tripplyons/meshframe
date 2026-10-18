@@ -1,5 +1,7 @@
 #include "render/path.hpp"
 
+#include "core/work_counter.hpp"
+
 #include <libxml/parser.h>
 
 #include <algorithm>
@@ -313,6 +315,7 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
                 hits.clear();
                 for (auto& c : p.contours) {
                     if (c.points.size() < 3) continue;
+                    work::addEdge(c.points.size());
                     for (size_t i = 0; i < c.points.size(); ++i) {
                         if (++work > 100000000) fail("fill exceeds render work limit");
                         auto a = c.points[i], b = c.points[(i + 1) % c.points.size()];
@@ -330,11 +333,14 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
                     if (!before && after) left = x;
                     if (before && !after) {
                         double l = std::clamp(left, 0., double(dst.w)), r = std::clamp(x, 0., double(dst.w));
-                        for (int xx = int(std::floor(l)); xx < std::min(dst.w, int(std::ceil(r))); ++xx)
+                        int spanStart = int(std::floor(l)), spanEnd = std::min(dst.w, int(std::ceil(r)));
+                        work::addRaster(uint64_t(std::max(0, spanEnd - spanStart)));
+                        for (int xx = spanStart; xx < spanEnd; ++xx)
                             coverage[xx] += std::max(0., std::min(r, double(xx + 1)) - std::max(l, double(xx))) / 4;
                     }
                 }
             }
+            work::addMap(uint64_t(dst.w));
             for (int x = 0; x < dst.w; ++x)
                 if (coverage[x] > 0) blend(dst.at(x, y), fill, coverage[x]);
         }
@@ -362,6 +368,7 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
         for (int y = y0; y < y1; ++y)
             for (int x = x0; x < x1; ++x) {
                 if (++work > 100000000) fail("stroke exceeds render work limit");
+                work::addTaps(16);
                 int covered = 0;
                 for (int sy = 0; sy < 4; ++sy)
                     for (int sx = 0; sx < 4; ++sx) {
@@ -386,6 +393,7 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
         for (int y = y0; y < y1; ++y)
             for (int x = x0; x < x1; ++x) {
                 if (++work > 100000000) fail("stroke exceeds render work limit");
+                work::addTaps(1);
                 auto& v = mask[size_t(y) * dst.w + x];
                 v = std::max(v, float(std::clamp(radius + .5 - std::hypot(x + .5 - a.x, y + .5 - a.y), 0., 1.)));
             }
@@ -450,6 +458,7 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
             cursor += l;
         }
     }
+    work::addMap(mask.size());
     for (size_t i = 0; i < mask.size(); ++i)
         if (mask[i] > 0) blend(dst.px.data() + i * 4, stroke, mask[i]);
 }

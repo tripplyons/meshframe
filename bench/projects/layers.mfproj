@@ -1,0 +1,340 @@
+{
+  "clips": [
+    {
+      "duration": 3.0,
+      "id": 9,
+      "in": 0.0,
+      "kind": "media",
+      "media": 6,
+      "name": "clip_a.mp4",
+      "props": {
+        "blend": "normal",
+        "fit": "cover",
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "rotation": 0.0,
+        "scale": 1.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 0.0,
+      "track": 3,
+      "videoEffects": [
+        {
+          "enabled": true,
+          "id": 12,
+          "props": {
+            "amount": 1.4
+          },
+          "type": "saturation"
+        }
+      ]
+    },
+    {
+      "duration": 3.0,
+      "id": 10,
+      "in": 0.0,
+      "kind": "media",
+      "media": 7,
+      "name": "clip_b.mp4",
+      "props": {
+        "blend": "screen",
+        "fit": "cover",
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 0.7,
+        "rotation": 0.0,
+        "scale": 1.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 0.0,
+      "track": 4,
+      "videoEffects": [
+        {
+          "enabled": true,
+          "id": 13,
+          "props": {
+            "radius": 18.0
+          },
+          "type": "blur"
+        },
+        {
+          "enabled": true,
+          "id": 14,
+          "props": {
+            "amount": 0.6,
+            "softness": 0.5
+          },
+          "type": "vignette"
+        }
+      ]
+    },
+    {
+      "duration": 3.0,
+      "id": 11,
+      "in": 0.0,
+      "kind": "media",
+      "media": 8,
+      "name": "clip_c.mp4",
+      "props": {
+        "blend": "normal",
+        "fit": "cover",
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "rotation": 6.0,
+        "scale": 1.4,
+        "x": {
+          "expr": "60 * sin(t * 1.4)"
+        },
+        "y": {
+          "expr": "40 * cos(t * 0.9)"
+        }
+      },
+      "speed": 1.0,
+      "start": 0.0,
+      "track": 5,
+      "videoEffects": [
+        {
+          "enabled": true,
+          "id": 15,
+          "props": {
+            "feather": 220.0,
+            "height": 1000.0,
+            "keep": "inside",
+            "shape": "ellipse",
+            "width": 1500.0,
+            "x": 0.0,
+            "y": 0.0
+          },
+          "type": "mask"
+        },
+        {
+          "enabled": true,
+          "id": 16,
+          "props": {
+            "brightness": 0.05,
+            "contrast": 1.2
+          },
+          "type": "brightness_contrast"
+        }
+      ]
+    },
+    {
+      "duration": 3.0,
+      "id": 17,
+      "in": 0.0,
+      "kind": "media",
+      "media": 8,
+      "name": "top_c",
+      "props": {
+        "blend": "normal",
+        "fit": "contain",
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "rotation": 0.0,
+        "scale": 1.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 1.2,
+      "track": 4
+    },
+    {
+      "duration": 3.0,
+      "id": 18,
+      "in": 0.0,
+      "kind": "media",
+      "media": 6,
+      "name": "top_a",
+      "props": {
+        "blend": "normal",
+        "fit": "cover",
+        "motionPath": "",
+        "motionProgress": 0.0,
+        "motionRotate": 0.0,
+        "opacity": 1.0,
+        "rotation": 0.0,
+        "scale": 1.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "speed": 1.0,
+      "start": 1.2,
+      "track": 5
+    }
+  ],
+  "format": "meshframe",
+  "markers": [],
+  "masterAudio": [],
+  "media": [
+    {
+      "absolutePath": "/Users/tripp/.t3/projects/meshframe/bench/media/clip_a.mp4",
+      "channels": 0,
+      "duration": 3.0,
+      "fps": 30.0,
+      "hasAudio": false,
+      "hasVideo": true,
+      "height": 720,
+      "id": 6,
+      "kind": "video",
+      "name": "clip_a.mp4",
+      "path": "../media/clip_a.mp4",
+      "sampleRate": 0,
+      "width": 1280
+    },
+    {
+      "absolutePath": "/Users/tripp/.t3/projects/meshframe/bench/media/clip_b.mp4",
+      "channels": 0,
+      "duration": 3.0,
+      "fps": 30.0,
+      "hasAudio": false,
+      "hasVideo": true,
+      "height": 1080,
+      "id": 7,
+      "kind": "video",
+      "name": "clip_b.mp4",
+      "path": "../media/clip_b.mp4",
+      "sampleRate": 0,
+      "width": 1920
+    },
+    {
+      "absolutePath": "/Users/tripp/.t3/projects/meshframe/bench/media/clip_c.mp4",
+      "channels": 0,
+      "duration": 3.0,
+      "fps": 30.0,
+      "hasAudio": false,
+      "hasVideo": true,
+      "height": 360,
+      "id": 8,
+      "kind": "video",
+      "name": "clip_c.mp4",
+      "path": "../media/clip_c.mp4",
+      "sampleRate": 0,
+      "width": 640
+    }
+  ],
+  "name": "untitled",
+  "nextId": 21,
+  "script": "-- Project script. Runs again whenever it changes.\n-- mf.signal(name, fn) defines a reactive signal; read it as sig.name.\n-- Read time as t. See the meshframe skill for the full API.\n\nmf.signal(\"pulse\", function()\n  return 0.5 + 0.5 * math.sin(t * math.pi * 2)\nend)\n",
+  "settings": {
+    "background": "#000000",
+    "fps": 30.0,
+    "height": 1080,
+    "sampleRate": 48000,
+    "width": 1920
+  },
+  "signals": [],
+  "tracks": [
+    {
+      "hidden": false,
+      "id": 1,
+      "kind": "audio",
+      "locked": false,
+      "muted": false,
+      "name": "A1"
+    },
+    {
+      "hidden": false,
+      "id": 2,
+      "kind": "audio",
+      "locked": false,
+      "muted": false,
+      "name": "A2"
+    },
+    {
+      "hidden": false,
+      "id": 3,
+      "kind": "video",
+      "locked": false,
+      "muted": false,
+      "name": "V1"
+    },
+    {
+      "hidden": false,
+      "id": 4,
+      "kind": "video",
+      "locked": false,
+      "muted": false,
+      "name": "V2"
+    },
+    {
+      "hidden": false,
+      "id": 5,
+      "kind": "video",
+      "locked": false,
+      "muted": false,
+      "name": "V3"
+    }
+  ],
+  "transitions": [
+    {
+      "clipA": 10,
+      "clipB": 17,
+      "curve": [
+        {
+          "bezier": [
+            0.41999998688697815,
+            0.0,
+            0.5799999833106995,
+            1.0
+          ],
+          "interp": "bezier",
+          "t": 0.0,
+          "v": 0.0
+        },
+        {
+          "interp": "linear",
+          "t": 1.0,
+          "v": 1.0
+        }
+      ],
+      "duration": 0.8,
+      "id": 19,
+      "props": {
+        "direction": "left",
+        "softness": 0.02
+      },
+      "type": "wipe"
+    },
+    {
+      "clipA": 11,
+      "clipB": 18,
+      "curve": [
+        {
+          "bezier": [
+            0.41999998688697815,
+            0.0,
+            0.5799999833106995,
+            1.0
+          ],
+          "interp": "bezier",
+          "t": 0.0,
+          "v": 0.0
+        },
+        {
+          "interp": "linear",
+          "t": 1.0,
+          "v": 1.0
+        }
+      ],
+      "duration": 0.6,
+      "id": 20,
+      "props": {
+        "color": "#000000"
+      },
+      "type": "dip"
+    }
+  ],
+  "version": 1
+}

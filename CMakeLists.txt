@@ -47,6 +47,14 @@ add_executable(meshframe-cli src/cli/main.cpp)
 target_compile_options(meshframe-cli PRIVATE ${MF_WARNINGS})
 target_link_libraries(meshframe-cli PRIVATE meshframe_core)
 
+# Renders the projects in bench/projects and reports deterministic work counts.
+option(MESHFRAME_BENCH "Build the render benchmark" OFF)
+if(MESHFRAME_BENCH)
+  add_executable(meshframe_bench tools/bench_render.cpp)
+  target_compile_options(meshframe_bench PRIVATE ${MF_WARNINGS})
+  target_link_libraries(meshframe_bench PRIVATE meshframe_core)
+endif()
+
 if(MESHFRAME_TESTS)
   find_package(GTest CONFIG REQUIRED)
   enable_testing()
