@@ -24,8 +24,9 @@ common=(-hide_banner -loglevel error -y -an)
 ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=3" \
   -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -g 15 "$out/clip_a.mp4"
 
-# Smooth gradients at frame size, which is the case bilinear scaling costs most.
-ffmpeg "${common[@]}" -f lavfi -i "gradients=size=1920x1080:rate=30:duration=3:speed=0.05" \
+# Full frame size with a moving alpha pattern, the case bilinear scaling costs most.
+# Sources must be byte-identical every run, so nothing random goes in them.
+ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=1920x1080:rate=30:duration=3:alpha=200" \
   -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -g 15 "$out/clip_b.mp4"
 
 # Color bars with a frame counter drawn in, cheap to decode and easy to compare.
