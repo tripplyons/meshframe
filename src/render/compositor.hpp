@@ -21,6 +21,13 @@ struct Placement {
 // Composites src onto dst with bilinear sampling, opacity, and a blend mode.
 void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity, Blend blend);
 
+// Composites a w x h layer that is a single repeated premultiplied colour,
+// which drawLayer would otherwise have to be handed an image of. Only the
+// identity placement is handled, where every destination pixel maps to one
+// source texel; anything else returns false without drawing, so the caller can
+// build the image and let drawLayer sample it as before.
+bool drawSolidLayer(Image& dst, const Placement& at, int w, int h, Color c, float opacity, Blend blend);
+
 void fill(Image& img, Color c);
 
 // The part of a layer image that holds the clip, inside any margin added

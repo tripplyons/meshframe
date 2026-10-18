@@ -10,13 +10,146 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <mutex>
 #include <numbers>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace mf {
 
 namespace {
+
+// Properties that place a finished layer on the canvas. They change where the
+// layer lands, never the pixels inside it, so they stay out of the layer key.
+bool isPlacementProp(std::string_view name) {
+    static constexpr std::string_view kPlacement[] = {"x",        "y",         "scale",  "rotation",
+                                                     "opacity",  "blend",     "motionPath",
+                                                     "motionProgress", "motionRotate"};
+    return std::ranges::any_of(kPlacement, [&](std::string_view p) { return p == name; });
+}
+
+void appendNumber(std::string& key, double v) {
+    char buf[40];
+    std::snprintf(buf, sizeof buf, "%.17g", v);
+    key += buf;
+    key.push_back('|');
+}
+
+void appendValue(std::string& key, const Value& v) {
+    switch (typeOf(v)) {
+        case ValueType::Number: appendNumber(key, asNumber(v)); break;
+        case ValueType::Color: {
+            Color c = asColor(v);
+            appendNumber(key, c.r), appendNumber(key, c.g), appendNumber(key, c.b), appendNumber(key, c.a);
+            break;
+        }
+        case ValueType::String: key += asString(v); key.push_back('\x1f'); break;
+        case ValueType::None: key.push_back('\x1e'); break;
+    }
+}
+
+// Everything a clip's own pixels depend on: its identity and timing, the
+// project frame it is rasterized for, every property that feeds its content or
+// its effects, and the media file behind it. Two reads that produce the same
+// key must produce the same image, so a clip that did not change is rendered
+// once instead of once per frame.
+std::string layerKey(Evaluator& ev, const Clip& c, double unit, int w, int h, double t) {
+    const Project& p = ev.project();
+    std::string key;
+    key.reserve(512);
+    appendNumber(key, c.id);
+    appendNumber(key, double(c.kind));
+    appendNumber(key, c.start);
+    appendNumber(key, c.duration);
+    appendNumber(key, c.in);
+    appendNumber(key, c.speed);
+    appendNumber(key, c.media);
+    appendNumber(key, unit);
+    appendNumber(key, w);
+    appendNumber(key, h);
+    appendNumber(key, p.settings.width);
+    appendNumber(key, p.settings.height);
+    appendNumber(key, p.settings.fps);
+    // A generator reads the clock from its script, so it never reuses a layer.
+    // A media clip picks its source frame from the clock.
+    if (c.kind == ClipKind::Media) appendNumber(key, t);
+    if (const MediaSource* m = p.findMedia(c.media)) {
+        key += m->path;
+        key.push_back('\x1f');
+        appendNumber(key, m->width);
+        appendNumber(key, m->height);
+        appendNumber(key, m->fps);
+        appendNumber(key, m->duration);
+        appendNumber(key, double(m->kind));
+        key.push_back(m->hasVideo ? 'v' : '-');
+    }
+    for (const auto& [name, prop] : c.props) {
+        if (isPlacementProp(name)) continue;
+        key += name;
+        key.push_back('\x1f');
+        appendValue(key, ev.prop(c, name));
+    }
+    for (const auto& e : c.videoEffects) {
+        appendNumber(key, e.id);
+        key += e.type;
+        key.push_back('\x1f');
+        key.push_back(e.enabled ? '1' : '0');
+        if (!e.enabled) continue;
+        for (const auto& [name, prop] : e.props) {
+            key += name;
+            key.push_back('\x1f');
+            appendValue(key, ev.effectProp(e, name));
+        }
+    }
+    return key;
+}
+
+// A rendered layer kept between frames, along with the key that produced it.
+struct CachedLayer {
+    Id clip = 0;
+    std::string key;
+    std::shared_ptr<Image> image;
+    double offsetX = 0, offsetY = 0, displayW = 0, displayH = 0;
+};
+
+std::mutex& layerCacheMutex() {
+    static std::mutex m;
+    return m;
+}
+
+// Recent first, so the layers still in use survive a burst of misses.
+std::vector<CachedLayer>& layerCache() {
+    static std::vector<CachedLayer> cache;
+    return cache;
+}
+
+constexpr size_t kLayerCacheSize = 16;
+
+// A layer built by content() is fully opaque when every one of its pixels has
+// alpha 255. Layers that only rearrange colour keep that property; a mask, a
+// crop, or a drop shadow can clear a pixel, so they do not.
+bool g_contentOpaque = false;
+
+// render() hands the canvas to its layers zeroed and defers the background fill
+// until it meets a layer that cannot leave any pixel showing. A layer that
+// covers the whole canvas opaquely with a plain normal blend overwrites every
+// pixel regardless of what was underneath, so the fill is dead work.
+bool g_fillBackground = false;
+Color g_background{};
+
+// Whether every pixel of img has alpha 255.
+bool fullyOpaque(const Image& img) {
+    for (size_t i = 3; i < img.px.size(); i += 4)
+        if (img.px[i] != 255) return false;
+    return true;
+}
+
+// Set by content() when the clip is a solid colour: its pixels are one
+// repeated pixel and only have to be built if an effect needs to read them.
+bool g_solidLayer = false;
+Color g_solidColor{};
 
 // Draws a text clip's lines with their alignment, over an outline when it
 // has one. `unit` converts project pixels to image pixels.
@@ -51,6 +184,9 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
     work::addLayer(1);
     const Project& p = ev.project();
     Layer layer;
+    bool opaque = false;
+    bool solidLayer = false;
+    Color solidColor;
     switch (c.kind) {
         case ClipKind::Media: {
             const MediaSource* m = p.findMedia(c.media);
@@ -72,7 +208,10 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
             layer.displayW = m->width * sx;
             layer.displayH = m->height * sy;
             ImagePtr frame = cache_.frame(*m, src, int(std::ceil(layer.displayW)), int(std::ceil(layer.displayH)));
-            if (frame) layer.image = std::make_shared<Image>(*frame);
+            if (frame) {
+                layer.image = std::make_shared<Image>(*frame);
+                opaque = fullyOpaque(*layer.image);
+            }
             break;
         }
         case ClipKind::Text: {
@@ -91,10 +230,14 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
             break;
         }
         case ClipKind::Solid: {
-            layer.image = std::make_shared<Image>(w, h);
-            fill(*layer.image, ev.color(c, "color", Color::gray(0.5f)));
+            Color color = ev.color(c, "color", Color::gray(0.5f));
             layer.displayW = w;
             layer.displayH = h;
+            opaque = uint8_t(std::clamp(color.a, 0.0f, 1.0f) * 255 + 0.5f) == 255;
+            // The pixels are only built when an effect needs them; otherwise the
+            // colour is composited straight from these four bytes.
+            solidLayer = true;
+            solidColor = color;
             break;
         }
         case ClipKind::Generator: {
@@ -173,56 +316,118 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
         }
         case ClipKind::Synth: break;
     }
+    g_contentOpaque = opaque;
+    g_solidLayer = solidLayer;
+    g_solidColor = solidColor;
     return layer;
 }
 
 bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t, double unit, bool useBlend, int padX, int padY) {
-    Layer layer = content(ev, c, t, unit, dst.w - 2 * padX, dst.h - 2 * padY);
-    if (!layer.image || layer.image->empty()) return false;
-    double toDisplay = layer.displayW / layer.image->w;
-    double effectUnit = unit / toDisplay;
-    // Room for effects that draw past the edges, such as a drop shadow.
-    int margin = 0;
-    for (const auto& e : c.videoEffects)
-        if (e.enabled) {
-            margin += effectMargin(e.type, ev.effectParams(e, false), effectUnit);
-            if (c.kind == ClipKind::Path && e.type == "blur") {
-                double radius = asNumber(ev.effectParams(e, false)("radius"), 4);
-                double extent = std::max(0.0, radius) * effectUnit * 2;
-                if (!std::isfinite(radius) || !std::isfinite(extent) || extent > 16384) {
-                    ev.reportRuntimeError(fmt::format("clip:{}:path", c.id), "path blur exceeds raster limits");
-                    return false;
-                }
-                margin += int(std::ceil(extent)) + 1;
+    const int layerW = dst.w - 2 * padX, layerH = dst.h - 2 * padY;
+    // A generator's pixels come straight out of its script, so it is rebuilt
+    // every frame; every other kind is reused while its key holds.
+    const bool reusable = c.kind != ClipKind::Generator;
+    std::string key;
+    if (reusable) key = layerKey(ev, c, unit, layerW, layerH, t);
+
+    Layer layer;
+    bool hit = false;
+    bool alphaKept = false;
+    if (reusable) {
+        std::lock_guard lock(layerCacheMutex());
+        std::vector<CachedLayer>& cache = layerCache();
+        for (size_t i = 0; i < cache.size(); ++i) {
+            if (cache[i].clip != c.id || cache[i].key != key) continue;
+            layer.image = cache[i].image;
+            layer.offsetX = cache[i].offsetX, layer.offsetY = cache[i].offsetY;
+            layer.displayW = cache[i].displayW, layer.displayH = cache[i].displayH;
+            hit = true;
+            if (i) {
+                CachedLayer found = std::move(cache[i]);
+                cache.erase(cache.begin() + i);
+                cache.insert(cache.begin(), std::move(found));
             }
+            break;
         }
-    if (c.kind == ClipKind::Path) {
-        double paddedW = layer.image->w + 2.0 * margin, paddedH = layer.image->h + 2.0 * margin;
-        if (paddedW > 16384 || paddedH > 16384 || paddedW * paddedH > 64000000) {
-            ev.reportRuntimeError(fmt::format("clip:{}:path", c.id), "path effects exceed raster limits");
+    }
+    if (!layer.image) {
+        layer = content(ev, c, t, unit, layerW, layerH);
+        bool solid = g_solidLayer;
+        Color solidColor = g_solidColor;
+        bool wantsPixels = false;
+        for (const auto& e : c.videoEffects)
+            if (e.enabled) wantsPixels = true;
+        if (wantsPixels && !layer.image) {
+            // A solid only needs its pixels when an effect will read them.
+            layer.image = std::make_shared<Image>(int(layer.displayW), int(layer.displayH));
+            fill(*layer.image, solidColor);
+        }
+        if (!layer.image) {
+            if (!solid) return false;
+        } else if (layer.image->empty()) {
             return false;
         }
-    }
-    PixelBox content{margin, margin, layer.image->w, layer.image->h};
-    if (margin > 0) {
-        auto padded = std::make_shared<Image>(layer.image->w + 2 * margin, layer.image->h + 2 * margin);
-        for (int y = 0; y < layer.image->h; ++y) std::copy_n(layer.image->row(y), layer.image->w * 4, padded->at(margin, margin + y));
-        layer.displayW *= double(padded->w) / layer.image->w;
-        layer.displayH *= double(padded->h) / layer.image->h;
-        layer.image = std::move(padded);
-    }
-    for (const auto& e : c.videoEffects) {
-        if (!e.enabled) continue;
-        auto params = ev.effectParams(e, false);
-        if (c.kind == ClipKind::Path && e.type == "mask") {
-            // Mask x/y use the object's origin, even when the path bounds are off-center.
-            ParamFn local = [&](std::string_view name) -> Value {
-                if (name == "x") return asNumber(params(name)) - layer.offsetX / unit;
-                if (name == "y") return asNumber(params(name)) - layer.offsetY / unit;
-                return params(name);
-            };
-            applyEffect(*layer.image, e.type, local, effectUnit, content);
-        } else applyEffect(*layer.image, e.type, params, effectUnit, content);
+        alphaKept = g_contentOpaque;
+        for (const auto& e : c.videoEffects)
+            if (e.enabled && (e.type == "mask" || e.type == "crop" || e.type == "drop_shadow")) alphaKept = false;
+        if (!layer.image) {
+            // No effects means no margin, no padding and no effect pass.
+        } else {
+        double toDisplay = layer.displayW / layer.image->w;
+        double effectUnit = unit / toDisplay;
+        // Room for effects that draw past the edges, such as a drop shadow.
+        int margin = 0;
+        for (const auto& e : c.videoEffects)
+            if (e.enabled) {
+                margin += effectMargin(e.type, ev.effectParams(e, false), effectUnit);
+                if (c.kind == ClipKind::Path && e.type == "blur") {
+                    double radius = asNumber(ev.effectParams(e, false)("radius"), 4);
+                    double extent = std::max(0.0, radius) * effectUnit * 2;
+                    if (!std::isfinite(radius) || !std::isfinite(extent) || extent > 16384) {
+                        ev.reportRuntimeError(fmt::format("clip:{}:path", c.id), "path blur exceeds raster limits");
+                        return false;
+                    }
+                    margin += int(std::ceil(extent)) + 1;
+                }
+            }
+        if (c.kind == ClipKind::Path) {
+            double paddedW = layer.image->w + 2.0 * margin, paddedH = layer.image->h + 2.0 * margin;
+            if (paddedW > 16384 || paddedH > 16384 || paddedW * paddedH > 64000000) {
+                ev.reportRuntimeError(fmt::format("clip:{}:path", c.id), "path effects exceed raster limits");
+                return false;
+            }
+        }
+        PixelBox content{margin, margin, layer.image->w, layer.image->h};
+        if (margin > 0) {
+            auto padded = std::make_shared<Image>(layer.image->w + 2 * margin, layer.image->h + 2 * margin);
+            for (int y = 0; y < layer.image->h; ++y) std::copy_n(layer.image->row(y), layer.image->w * 4, padded->at(margin, margin + y));
+            layer.displayW *= double(padded->w) / layer.image->w;
+            layer.displayH *= double(padded->h) / layer.image->h;
+            layer.image = std::move(padded);
+        }
+        for (const auto& e : c.videoEffects) {
+            if (!e.enabled) continue;
+            auto params = ev.effectParams(e, false);
+            if (c.kind == ClipKind::Path && e.type == "mask") {
+                // Mask x/y use the object's origin, even when the path bounds are off-center.
+                ParamFn local = [&](std::string_view name) -> Value {
+                    if (name == "x") return asNumber(params(name)) - layer.offsetX / unit;
+                    if (name == "y") return asNumber(params(name)) - layer.offsetY / unit;
+                    return params(name);
+                };
+                applyEffect(*layer.image, e.type, local, effectUnit, content);
+            } else applyEffect(*layer.image, e.type, params, effectUnit, content);
+        }
+        }
+    }  // rebuilt from scratch
+    if (layer.image && layer.image->empty()) return false;
+    if (reusable && !hit && layer.image) {
+        std::lock_guard lock(layerCacheMutex());
+        std::vector<CachedLayer>& cache = layerCache();
+        std::erase_if(cache, [&](const CachedLayer& e) { return e.clip == c.id; });
+        cache.insert(cache.begin(), CachedLayer{c.id, std::move(key), layer.image, layer.offsetX, layer.offsetY,
+                                                layer.displayW, layer.displayH});
+        if (cache.size() > kLayerCacheSize) cache.resize(kLayerCacheSize);
     }
     double scale = ev.num(c, "scale", 1);
     Placement at;
@@ -250,15 +455,39 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
     double ox = layer.offsetX * scale, oy = layer.offsetY * scale;
     at.cx = dst.w / 2.0 + (ev.num(c, "x") + motionX) * unit + ox * std::cos(at.rotation) - oy * std::sin(at.rotation);
     at.cy = dst.h / 2.0 + (ev.num(c, "y") + motionY) * unit + ox * std::sin(at.rotation) + oy * std::cos(at.rotation);
-    at.sx = scale * layer.displayW / layer.image->w;
-    at.sy = scale * layer.displayH / layer.image->h;
+    // A solid layer has no image, so its drawn size is its display size times scale.
+    int solidW = layer.image ? layer.image->w : int(layer.displayW);
+    int solidH = layer.image ? layer.image->h : int(layer.displayH);
+    at.sx = scale * layer.displayW / solidW;
+    at.sy = scale * layer.displayH / solidH;
     float opacity = float(std::clamp(ev.num(c, "opacity", 1), 0.0, 1.0));
-    drawLayer(dst, *layer.image, at, opacity, useBlend ? parseBlend(ev.str(c, "blend")) : Blend::Normal);
+    Blend mode = useBlend ? parseBlend(ev.str(c, "blend")) : Blend::Normal;
+    if (useBlend && g_fillBackground) {
+        g_fillBackground = false;
+        // drawLayer's nearest-neighbour path takes the source alpha verbatim, so
+        // an opaque layer there reaches blendPixel with sa exactly 1: the normal
+        // blend then discards the destination and writes the source colour, and
+        // the background underneath cannot show. A bilinear draw interpolates
+        // its alpha and lands just under 1, so it still needs the background.
+        double halfW = solidW * at.sx / 2.0, halfH = solidH * at.sy / 2.0;
+        double ox = at.cx - halfW, oy = at.cy - halfH;
+        bool covers = at.cx - halfW <= 0 && at.cy - halfH <= 0 && at.cx + halfW >= dst.w && at.cy + halfH >= dst.h;
+        bool exact = at.rotation == 0 && at.sx == 1 && at.sy == 1 && ox == std::floor(ox) && oy == std::floor(oy);
+        if (!(alphaKept && covers && exact && opacity >= 1 && mode == Blend::Normal)) fill(dst, g_background);
+    }
+    if (layer.image) drawLayer(dst, *layer.image, at, opacity, mode);
+    else if (!drawSolidLayer(dst, at, solidW, solidH, g_solidColor, opacity, mode)) {
+        // The placement resamples between texels, so build the pixels after all.
+        auto image = std::make_shared<Image>(solidW, solidH);
+        fill(*image, g_solidColor);
+        drawLayer(dst, *image, at, opacity, mode);
+    }
     return true;
 }
 
 std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, double t, double scale, int padX, int padY) {
     ev.setTime(t);
+    g_fillBackground = false;  // a clip preview is drawn over transparency
     const auto& st = ev.project().settings;
     int w = std::max(2, int(std::lround(st.width * scale))), h = std::max(2, int(std::lround(st.height * scale)));
     auto canvas = std::make_shared<Image>(w + 2 * padX, h + 2 * padY);
@@ -272,7 +501,10 @@ std::shared_ptr<Image> FrameRenderer::render(Evaluator& ev, double t, int w, int
     const Project& p = ev.project();
     double unit = double(w) / p.settings.width;
     auto canvas = std::make_shared<Image>(w, h);
-    fill(*canvas, p.settings.background);
+    // The canvas starts zeroed; drawClip lays the background down only if the
+    // first layer cannot cover the whole frame on its own.
+    g_background = p.settings.background;
+    g_fillBackground = true;
 
     for (const auto& track : p.tracks) {
         if (track.kind != TrackKind::Video || track.hidden) continue;
@@ -302,10 +534,20 @@ std::shared_ptr<Image> FrameRenderer::render(Evaluator& ev, double t, int w, int
             drawClip(ev, bufA, *a, t, unit, false);
             drawClip(ev, bufB, *b, t, unit, false);
             mixTransition(mixed, bufA, bufB, active->type, ev.transitionMix(*active), ev.transitionParams(*active));
+            // A mixed frame is not a single opaque layer, so it needs the
+            // background laid down before it blends.
+            if (g_fillBackground) {
+                fill(*canvas, g_background);
+                g_fillBackground = false;
+            }
             drawLayer(*canvas, mixed, Placement{w / 2.0, h / 2.0}, 1, parseBlend(ev.str(*b, "blend")));
             done.push_back(a->id);
             done.push_back(b->id);
         }
+    }
+    if (g_fillBackground) {
+        fill(*canvas, g_background);
+        g_fillBackground = false;
     }
     ev.refreshOutputs();
     return canvas;

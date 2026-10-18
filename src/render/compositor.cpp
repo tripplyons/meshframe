@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace mf {
@@ -59,7 +60,11 @@ double numParam(const ParamFn& p, std::string_view name, double fallback) { retu
 
 float luma(float r, float g, float b) { return 0.2126f * r + 0.7152f * g + 0.0722f * b; }
 
-// Calls fn(r, g, b, a) on straight-alpha floats in place, for every pixel with alpha.
+// Calls fn(r, g, b, x, y) on straight-alpha floats in place, for every pixel
+// with alpha. fn reports whether it changed the pixel; an opaque pixel it left
+// alone keeps its bytes exactly, because unpremultiplying by a = 1 and
+// premultiplying straight back returns every channel value unchanged, so such a
+// pixel needs no pass at all.
 template <class Fn>
 void mapStraight(Image& img, Fn fn) {
     forRows(img.h, [&](int y0, int y1) {
@@ -67,10 +72,11 @@ void mapStraight(Image& img, Fn fn) {
             uint8_t* p = img.row(y);
             for (int x = 0; x < img.w; ++x, p += 4) {
                 if (!p[3]) continue;
-                work::addMap(1);
                 float a = p[3] / 255.0f;
                 float r = p[0] / 255.0f / a, g = p[1] / 255.0f / a, b = p[2] / 255.0f / a;
-                fn(r, g, b, x, y);
+                bool changed = fn(r, g, b, x, y);
+                if (a == 1.0f && !changed) continue;
+                work::addMap(1);
                 p[0] = u8(std::clamp(r, 0.0f, 1.0f) * a * 255);
                 p[1] = u8(std::clamp(g, 0.0f, 1.0f) * a * 255);
                 p[2] = u8(std::clamp(b, 0.0f, 1.0f) * a * 255);
@@ -79,7 +85,7 @@ void mapStraight(Image& img, Fn fn) {
     });
 }
 
-// One horizontal box-blur pass on rows; the transposed call blurs columns.
+// One horizontal box-blur pass on rows.
 void boxBlurRows(const Image& src, Image& dst, int r) {
     forRows(src.h, [&](int y0, int y1) {
         std::vector<int> sum(4);
@@ -102,12 +108,27 @@ void boxBlurRows(const Image& src, Image& dst, int r) {
     });
 }
 
-void transpose(const Image& src, Image& dst) {
-    dst.resize(src.h, src.w);
-    forRows(src.h, [&](int y0, int y1) {
-        for (int y = y0; y < y1; ++y) {
-            work::addCopy(uint64_t(src.w));
-            for (int x = 0; x < src.w; ++x) std::copy_n(src.at(x, y), 4, dst.at(y, x));
+// One vertical box-blur pass on columns, walking down each column with the
+// same running sum and edge clamping the row pass uses. Summing down a column
+// directly gives the result the transposed pass produced, without transposing
+// the image twice.
+void boxBlurCols(const Image& src, Image& dst, int r) {
+    forRows(src.w, [&](int x0, int x1) {
+        std::vector<int> sum(4);
+        float norm = 1.0f / float(2 * r + 1);
+        for (int x = x0; x < x1; ++x) {
+            std::fill(sum.begin(), sum.end(), 0);
+            auto px = [&](int y) { return src.at(x, std::clamp(y, 0, src.h - 1)); };
+            for (int y = -r; y <= r; ++y)
+                for (int c = 0; c < 4; ++c) sum[c] += px(y)[c];
+            for (int y = 0; y < src.h; ++y) {
+                uint8_t* d = dst.at(x, y);
+                for (int c = 0; c < 4; ++c) d[c] = uint8_t(sum[c] * norm + 0.5f);
+                work::addBlur(1);
+                const uint8_t* add = px(y + r + 1);
+                const uint8_t* sub = px(y - r);
+                for (int c = 0; c < 4; ++c) sum[c] += add[c] - sub[c];
+            }
         }
     });
 }
@@ -116,18 +137,15 @@ void blur(Image& img, double radius) {
     // Three box passes approximate a gaussian with sigma near radius / 2.
     int r = int(std::lround(radius / 2));
     if (r < 1) return;
-    Image tmp(img.w, img.h), t2;
+    Image tmp(img.w, img.h);
     for (int i = 0; i < 3; ++i) {
         boxBlurRows(img, tmp, r);
         std::swap(img, tmp);
     }
-    transpose(img, t2);
-    tmp.resize(t2.w, t2.h);
     for (int i = 0; i < 3; ++i) {
-        boxBlurRows(t2, tmp, r);
-        std::swap(t2, tmp);
+        boxBlurCols(img, tmp, r);
+        std::swap(img, tmp);
     }
-    transpose(t2, img);
 }
 
 void shiftInto(Image& out, const Image& src, int dx, int dy) {
@@ -191,12 +209,105 @@ void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity,
     int x0 = std::max(0, int(std::floor(minx))), x1 = std::min(dst.w, int(std::ceil(maxx)));
     int y0 = std::max(0, int(std::floor(miny))), y1 = std::min(dst.h, int(std::ceil(maxy)));
     if (x0 >= x1 || y0 >= y1) return;
+    // Only texels with alpha contribute: a destination pixel whose bilinear
+    // footprint misses them all samples nothing and is then discarded. Bound the
+    // destination box by the image of the alpha-bearing texels, widened by two
+    // texels so the kernel's right and lower taps and the rounding of the
+    // corner mapping can never drop a pixel that would have blended.
+    int bx0 = src.w, by0 = src.h, bx1 = -1, by1 = -1;
+    for (int y = 0; y < src.h; ++y) {
+        const uint8_t* row = src.row(y);
+        for (int x = 0; x < src.w; ++x)
+            if (row[x * 4 + 3]) {
+                bx0 = std::min(bx0, x), bx1 = std::max(bx1, x);
+                by0 = std::min(by0, y), by1 = std::max(by1, y);
+            }
+    }
+    if (bx1 < 0) return;  // fully transparent
+    double cminx = 1e30, cmaxx = -1e30, cminy = 1e30, cmaxy = -1e30;
+    for (double u : {double(bx0 - 2) - hw, double(bx1 + 2) - hw}) {
+        for (double v : {double(by0 - 2) - hh, double(by1 + 2) - hh}) {
+            double px = at.cx + u * at.sx * cs - v * at.sy * sn;
+            double py = at.cy + u * at.sx * sn + v * at.sy * cs;
+            cminx = std::min(cminx, px), cmaxx = std::max(cmaxx, px);
+            cminy = std::min(cminy, py), cmaxy = std::max(cmaxy, py);
+        }
+    }
+    x0 = std::max(x0, int(std::floor(cminx)));
+    x1 = std::min(x1, int(std::ceil(cmaxx)));
+    y0 = std::max(y0, int(std::floor(cminy)));
+    y1 = std::min(y1, int(std::ceil(cmaxy)));
+    if (x0 >= x1 || y0 >= y1) return;
 
     double ox = at.cx - hw, oy = at.cy - hh;
     bool aligned = at.rotation == 0 && at.sx == 1 && at.sy == 1 && ox == std::floor(ox) && oy == std::floor(oy);
+    // Without rotation the source columns a destination row reads are the same
+    // for every row, and each destination row reads two source rows that the
+    // next one shares. Keeping those rows lets the next destination row read one
+    // row instead of two. A rotated layer gains nothing from whole-row buffers:
+    // its source row drifts within the row as well, so they refill constantly.
+    // Weights differ per destination pixel, so this caches texels, never values.
+    bool keepRows = !aligned && at.rotation == 0;
+    int colLo = 0, colHi = -1;
+    if (keepRows) {
+        auto uAt = [&](int x) { return (x + 0.5 - at.cx) * cs / at.sx + hw - 0.5; };
+        colLo = std::max(-1, int(std::floor(uAt(x0))));
+        colHi = std::min(src.w, int(std::floor(uAt(x1 - 1))) + 1);
+    }
     forRows(y1 - y0, [&](int r0, int r1) {
+        // Source texels the previous destination pixel in this row already read,
+        // one per row of the bilinear kernel, for the columns it and its right
+        // neighbour came from. The weights change with x; the texel values do
+        // not, so a column both pixels share is fetched from src only once.
+        auto loadColumn = [&](uint8_t out[2][4], int tx, int iv) {
+            for (int dy = 0; dy < 2; ++dy) {
+                int ty = iv + dy;
+                // Outside the source the tap contributes nothing, and adding a
+                // zero leaves the sum unchanged.
+                if (tx < 0 || ty < 0 || tx >= src.w || ty >= src.h) std::fill_n(out[dy], 4, uint8_t(0));
+                else {
+                    work::addTaps(1);
+                    std::copy_n(src.at(tx, ty), 4, out[dy]);
+                }
+            }
+        };
+        // One texel of a single source row, for stepping the cached columns onto a
+        // neighbouring row without refetching the row they already hold.
+        auto loadRow1 = [&](uint8_t* out, int tx, int ty) {
+            if (tx < 0 || ty < 0 || tx >= src.w || ty >= src.h) std::fill_n(out, 4, uint8_t(0));
+            else {
+                work::addTaps(1);
+                std::copy_n(src.at(tx, ty), 4, out);
+            }
+        };
+        // The two source rows the last destination row read, kept so the next one
+        // can reuse whichever of them it shares.
+        std::vector<uint8_t> rowA, rowB;
+        int rowAId = 0, rowBId = 0;
+        if (keepRows) {
+            size_t bytes = size_t(colHi - colLo + 1) * 4;
+            rowA.assign(bytes, 0);
+            rowB.assign(bytes, 0);
+            rowAId = rowBId = std::numeric_limits<int>::min();
+        }
+        auto loadRow = [&](std::vector<uint8_t>& buf, int ty) {
+            if (ty < 0 || ty >= src.h) {
+                std::fill_n(buf.data(), buf.size(), uint8_t(0));
+                return;
+            }
+            for (int c = colLo; c <= colHi; ++c) {
+                uint8_t* o = buf.data() + size_t(c - colLo) * 4;
+                if (c < 0 || c >= src.w) std::fill_n(o, 4, uint8_t(0));
+                else {
+                    work::addTaps(1);
+                    std::copy_n(src.at(c, ty), 4, o);
+                }
+            }
+        };
         for (int y = y0 + r0; y < y0 + r1; ++y) {
             uint8_t* d = dst.at(x0, y);
+            uint8_t left[2][4], right[2][4];
+            int cacheIu = 0, cacheIv = std::numeric_limits<int>::min();
             for (int x = x0; x < x1; ++x, d += 4) {
                 float s[4];
                 if (aligned) {
@@ -213,24 +324,108 @@ void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity,
                     if (u <= -1 || v <= -1 || u >= src.w || v >= src.h) continue;
                     int iu = int(std::floor(u)), iv = int(std::floor(v));
                     float fu = float(u - iu), fv = float(v - iv);
-                    std::fill_n(s, 4, 0.0f);
-                    auto tap = [&](int tx, int ty, float wgt) {
-                        work::addTaps(1);
-                        if (tx < 0 || ty < 0 || tx >= src.w || ty >= src.h || wgt == 0) return;
-                        const uint8_t* p = src.at(tx, ty);
-                        for (int c = 0; c < 4; ++c) s[c] += p[c] * wgt;
-                    };
-                    tap(iu, iv, (1 - fu) * (1 - fv));
-                    tap(iu + 1, iv, fu * (1 - fv));
-                    tap(iu, iv + 1, (1 - fu) * fv);
-                    tap(iu + 1, iv + 1, fu * fv);
-                    for (float& c : s) c /= 255.0f;
+                    float w00 = (1 - fu) * (1 - fv), w10 = fu * (1 - fv);
+                    float w01 = (1 - fu) * fv, w11 = fu * fv;
+                    if (keepRows) {
+                        if (iv != rowAId) {
+                            if (iv == rowBId) {
+                                // Stepped one source row up: the row held first is
+                                // this one's second, so only the far row is new.
+                                rowA.swap(rowB);
+                                std::swap(rowAId, rowBId);
+                                loadRow(rowB, iv + 1);
+                            } else if (iv + 1 == rowAId) {
+                                // Stepped one source row down: symmetric shift.
+                                rowA.swap(rowB);
+                                std::swap(rowAId, rowBId);
+                                loadRow(rowA, iv);
+                            } else {
+                                loadRow(rowA, iv);
+                                loadRow(rowB, iv + 1);
+                            }
+                            rowAId = iv, rowBId = iv + 1;
+                        }
+                        const uint8_t* la = rowA.data() + size_t(iu - colLo) * 4;
+                        const uint8_t* lb = rowB.data() + size_t(iu - colLo) * 4;
+                        for (int c = 0; c < 4; ++c) {
+                            float acc = la[c] * w00;
+                            acc += la[4 + c] * w10;
+                            acc += lb[c] * w01;
+                            acc += lb[4 + c] * w11;
+                            s[c] = acc / 255.0f;
+                        }
+                    } else {
+                        if (iu == cacheIu && iv == cacheIv) {
+                            // Same kernel columns as the last pixel: both are cached.
+                        } else if (iu == cacheIu + 1 && iv == cacheIv) {
+                            // Stepped one column right: the old right column is this
+                            // pixel's left one, so only the far column needs loading.
+                            std::copy_n(right[0], 4, left[0]);
+                            std::copy_n(right[1], 4, left[1]);
+                            loadColumn(right, iu + 1, iv);
+                        } else if (iu == cacheIu && iv + 1 == cacheIv) {
+                            // Stepped one source row up: the first row held for
+                            // each column is this kernel's second row, so only the
+                            // new first row is missing.
+                            std::copy_n(left[0], 4, left[1]);
+                            std::copy_n(right[0], 4, right[1]);
+                            loadRow1(left[0], iu, iv);
+                            loadRow1(right[0], iu + 1, iv);
+                        } else if (iu == cacheIu + 1 && iv + 1 == cacheIv) {
+                            // Both stepped by one: the old right column's first row
+                            // is this kernel's second row at the new left column.
+                            std::copy_n(right[0], 4, left[1]);
+                            loadRow1(left[0], iu, iv);
+                            loadColumn(right, iu + 1, iv);
+                        } else {
+                            loadColumn(left, iu, iv);
+                            loadColumn(right, iu + 1, iv);
+                        }
+                        cacheIu = iu, cacheIv = iv;
+                        for (int c = 0; c < 4; ++c) {
+                            float acc = left[0][c] * w00;
+                            acc += right[0][c] * w10;
+                            acc += left[1][c] * w01;
+                            acc += right[1][c] * w11;
+                            s[c] = acc / 255.0f;
+                        }
+                    }
                     if (s[3] <= 0) continue;
                 }
                 blendPixel(d, s[0] * opacity, s[1] * opacity, s[2] * opacity, s[3] * opacity, blend);
             }
         }
     });
+}
+
+bool drawSolidLayer(Image& dst, const Placement& at, int w, int h, Color c, float opacity, Blend blend) {
+    if (dst.empty() || w <= 0 || h <= 0 || opacity <= 0 || at.sx <= 0 || at.sy <= 0) return true;
+    uint8_t px[4] = {u8(c.r * c.a * 255), u8(c.g * c.a * 255), u8(c.b * c.a * 255), u8(c.a * 255)};
+    if (!px[3]) return true;
+    double hw = w / 2.0, hh = h / 2.0;
+    double ox = at.cx - hw, oy = at.cy - hh;
+    // Only the identity placement maps one destination pixel to one source
+    // texel, which is the nearest-neighbour case drawLayer special-cases. A
+    // rotation or a scale goes through drawLayer's sampling path instead.
+    if (at.rotation != 0 || at.sx != 1 || at.sy != 1 || ox != std::floor(ox) || oy != std::floor(oy)) return false;
+    int x0 = std::max(0, int(std::floor(at.cx - hw * at.sx))), x1 = std::min(dst.w, int(std::ceil(at.cx + hw * at.sx)));
+    int y0 = std::max(0, int(std::floor(at.cy - hh * at.sy))), y1 = std::min(dst.h, int(std::ceil(at.cy + hh * at.sy)));
+    if (x0 >= x1 || y0 >= y1) return true;
+    float s[4];
+    for (int i = 0; i < 4; ++i) s[i] = px[i] / 255.0f;
+    forRows(y1 - y0, [&](int r0, int r1) {
+        for (int y = y0 + r0; y < y0 + r1; ++y) {
+            int sy = y - int(oy);
+            if (sy < 0 || sy >= h) continue;
+            uint8_t* d = dst.at(x0, y);
+            for (int x = x0; x < x1; ++x, d += 4) {
+                int sx = x - int(ox);
+                if (sx < 0 || sx >= w) continue;
+                blendPixel(d, s[0] * opacity, s[1] * opacity, s[2] * opacity, s[3] * opacity, blend);
+            }
+        }
+    });
+    return true;
 }
 
 int effectMargin(std::string_view type, const ParamFn& param, double unit) {
@@ -243,14 +438,17 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
     if (content.w <= 0 || content.h <= 0) content = {0, 0, img.w, img.h};
     if (type == "brightness_contrast") {
         float bright = float(numParam(param, "brightness", 0)), contrast = float(numParam(param, "contrast", 1));
+        bool acts = bright != 0 || contrast != 1;
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
             for (float* c : {&r, &g, &b}) *c = (*c - 0.5f) * contrast + 0.5f + bright;
+            return acts;
         });
     } else if (type == "saturation") {
         float amount = float(numParam(param, "amount", 1));
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
             float l = luma(r, g, b);
             for (float* c : {&r, &g, &b}) *c = l + (*c - l) * amount;
+            return amount != 1;
         });
     } else if (type == "blur") {
         blur(img, numParam(param, "radius", 4) * unit);
@@ -258,6 +456,7 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
         float mix = float(numParam(param, "mix", 1));
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
             for (float* c : {&r, &g, &b}) *c += (1 - 2 * *c) * mix;
+            return mix != 0;
         });
     } else if (type == "tint") {
         Color tint = asColor(param("color"), Color{1, 0.8f, 0.6f, 1});
@@ -267,6 +466,7 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
             r += (l * tint.r - r) * amount;
             g += (l * tint.g - g) * amount;
             b += (l * tint.b - b) * amount;
+            return amount != 0;
         });
     } else if (type == "vignette") {
         float amount = float(numParam(param, "amount", 0.5)), soft = float(numParam(param, "softness", 0.5));
@@ -277,13 +477,17 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
             float d = std::hypot(x + 0.5f - cx, y + 0.5f - cy) / maxd;
             float t = std::clamp((d - inner) / (1 - inner + 1e-6f), 0.0f, 1.0f);
             float f = 1 - amount * t * t * (3 - 2 * t);
+            // Inside the soft edge t is zero, so the colour is unchanged.
+            if (f == 1) return false;
             r *= f, g *= f, b *= f;
+            return true;
         });
     } else if (type == "threshold") {
         float level = float(numParam(param, "level", 0.5));
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
             float v = luma(r, g, b) >= level ? 1.0f : 0.0f;
             r = g = b = v;
+            return true;
         });
     } else if (type == "drop_shadow") {
         Color c = asColor(param("color"), Color::gray(0));
@@ -360,10 +564,26 @@ void mixTransition(Image& out, const Image& a, const Image& b, std::string_view 
             }
         });
     } else if (type == "dip") {
-        Image solid(a.w, a.h);
-        fill(solid, asColor(param("color"), Color::gray(0)));
-        if (mf < 0.5f) lerpImages(a, solid, mf * 2);
-        else lerpImages(solid, b, mf * 2 - 1);
+        // The dip's solid is one repeated pixel, so lerp against those four
+        // bytes directly instead of building and reading a whole second frame.
+        Color c = asColor(param("color"), Color::gray(0));
+        uint8_t s[4] = {u8(c.r * c.a * 255), u8(c.g * c.a * 255), u8(c.b * c.a * 255), u8(c.a * 255)};
+        auto lerpSolid = [&](const Image& x, float t, bool fromSolid) {
+            forRows(out.h, [&](int y0, int y1) {
+                for (int row = y0; row < y1; ++row) {
+                    const uint8_t* q = x.row(row);
+                    uint8_t* o = out.row(row);
+                    work::addCopy(uint64_t(out.w));
+                    for (int i = 0; i < out.w * 4; ++i) {
+                        int from = fromSolid ? s[i & 3] : q[i];
+                        int to = fromSolid ? q[i] : s[i & 3];
+                        o[i] = u8(from + (to - from) * t);
+                    }
+                }
+            });
+        };
+        if (mf < 0.5f) lerpSolid(a, mf * 2, false);
+        else lerpSolid(b, mf * 2 - 1, true);
     } else if (type == "slide") {
         auto dir = asString(param("direction"));
         int dx = 0, dy = 0;
