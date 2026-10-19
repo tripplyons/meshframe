@@ -151,6 +151,29 @@ bool fullyOpaque(const Image& img) {
     return true;
 }
 
+// Small rectangles take less CPU time than a Metal dispatch. Estimate clipped
+// pixels per command so generator offloading amortizes that fixed cost.
+bool gpuGeneratorWorthwhile(const DrawList& list, float scale, int w, int h) {
+    uint64_t pixels = 0;
+    for (const auto& cmd : list.cmds) {
+        if (cmd.type == DrawCmd::Type::Clear) {
+            pixels += uint64_t(w) * h;
+        } else if (cmd.type == DrawCmd::Type::Rect) {
+            if (cmd.color.a <= 0) continue;
+            float x = cmd.a * scale, y = cmd.b * scale, rw = cmd.c * scale, rh = cmd.d * scale;
+            float left = std::min(x, x + rw), right = std::max(x, x + rw);
+            float top = std::min(y, y + rh), bottom = std::max(y, y + rh);
+            if (!std::isfinite(left) || !std::isfinite(right) || !std::isfinite(top) || !std::isfinite(bottom)) continue;
+            int x0 = int(std::clamp(std::floor(left), 0.0f, float(w)));
+            int x1 = int(std::clamp(std::ceil(right), 0.0f, float(w)));
+            int y0 = int(std::clamp(std::floor(top), 0.0f, float(h)));
+            int y1 = int(std::clamp(std::ceil(bottom), 0.0f, float(h)));
+            pixels += uint64_t(x1 - x0) * (y1 - y0);
+        } else return false;
+    }
+    return !list.cmds.empty() && pixels >= uint64_t(list.cmds.size()) * 65536;
+}
+
 // Draws a text clip's lines with their alignment, over an outline when it
 // has one. `unit` converts project pixels to image pixels.
 std::shared_ptr<Image> renderText(Evaluator& ev, const Clip& c, Font& font, double unit) {
@@ -181,7 +204,7 @@ std::shared_ptr<Image> renderText(Evaluator& ev, const Clip& c, Font& font, doub
 }  // namespace
 
 FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double t, double unit, int w, int h,
-                                            bool inspectOpacity) {
+                                            bool inspectOpacity, GpuFrame* rasterGpu) {
     work::addLayer(1);
     const Project& p = ev.project();
     Layer layer;
@@ -252,7 +275,9 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
             }
             ev.clearRuntimeError(key);
             layer.image = std::make_shared<Image>(w, h);
-            drawList(*layer.image, dl, float(unit));
+            if (!rasterGpu || !gpuGeneratorWorthwhile(dl, float(unit), w, h) ||
+                !rasterGpu->rasterize(layer.image, dl, float(unit)))
+                drawList(*layer.image, dl, float(unit));
             layer.displayW = w;
             layer.displayH = h;
             break;
@@ -360,12 +385,15 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
         }
     }
     if (!layer.image) {
-        layer = content(ev, c, t, unit, layerW, layerH, !gpu);
-        bool solid = layer.solid;
-        Color solidColor = layer.color;
         bool wantsPixels = false;
         for (const auto& e : c.videoEffects)
             if (e.enabled) wantsPixels = true;
+        // CPU effects need the generator's bytes immediately. Keep the entire
+        // raster/effect chain on one side of the CPU/GPU boundary.
+        GpuFrame* rasterGpu = gpu && (gpuEffects || !wantsPixels) ? gpu : nullptr;
+        layer = content(ev, c, t, unit, layerW, layerH, !gpu, rasterGpu);
+        bool solid = layer.solid;
+        Color solidColor = layer.color;
         if (wantsPixels && !layer.image) {
             // A solid only needs its pixels when an effect will read them.
             layer.image = std::make_shared<Image>(int(layer.displayW), int(layer.displayH));

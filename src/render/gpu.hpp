@@ -7,6 +7,8 @@
 
 namespace mf {
 
+struct DrawList;
+
 enum class RenderBackend { Auto, Cpu, Metal };
 
 struct GpuEffect {
@@ -22,6 +24,9 @@ class GpuFrame {
     // Radius is measured in source-image pixels. Unsupported chains stay CPU-side.
     virtual bool supportsBlur(double radius) const = 0;
     virtual void fill(const std::shared_ptr<Image>& dst, Color color) = 0;
+    // Draws supported generator commands into dst. Unsupported lists return
+    // false without encoding anything, so the caller can rasterize on the CPU.
+    virtual bool rasterize(const std::shared_ptr<Image>& dst, const DrawList& list, float scale) = 0;
     virtual void drawLayer(const std::shared_ptr<Image>& dst, ImagePtr src, const Placement& at, float opacity,
                            Blend blend) = 0;
     virtual void drawSolid(const std::shared_ptr<Image>& dst, int w, int h, Color color, const Placement& at,

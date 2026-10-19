@@ -31,7 +31,8 @@ private:
         bool opaque = false, solid = false;
         Color color{};
     };
-    Layer content(Evaluator& ev, const Clip& c, double t, double unit, int w, int h, bool inspectOpacity);
+    Layer content(Evaluator& ev, const Clip& c, double t, double unit, int w, int h, bool inspectOpacity,
+                  GpuFrame* rasterGpu);
     // Draws a clip with its effects and transform; returns false when it has no
     // content. The frame is dst less `pad` pixels on each side.
     bool drawClip(Evaluator& ev, const std::shared_ptr<Image>& target, const Clip& c, double t, double unit,

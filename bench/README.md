@@ -52,6 +52,9 @@ layers also use GPU blur, color effects, vignette, crop, and mask. Large blur
 radii up to 256 source pixels use wider prefix tiles when the device supports
 them. Unsupported radii, threshold cutoffs, and cached text/path effects keep
 their CPU paths.
+Generator lists containing clears and rectangles use Metal rasterization when
+their clipped work averages at least 65,536 pixels per command. Smaller lists,
+other drawing commands, and CPU-only effect chains keep CPU rasterization.
 Apple silicon shares image memory with Metal; other devices download the final
 canvas. A 64 MiB pool reuses page-backed image storage and lazily attached Metal
 views between frames. Other platforms, unavailable devices, and failed GPU

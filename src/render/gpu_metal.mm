@@ -1,6 +1,7 @@
 #include "render/gpu.hpp"
 
 #include "core/work_counter.hpp"
+#include "render/draw_list.hpp"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -418,11 +419,34 @@ kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* 
 }
 )METAL";
 
+constexpr const char* kRectShader = R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+struct RectParams {
+    uint4 sizes;
+    float4 bounds;
+    float4 color;
+};
+
+kernel void raster_rect(device uchar4* dst [[buffer(0)]], constant RectParams& p [[buffer(1)]],
+                        uint2 xy [[thread_position_in_grid]]) {
+    uint2 pos = xy + p.sizes.zw;
+    float2 coverage = clamp(min(float2(pos) + 1.0f, p.bounds.zw) - max(float2(pos), p.bounds.xy), 0.0f, 1.0f);
+    float cov = coverage.x * coverage.y;
+    if (cov <= 0.002f) return;
+    uint index = pos.y * p.sizes.x + pos.x;
+    float alpha = p.color.a * cov;
+    float4 source = float4(p.color.rgb * p.color.a, p.color.a) * cov * 255.0f;
+    dst[index] = uchar4(min(255.0f, source + float4(dst[index]) * (1.0f - alpha) + 0.5f));
+}
+)METAL";
+
 struct Device {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
-    id<MTLComputePipelineState> fill, draw, solid, transition, blur, blurRows, blurRowsWide, transpose, effect;
+    id<MTLComputePipelineState> fill, draw, solid, rect, transition, blur, blurRows, blurRowsWide, transpose, effect;
     std::string error;
+    std::once_flag rectInit;
 
     Device() {
         @autoreleasepool {
@@ -458,6 +482,21 @@ struct Device {
         }
     }
     bool available() const { return fill && draw && solid && transition && blur && blurRows && transpose && effect; }
+
+    id<MTLComputePipelineState> rectanglePipeline() {
+        std::call_once(rectInit, [&] {
+            @autoreleasepool {
+                // Most generators stay CPU-side. Compile this optional shader
+                // only when a sufficiently large rectangle list needs it.
+                NSError* err = nil;
+                id<MTLLibrary> library = [device newLibraryWithSource:[NSString stringWithUTF8String:kRectShader]
+                                                              options:nil error:&err];
+                id<MTLFunction> fn = [library newFunctionWithName:@"raster_rect"];
+                rect = fn ? [device newComputePipelineStateWithFunction:fn error:&err] : nil;
+            }
+        });
+        return rect;
+    }
 };
 
 Device& sharedDevice() {
@@ -478,6 +517,11 @@ struct DrawParams {
     float props[4];
     float color[4];
 };
+struct RectParams {
+    uint32_t sizes[4];
+    float bounds[4];
+    float color[4];
+};
 struct TransitionParams {
     uint32_t sizes[4];
     int32_t shifts[4];
@@ -488,7 +532,8 @@ struct EffectParams {
     uint32_t sizes[4];
     float p0[4], p1[4], color[4];
 };
-static_assert(sizeof(DrawParams) == 96 && sizeof(TransitionParams) == 64 && sizeof(EffectParams) == 64);
+static_assert(sizeof(DrawParams) == 96 && sizeof(RectParams) == 48 && sizeof(TransitionParams) == 64 &&
+              sizeof(EffectParams) == 64);
 
 class MetalFrame final : public GpuFrame {
     struct Surface {
@@ -816,6 +861,46 @@ class MetalFrame final : public GpuFrame {
             dispatch(enc, device_.fill, dst->w, dst->h);
             work::addCopy(uint64_t(dst->w) * dst->h);
         }
+    }
+
+    bool rasterize(const std::shared_ptr<Image>& dst, const DrawList& list, float scale) override {
+        bool hasRects = false;
+        for (const auto& cmd : list.cmds) {
+            if (cmd.type != DrawCmd::Type::Clear && cmd.type != DrawCmd::Type::Rect) return false;
+            hasRects |= cmd.type == DrawCmd::Type::Rect;
+        }
+        @autoreleasepool {
+            if (!valid_ || dst->empty()) return true;
+            id<MTLComputePipelineState> pipeline = hasRects ? device_.rectanglePipeline() : nil;
+            if (hasRects && !pipeline) return false;
+            for (const auto& cmd : list.cmds) {
+                if (cmd.type == DrawCmd::Type::Clear) {
+                    fill(dst, cmd.color);
+                    continue;
+                }
+                if (cmd.color.a <= 0) continue;
+                float x = cmd.a * scale, y = cmd.b * scale, w = cmd.c * scale, h = cmd.d * scale;
+                float left = std::min(x, x + w), right = std::max(x, x + w);
+                float top = std::min(y, y + h), bottom = std::max(y, y + h);
+                if (!std::isfinite(left) || !std::isfinite(right) || !std::isfinite(top) || !std::isfinite(bottom) ||
+                    left >= right || top >= bottom) continue;
+                int x0 = int(std::clamp(std::floor(left), 0.0f, float(dst->w)));
+                int x1 = int(std::clamp(std::ceil(right), 0.0f, float(dst->w)));
+                int y0 = int(std::clamp(std::floor(top), 0.0f, float(dst->h)));
+                int y1 = int(std::clamp(std::ceil(bottom), 0.0f, float(dst->h)));
+                if (x0 >= x1 || y0 >= y1) continue;
+                RectParams p{{uint32_t(dst->w), uint32_t(dst->h), uint32_t(x0), uint32_t(y0)},
+                             {left, top, right, bottom}, {cmd.color.r, cmd.color.g, cmd.color.b, cmd.color.a}};
+                id<MTLBuffer> out = buffer(dst);
+                if (!valid_) return true;
+                id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
+                [enc setBuffer:out offset:0 atIndex:0];
+                [enc setBytes:&p length:sizeof p atIndex:1];
+                dispatch(enc, pipeline, x1 - x0, y1 - y0);
+                work::addRaster(uint64_t(x1 - x0) * (y1 - y0));
+            }
+        }
+        return true;
     }
 
     void drawLayer(const std::shared_ptr<Image>& dst, ImagePtr src, const Placement& at, float opacity,

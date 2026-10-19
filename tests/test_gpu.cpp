@@ -1,6 +1,7 @@
 #include "engine/frame_renderer.hpp"
 #include "model/edit.hpp"
 #include "render/gpu.hpp"
+#include "render/raster.hpp"
 
 #include <gtest/gtest.h>
 
@@ -265,4 +266,67 @@ TEST_F(GpuRendering, AlignedSolidsMatchRasterizedColorsAcrossClippingAndBlends) 
                     EXPECT_EQ(actual->px, expected->px);
                 }
     }
+}
+
+TEST_F(GpuRendering, GeneratorRectanglesMatchCpuCoverageAndCommandOrder) {
+    for (float scale : {.5f, 1.0f, 2.0f})
+        for (bool clear : {false, true}) {
+            DrawList list;
+            if (clear) list.cmds.push_back({DrawCmd::Type::Clear, 0, 0, 0, 0, 0, Color{.1f, .3f, .6f, .7f}});
+            for (const auto& rect : {std::array<float, 4>{-3.7f, 2.125f, 13.4f, 8.6f},
+                                     {13.75f, 17.25f, -9.5f, -7.125f}, {15.8f, -3.9f, .3f, 11.75f},
+                                     {2, 2, 20, 13}, {7.125f, 8.375f, 6.625f, .25f}})
+                for (Color color : {Color{.9f, .3f, .6f, .4f}, Color{.2f, .7f, .4f, 1}})
+                    list.cmds.push_back({DrawCmd::Type::Rect, rect[0], rect[1], rect[2], rect[3], 0, color});
+            auto actual = std::make_shared<Image>(37, 29);
+            fill(*actual, Color{.2f, .4f, .6f, .7f});
+            Image expected = *actual;
+            drawList(expected, list, scale);
+            auto gpu = createGpuFrame();
+            ASSERT_TRUE(gpu->rasterize(actual, list, scale));
+            ASSERT_TRUE(gpu->finish(actual));
+            expectNear(*actual, expected, 2);
+        }
+}
+
+TEST_F(GpuRendering, UnsupportedGeneratorListsEncodeNoPartialRaster) {
+    auto actual = pattern(13, 9);
+    const Image expected = *actual;
+    DrawList list;
+    list.cmds.push_back({DrawCmd::Type::Clear, 0, 0, 0, 0, 0, Color{1, 0, 0, 1}});
+    list.cmds.push_back({DrawCmd::Type::Circle, 5, 5, 3, 0, 0, Color{0, 1, 0, 1}});
+    auto gpu = createGpuFrame();
+    EXPECT_FALSE(gpu->rasterize(actual, list, 1));
+    ASSERT_TRUE(gpu->finish(actual));
+    EXPECT_EQ(actual->px, expected.px);
+}
+
+TEST_F(GpuRendering, GeneratorRasterAndUnsupportedEffectsKeepCpuFallbackConsistent) {
+    for (auto [w, h] : {std::pair{64, 32}, std::pair{320, 240}})
+        for (const char* generator : {"rects", "circles"})
+            for (const char* effect : {"none", "threshold", "drop_shadow"}) {
+                SCOPED_TRACE(::testing::Message() << generator << ' ' << effect);
+                Project project = Project::makeDefault();
+                project.settings.width = w;
+                project.settings.height = h;
+                project.script = R"(
+                    mf.generator("rects", function(g) g:rect(3.25, 4.75, g.w - 20.5, g.h - 14.875, hsv(0.7, 0.6, 0.9, 0.7)) end)
+                    mf.generator("circles", function(g) g:clear(gray(0.2)); g:circle(28, 16, 12, hsv(0.4, 0.5, 0.8)) end)
+                )";
+                Clip clip;
+                clip.kind = ClipKind::Generator;
+                clip.track = project.findTrackByName("V1")->id;
+                clip.duration = 2;
+                Id id = edit::addClip(project, clip);
+                edit::setPropConstant(project, id, "generator", std::string(generator));
+                if (std::string_view(effect) != "none") edit::addEffect(project, id, false, effect);
+                MediaCache cache;
+                FrameRenderer cpu(cache, RenderBackend::Cpu), metal(cache, RenderBackend::Metal);
+                Evaluator evaluator;
+                evaluator.setProject(project);
+                auto expected = cpu.render(evaluator, 0, w, h);
+                auto actual = metal.render(evaluator, 0, w, h);
+                ASSERT_TRUE(metal.usedGpuLastFrame());
+                expectNear(*actual, *expected, 2);
+            }
 }
