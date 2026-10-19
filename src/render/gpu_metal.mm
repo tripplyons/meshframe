@@ -193,6 +193,21 @@ kernel void blur_rows(device const uchar4* src [[buffer(0)]], device uchar4* dst
     dst[group.y * p.x + x] = uchar4(float4(sum) * (1.0f / float(2 * p.z + 1)) + 0.5f);
 }
 
+kernel void transpose_image(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
+                            constant uint2& size [[buffer(2)]], uint2 tid [[thread_position_in_threadgroup]],
+                            uint2 group [[threadgroup_position_in_grid]]) {
+    threadgroup uchar4 tile[32][33];
+    uint2 input = group * 32 + tid;
+    for (uint j = 0; j < 32; j += 8)
+        if (input.x < size.x && input.y + j < size.y)
+            tile[tid.y + j][tid.x] = src[(input.y + j) * size.x + input.x];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint2 output = group.yx * 32 + tid;
+    for (uint j = 0; j < 32; j += 8)
+        if (output.x < size.y && output.y + j < size.x)
+            dst[(output.y + j) * size.y + output.x] = tile[tid.x][tid.y + j];
+}
+
 kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
                          constant EffectParams& p [[buffer(2)]], device packed_uint3* counts [[buffer(3)]],
                          uint2 xy [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
@@ -255,7 +270,7 @@ kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* 
 struct Device {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
-    id<MTLComputePipelineState> fill, draw, transition, blur, blurRows, effect;
+    id<MTLComputePipelineState> fill, draw, transition, blur, blurRows, transpose, effect;
     std::string error;
 
     Device() {
@@ -283,12 +298,13 @@ struct Device {
             transition = pipeline(@"transition_image");
             blur = pipeline(@"blur_image");
             blurRows = pipeline(@"blur_rows");
+            transpose = pipeline(@"transpose_image");
             effect = pipeline(@"effect_image");
-            if (!fill || !draw || !transition || !blur || !blurRows || !effect)
+            if (!fill || !draw || !transition || !blur || !blurRows || !transpose || !effect)
                 error = err ? err.localizedDescription.UTF8String : "cannot create Metal pipeline";
         }
     }
-    bool available() const { return fill && draw && transition && blur && blurRows && effect; }
+    bool available() const { return fill && draw && transition && blur && blurRows && transpose && effect; }
 };
 
 Device& sharedDevice() {
@@ -402,6 +418,23 @@ class MetalFrame final : public GpuFrame {
         return result;
     }
 
+    void transpose(id<MTLBuffer> in, id<MTLBuffer> out, int w, int h) {
+        id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
+        if (!enc) {
+            valid_ = false;
+            return;
+        }
+        uint32_t size[2] = {uint32_t(w), uint32_t(h)};
+        [enc setComputePipelineState:device_.transpose];
+        [enc setBuffer:in offset:0 atIndex:0];
+        [enc setBuffer:out offset:0 atIndex:1];
+        [enc setBytes:size length:sizeof size atIndex:2];
+        [enc dispatchThreadgroups:MTLSizeMake((w + 31) / 32, (h + 31) / 32, 1)
+           threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+        [enc endEncoding];
+        work::addCopy(uint64_t(w) * h);
+    }
+
     void effect(ImagePtr image, const GpuEffect& e, double unit, PixelBox content) {
         Surface& surface = surfaces_.at(image.get());
         auto n = [&](std::string_view name, double fallback) { return asNumber(e.params(name), fallback); };
@@ -416,11 +449,24 @@ class MetalFrame final : public GpuFrame {
             const size_t lanes = device_.blurRows.threadExecutionWidth;
             const bool prefixRows = r >= 4 && r <= 32 && lanes >= 32 && 128 % lanes == 0 &&
                                     device_.blurRows.maxTotalThreadsPerThreadgroup >= 128;
+            // Transpose larger images so column prefixes also read contiguous
+            // memory. Small images avoid the two extra dispatches.
+            const bool transposeCols = prefixRows && uint64_t(w) * h >= 65536 &&
+                                       device_.transpose.maxTotalThreadsPerThreadgroup >= 256;
+            int width = w, height = h;
             for (int pass = 0; pass < 6; ++pass) {
-                id<MTLBuffer> out = pass % 2 ? b : a;
-                const bool prefix = prefixRows && pass < 3;
-                uint32_t params[4] = {uint32_t(w), uint32_t(h), uint32_t(r),
-                                      uint32_t(prefix ? lanes : pass < 3)};
+                if (pass == 3 && transposeCols) {
+                    id<MTLBuffer> out = in == a ? b : a;
+                    transpose(in, out, width, height);
+                    if (!valid_) return;
+                    in = out;
+                    std::swap(width, height);
+                }
+                id<MTLBuffer> out = in == a ? b : a;
+                const bool horizontal = pass < 3 || transposeCols;
+                const bool prefix = prefixRows && horizontal;
+                uint32_t params[4] = {uint32_t(width), uint32_t(height), uint32_t(r),
+                                      uint32_t(prefix ? lanes : horizontal)};
                 id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
                 if (!enc) {
                     valid_ = false;
@@ -430,20 +476,27 @@ class MetalFrame final : public GpuFrame {
                 [enc setBuffer:out offset:0 atIndex:1];
                 [enc setBytes:params length:sizeof params atIndex:2];
                 if (prefix) {
-                    const size_t groups = (w + 127 - 2 * r) / (128 - 2 * r);
+                    const size_t groups = (width + 127 - 2 * r) / (128 - 2 * r);
                     [enc setComputePipelineState:device_.blurRows];
-                    [enc dispatchThreadgroups:MTLSizeMake(groups, h, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+                    [enc dispatchThreadgroups:MTLSizeMake(groups, height, 1)
+                       threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
                     [enc endEncoding];
                     // Seed each prefix, count scan/carry additions, then the
                     // subtraction for every window except the tile's first.
                     size_t steps = 128;
                     for (size_t stride = 1; stride < lanes; stride *= 2) steps += (lanes - stride) * (128 / lanes);
                     for (size_t simd = 1; simd < 128 / lanes; ++simd) steps += simd * lanes;
-                    work::addBlur(uint64_t(h) * (groups * steps + w - groups));
+                    work::addBlur(uint64_t(height) * (groups * steps + width - groups));
                 } else {
-                    dispatch(enc, device_.blur, w, h);
+                    dispatch(enc, device_.blur, width, height);
                     work::addBlur(uint64_t(w) * h * (2 * r + 1));
                 }
+                in = out;
+            }
+            if (transposeCols) {
+                id<MTLBuffer> out = in == a ? b : a;
+                transpose(in, out, width, height);
+                if (!valid_) return;
                 in = out;
             }
             surface.buffer = in;
