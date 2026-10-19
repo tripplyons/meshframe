@@ -36,6 +36,9 @@ if [[ ! -f bench/media/clip_a.mp4 ]]; then
 fi
 
 log "checking the rendered frames against the pinned digests"
-"./$build/meshframe_bench" --frames 60 --expect bench/expected_digests.txt >&2
+"./$build/meshframe_bench" --backend cpu --frames 60 --expect bench/expected_digests.txt >&2
+
+log "checking the automatic backend against the CPU reference"
+"./$build/meshframe_bench" --frames 60 --compare-cpu >&2
 
 log "ok"

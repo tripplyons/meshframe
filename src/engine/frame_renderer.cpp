@@ -30,6 +30,23 @@ bool isPlacementProp(std::string_view name) {
     return std::ranges::any_of(kPlacement, [&](std::string_view p) { return p == name; });
 }
 
+bool gpuEffectsFor(Evaluator& ev, const Clip& c, double unit) {
+    if (c.kind != ClipKind::Media && c.kind != ClipKind::Generator) return false;
+    bool any = false;
+    for (const auto& e : c.videoEffects) {
+        if (!e.enabled) continue;
+        any = true;
+        if (e.type == "blur") {
+            // Large radii still use the CPU's linear-time running sum.
+            if (asNumber(ev.effectParams(e, false)("radius"), 4) * unit > 64) return false;
+        } else if (e.type != "brightness_contrast" && e.type != "saturation" && e.type != "invert" &&
+                   e.type != "tint" && e.type != "vignette" && e.type != "crop" && e.type != "mask") {
+            return false;
+        }
+    }
+    return any;
+}
+
 void appendNumber(std::string& key, double v) {
     char buf[40];
     std::snprintf(buf, sizeof buf, "%.17g", v);
@@ -112,6 +129,7 @@ struct CachedLayer {
     std::string key;
     std::shared_ptr<Image> image;
     double offsetX = 0, offsetY = 0, displayW = 0, displayH = 0;
+    bool opaque = false;
 };
 
 std::mutex& layerCacheMutex() {
@@ -127,29 +145,12 @@ std::vector<CachedLayer>& layerCache() {
 
 constexpr size_t kLayerCacheSize = 16;
 
-// A layer built by content() is fully opaque when every one of its pixels has
-// alpha 255. Layers that only rearrange colour keep that property; a mask, a
-// crop, or a drop shadow can clear a pixel, so they do not.
-bool g_contentOpaque = false;
-
-// render() hands the canvas to its layers zeroed and defers the background fill
-// until it meets a layer that cannot leave any pixel showing. A layer that
-// covers the whole canvas opaquely with a plain normal blend overwrites every
-// pixel regardless of what was underneath, so the fill is dead work.
-bool g_fillBackground = false;
-Color g_background{};
-
 // Whether every pixel of img has alpha 255.
 bool fullyOpaque(const Image& img) {
     for (size_t i = 3; i < img.px.size(); i += 4)
         if (img.px[i] != 255) return false;
     return true;
 }
-
-// Set by content() when the clip is a solid colour: its pixels are one
-// repeated pixel and only have to be built if an effect needs to read them.
-bool g_solidLayer = false;
-Color g_solidColor{};
 
 // Draws a text clip's lines with their alignment, over an outline when it
 // has one. `unit` converts project pixels to image pixels.
@@ -316,19 +317,25 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
         }
         case ClipKind::Synth: break;
     }
-    g_contentOpaque = opaque;
-    g_solidLayer = solidLayer;
-    g_solidColor = solidColor;
+    layer.opaque = opaque;
+    layer.solid = solidLayer;
+    layer.color = solidColor;
     return layer;
 }
 
-bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t, double unit, bool useBlend, int padX, int padY) {
+bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target, const Clip& c, double t, double unit,
+                             bool useBlend, GpuFrame* gpu, int padX, int padY) {
+    Image& dst = *target;
     const int layerW = dst.w - 2 * padX, layerH = dst.h - 2 * padY;
     // A generator's pixels come straight out of its script, so it is rebuilt
     // every frame; every other kind is reused while its key holds.
     const bool reusable = c.kind != ClipKind::Generator;
+    const bool gpuEffects = gpu && gpuEffectsFor(ev, c, unit);
     std::string key;
-    if (reusable) key = layerKey(ev, c, unit, layerW, layerH, t);
+    if (reusable) {
+        key = layerKey(ev, c, unit, layerW, layerH, t);
+        key.push_back(gpuEffects ? 'g' : 'c');
+    }
 
     Layer layer;
     bool hit = false;
@@ -341,6 +348,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
             layer.image = cache[i].image;
             layer.offsetX = cache[i].offsetX, layer.offsetY = cache[i].offsetY;
             layer.displayW = cache[i].displayW, layer.displayH = cache[i].displayH;
+            alphaKept = cache[i].opaque;
             hit = true;
             if (i) {
                 CachedLayer found = std::move(cache[i]);
@@ -352,8 +360,8 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
     }
     if (!layer.image) {
         layer = content(ev, c, t, unit, layerW, layerH);
-        bool solid = g_solidLayer;
-        Color solidColor = g_solidColor;
+        bool solid = layer.solid;
+        Color solidColor = layer.color;
         bool wantsPixels = false;
         for (const auto& e : c.videoEffects)
             if (e.enabled) wantsPixels = true;
@@ -367,7 +375,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
         } else if (layer.image->empty()) {
             return false;
         }
-        alphaKept = g_contentOpaque;
+        alphaKept = layer.opaque;
         for (const auto& e : c.videoEffects)
             if (e.enabled && (e.type == "mask" || e.type == "crop" || e.type == "drop_shadow")) alphaKept = false;
         if (!layer.image) {
@@ -406,7 +414,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
             layer.image = std::move(padded);
         }
         for (const auto& e : c.videoEffects) {
-            if (!e.enabled) continue;
+            if (!e.enabled || gpuEffects) continue;
             auto params = ev.effectParams(e, false);
             if (c.kind == ClipKind::Path && e.type == "mask") {
                 // Mask x/y use the object's origin, even when the path bounds are off-center.
@@ -426,8 +434,14 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
         std::vector<CachedLayer>& cache = layerCache();
         std::erase_if(cache, [&](const CachedLayer& e) { return e.clip == c.id; });
         cache.insert(cache.begin(), CachedLayer{c.id, std::move(key), layer.image, layer.offsetX, layer.offsetY,
-                                                layer.displayW, layer.displayH});
+                                                layer.displayW, layer.displayH, alphaKept});
         if (cache.size() > kLayerCacheSize) cache.resize(kLayerCacheSize);
+    }
+    if (gpuEffects && layer.image) {
+        std::vector<GpuEffect> effects;
+        for (const auto& e : c.videoEffects) if (e.enabled) effects.push_back({e.type, ev.effectParams(e, false)});
+        double effectUnit = unit * layer.image->w / layer.displayW;
+        gpu->applyEffects(layer.image, effects, effectUnit, PixelBox{0, 0, layer.image->w, layer.image->h});
     }
     double scale = ev.num(c, "scale", 1);
     Placement at;
@@ -462,8 +476,8 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
     at.sy = scale * layer.displayH / solidH;
     float opacity = float(std::clamp(ev.num(c, "opacity", 1), 0.0, 1.0));
     Blend mode = useBlend ? parseBlend(ev.str(c, "blend")) : Blend::Normal;
-    if (useBlend && g_fillBackground) {
-        g_fillBackground = false;
+    if (useBlend && fillBackground_) {
+        fillBackground_ = false;
         // drawLayer's nearest-neighbour path takes the source alpha verbatim, so
         // an opaque layer there reaches blendPixel with sa exactly 1: the normal
         // blend then discards the destination and writes the source colour, and
@@ -473,13 +487,16 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
         double ox = at.cx - halfW, oy = at.cy - halfH;
         bool covers = at.cx - halfW <= 0 && at.cy - halfH <= 0 && at.cx + halfW >= dst.w && at.cy + halfH >= dst.h;
         bool exact = at.rotation == 0 && at.sx == 1 && at.sy == 1 && ox == std::floor(ox) && oy == std::floor(oy);
-        if (!(alphaKept && covers && exact && opacity >= 1 && mode == Blend::Normal)) fill(dst, g_background);
+        if (!(alphaKept && covers && exact && opacity >= 1 && mode == Blend::Normal)) fill(dst, background_);
     }
-    if (layer.image) drawLayer(dst, *layer.image, at, opacity, mode);
-    else if (!drawSolidLayer(dst, at, solidW, solidH, g_solidColor, opacity, mode)) {
+    if (gpu) {
+        if (layer.image) gpu->drawLayer(target, layer.image, at, opacity, mode);
+        else gpu->drawSolid(target, solidW, solidH, layer.color, at, opacity, mode);
+    } else if (layer.image) drawLayer(dst, *layer.image, at, opacity, mode);
+    else if (!drawSolidLayer(dst, at, solidW, solidH, layer.color, opacity, mode)) {
         // The placement resamples between texels, so build the pixels after all.
         auto image = std::make_shared<Image>(solidW, solidH);
-        fill(*image, g_solidColor);
+        fill(*image, layer.color);
         drawLayer(dst, *image, at, opacity, mode);
     }
     return true;
@@ -487,24 +504,43 @@ bool FrameRenderer::drawClip(Evaluator& ev, Image& dst, const Clip& c, double t,
 
 std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, double t, double scale, int padX, int padY) {
     ev.setTime(t);
-    g_fillBackground = false;  // a clip preview is drawn over transparency
+    fillBackground_ = false;  // a clip preview is drawn over transparency
     const auto& st = ev.project().settings;
     int w = std::max(2, int(std::lround(st.width * scale))), h = std::max(2, int(std::lround(st.height * scale)));
+    auto gpu = backend_ != RenderBackend::Cpu && (backend_ == RenderBackend::Metal || int64_t(w) * h >= 262144)
+                   ? createGpuFrame() : nullptr;
     auto canvas = std::make_shared<Image>(w + 2 * padX, h + 2 * padY);
-    drawClip(ev, *canvas, c, t, double(w) / st.width, false, padX, padY);
+    if (gpu) gpu->fill(canvas, Color{0, 0, 0, 0});
+    drawClip(ev, canvas, c, t, double(w) / st.width, false, gpu.get(), padX, padY);
+    usedGpu_ = gpu && gpu->finish(canvas);
+    gpuSeconds_ = usedGpu_ ? gpu->elapsedSeconds() : 0;
+    if (gpu && !usedGpu_) {
+        canvas = std::make_shared<Image>(w + 2 * padX, h + 2 * padY);
+        drawClip(ev, canvas, c, t, double(w) / st.width, false, nullptr, padX, padY);
+    }
     ev.refreshOutputs();
     return canvas;
 }
 
 std::shared_ptr<Image> FrameRenderer::render(Evaluator& ev, double t, int w, int h) {
+    auto gpu = backend_ != RenderBackend::Cpu && (backend_ == RenderBackend::Metal || int64_t(w) * h >= 262144)
+                   ? createGpuFrame() : nullptr;
+    auto canvas = renderFrame(ev, t, w, h, gpu.get());
+    usedGpu_ = gpu && gpu->finish(canvas);
+    gpuSeconds_ = usedGpu_ ? gpu->elapsedSeconds() : 0;
+    return gpu && !usedGpu_ ? renderFrame(ev, t, w, h, nullptr) : canvas;
+}
+
+std::shared_ptr<Image> FrameRenderer::renderFrame(Evaluator& ev, double t, int w, int h, GpuFrame* gpu) {
     ev.setTime(t);
     const Project& p = ev.project();
     double unit = double(w) / p.settings.width;
     auto canvas = std::make_shared<Image>(w, h);
     // The canvas starts zeroed; drawClip lays the background down only if the
     // first layer cannot cover the whole frame on its own.
-    g_background = p.settings.background;
-    g_fillBackground = true;
+    background_ = p.settings.background;
+    fillBackground_ = !gpu;
+    if (gpu) gpu->fill(canvas, background_);
 
     for (const auto& track : p.tracks) {
         if (track.kind != TrackKind::Video || track.hidden) continue;
@@ -524,30 +560,34 @@ std::shared_ptr<Image> FrameRenderer::render(Evaluator& ev, double t, int w, int
                 if (t >= ws && t < we) active = &tr;
             }
             if (!active) {
-                drawClip(ev, *canvas, *c, t, unit, true);
+                drawClip(ev, canvas, *c, t, unit, true, gpu);
                 continue;
             }
             const Clip* a = p.findClip(active->clipA);
             const Clip* b = p.findClip(active->clipB);
             if (!a || !b) continue;
-            Image bufA(w, h), bufB(w, h), mixed;
-            drawClip(ev, bufA, *a, t, unit, false);
-            drawClip(ev, bufB, *b, t, unit, false);
-            mixTransition(mixed, bufA, bufB, active->type, ev.transitionMix(*active), ev.transitionParams(*active));
+            auto bufA = std::make_shared<Image>(w, h), bufB = std::make_shared<Image>(w, h);
+            auto mixed = std::make_shared<Image>(w, h);
+            if (gpu) { gpu->fill(bufA, Color{0, 0, 0, 0}); gpu->fill(bufB, Color{0, 0, 0, 0}); }
+            drawClip(ev, bufA, *a, t, unit, false, gpu);
+            drawClip(ev, bufB, *b, t, unit, false, gpu);
+            if (gpu) gpu->transition(mixed, bufA, bufB, active->type, ev.transitionMix(*active), ev.transitionParams(*active));
+            else mixTransition(*mixed, *bufA, *bufB, active->type, ev.transitionMix(*active), ev.transitionParams(*active));
             // A mixed frame is not a single opaque layer, so it needs the
             // background laid down before it blends.
-            if (g_fillBackground) {
-                fill(*canvas, g_background);
-                g_fillBackground = false;
+            if (fillBackground_) {
+                fill(*canvas, background_);
+                fillBackground_ = false;
             }
-            drawLayer(*canvas, mixed, Placement{w / 2.0, h / 2.0}, 1, parseBlend(ev.str(*b, "blend")));
+            if (gpu) gpu->drawLayer(canvas, mixed, Placement{w / 2.0, h / 2.0}, 1, parseBlend(ev.str(*b, "blend")));
+            else drawLayer(*canvas, *mixed, Placement{w / 2.0, h / 2.0}, 1, parseBlend(ev.str(*b, "blend")));
             done.push_back(a->id);
             done.push_back(b->id);
         }
     }
-    if (g_fillBackground) {
-        fill(*canvas, g_background);
-        g_fillBackground = false;
+    if (fillBackground_) {
+        fill(*canvas, background_);
+        fillBackground_ = false;
     }
     ev.refreshOutputs();
     return canvas;

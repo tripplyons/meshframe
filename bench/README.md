@@ -6,10 +6,10 @@ integer counters from `src/core/work_counter.hpp`: pixels blended, source
 samples, blur accumulator steps, pixels copied, raster and glyph pixels, decoded
 frames, and so on. Their sum is the score.
 
-The counters are integers summed over every thread, so the same code reports the
-same totals on every run, whatever the thread pool did. Wall clock moves with
-CPU frequency, scheduling, and cache state, so the benchmark prints it to stderr
-as a diagnostic and never scores it.
+The counters are integers summed over every thread and GPU threadgroup, so the
+same code and backend report the same totals on every run. The CPU campaign
+scripts score this deterministic work. GPU throughput differs from CPU
+throughput, so compare backend speed with repeated rendering times instead.
 
 Correctness is a digest: `--expect bench/expected_digests.txt` hashes every
 rendered frame and fails unless the frames are bit-identical to the ones at that
@@ -39,6 +39,32 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMESHFRAME_BENCH=ON
 cmake --build build
 bench/make-media.sh                 # once, needs ffmpeg
 bench/projects/make-projects.sh     # only when the projects need to change
-./build/meshframe_bench --frames 60 --expect bench/expected_digests.txt
-./build/meshframe_bench --frames 60 --json    # the score on stdout
+./build/meshframe_bench --backend cpu --frames 60 --expect bench/expected_digests.txt
+./build/meshframe_bench --backend cpu --frames 60 --json  # deterministic CPU work
+./build/meshframe_bench --backend metal --frames 60 --json
+./build/meshframe_bench --frames 60 --compare-cpu --json
 ```
+
+The automatic backend uses Metal on macOS for frames of at least 262,144
+pixels and keeps smaller previews on the CPU. Metal composites a whole frame
+in one command buffer, including transition surfaces. Media and generator
+layers also use GPU blur, color effects, vignette, crop, and mask. Large blur
+radii, threshold cutoffs, and cached text/path effects keep their CPU paths.
+Apple silicon shares image memory with Metal; other devices download the final
+canvas. Other platforms, unavailable devices, and failed GPU commands fall
+back to the CPU. Configure `-DMESHFRAME_METAL=OFF` to build without Metal.
+
+`--backend metal` requires actual GPU rendering and fails if any frame falls
+back. `--compare-cpu` renders a CPU reference for every frame and reports the
+maximum and mean absolute RGBA channel error. It fails above three channel
+levels. This permits rounding differences from parallel floating-point math.
+The pinned digests remain the exact CPU reference.
+
+Use `render_seconds` to compare rendering speed; it excludes frame hashing and
+CPU-reference comparisons. Each JSON result includes the backend and number of
+GPU frames. `gpu_seconds` reports hardware execution time, which helps separate
+kernel cost from CPU preparation and synchronization. The integer work counts
+describe operations on each backend, not
+their relative speed: parallel GPU sampling may perform more taps than the
+CPU's sample caches while finishing sooner. Do timing comparisons without
+`--compare-cpu`, and alternate backend order across repeated runs.

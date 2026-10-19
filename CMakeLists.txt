@@ -10,6 +10,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(MESHFRAME_TESTS "Build tests" ON)
+option(MESHFRAME_METAL "Accelerate rendering with Metal on macOS" ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(SDL3 CONFIG REQUIRED)
@@ -28,6 +29,13 @@ file(GLOB_RECURSE MF_CORE_SOURCES CONFIGURE_DEPENDS
   src/core/*.cpp src/model/*.cpp src/engine/*.cpp src/script/*.cpp src/media/*.cpp
   src/render/*.cpp src/audio/*.cpp src/exporter/*.cpp src/session/*.cpp)
 add_library(meshframe_core STATIC ${MF_CORE_SOURCES})
+if(APPLE AND MESHFRAME_METAL)
+  enable_language(OBJCXX)
+  target_sources(meshframe_core PRIVATE src/render/gpu_metal.mm)
+  set_source_files_properties(src/render/gpu_metal.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(meshframe_core PUBLIC "-framework Foundation" "-framework Metal")
+  target_compile_definitions(meshframe_core PRIVATE MF_METAL=1)
+endif()
 target_include_directories(meshframe_core PUBLIC src)
 target_compile_options(meshframe_core PRIVATE ${MF_WARNINGS})
 target_link_libraries(meshframe_core PUBLIC

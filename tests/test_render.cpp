@@ -183,6 +183,40 @@ TEST(Render, AlignedLayerBlendsAlphaOpacityAndModes) {
     }
 }
 
+TEST(Render, ImageStorageSurvivesCopiesMovesAndResizes) {
+    Image original(65, 33);
+    for (size_t i = 0; i < original.px.size(); ++i) original.px[i] = uint8_t(i * 73);
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(original.px.data()) % detail::pixelAlignment(), 0u);
+    Image copy = original;
+    EXPECT_EQ(copy.px, original.px);
+    EXPECT_NE(copy.px.data(), original.px.data());
+    Image moved = std::move(copy);
+    EXPECT_EQ(moved.px, original.px);
+    moved.resize(257, 127);
+    EXPECT_EQ(moved.bytes(), size_t(257 * 127 * 4));
+    EXPECT_TRUE(std::ranges::all_of(moved.px, [](uint8_t v) { return v == 0; }));
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(moved.px.data()) % detail::pixelAlignment(), 0u);
+    moved.resize(1, 1);
+    EXPECT_EQ(moved.px.size(), 4u);
+    EXPECT_TRUE(std::ranges::all_of(moved.px, [](uint8_t v) { return v == 0; }));
+}
+
+TEST(Render, NegativeScaleMirrorsLayersAndSolidFallback) {
+    Image source(8, 4), actual(8, 4);
+    for (int y = 0; y < source.h; ++y)
+        for (int x = 0; x < source.w; ++x) {
+            auto* p = source.at(x, y);
+            p[0] = uint8_t(x * 30);
+            p[1] = uint8_t(y * 60);
+            p[3] = 255;
+        }
+    drawLayer(actual, source, Placement{4, 2, -1, -1}, 1, Blend::Normal);
+    for (int y = 0; y < actual.h; ++y)
+        for (int x = 0; x < actual.w; ++x)
+            for (int c = 0; c < 4; ++c) EXPECT_EQ(actual.at(x, y)[c], source.at(7 - x, 3 - y)[c]);
+    EXPECT_FALSE(drawSolidLayer(actual, Placement{4, 2, -1, 1}, 8, 4, Color{1, 0, 0, 1}, 1, Blend::Normal));
+}
+
 TEST(Render, VideoEffects) {
     Fixture f;
     auto with = [&](Color c, const char* type, std::vector<std::pair<const char*, Value>> props) {

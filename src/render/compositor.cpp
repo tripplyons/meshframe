@@ -277,7 +277,7 @@ void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity,
     // row instead of two. A rotated layer gains nothing from whole-row buffers:
     // its source row drifts within the row as well, so they refill constantly.
     // Weights differ per destination pixel, so this caches texels, never values.
-    bool keepRows = at.rotation == 0;
+    bool keepRows = at.rotation == 0 && at.sx > 0;
     int colLo = 0, colHi = -1;
     if (keepRows) {
         auto uAt = [&](int x) { return (x + 0.5 - at.cx) * cs / at.sx + hw - 0.5; };
@@ -427,7 +427,7 @@ void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity,
 }
 
 bool drawSolidLayer(Image& dst, const Placement& at, int w, int h, Color c, float opacity, Blend blend) {
-    if (dst.empty() || w <= 0 || h <= 0 || opacity <= 0 || at.sx <= 0 || at.sy <= 0) return true;
+    if (dst.empty() || w <= 0 || h <= 0 || opacity <= 0 || at.sx == 0 || at.sy == 0) return true;
     uint8_t px[4] = {u8(c.r * c.a * 255), u8(c.g * c.a * 255), u8(c.b * c.a * 255), u8(c.a * 255)};
     if (!px[3]) return true;
     double hw = w / 2.0, hh = h / 2.0;

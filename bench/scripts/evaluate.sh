@@ -30,7 +30,7 @@ if [[ ! -f bench/media/clip_a.mp4 ]]; then
 fi
 
 log "rendering the benchmark projects"
-"./$build/meshframe_bench" --frames 60 --json | python3 -c '
+"./$build/meshframe_bench" --backend cpu --frames 60 --json | python3 -c '
 import json, sys
 line = sys.stdin.read().strip()
 bench = json.loads(line)
