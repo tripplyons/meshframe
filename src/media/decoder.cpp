@@ -16,6 +16,7 @@ extern "C" {
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <tuple>
 
 namespace mf {
 
@@ -239,15 +240,18 @@ bool VideoDecoder::open(const std::string& path, int maxW, int maxH, std::string
     startTime_ = st->start_time != AV_NOPTS_VALUE ? st->start_time * timeBase_ : 0;
     AVRational r = st->avg_frame_rate.num ? st->avg_frame_rate : st->r_frame_rate;
     frameDur_ = r.num && r.den ? 1.0 / av_q2d(r) : 1.0 / 30;
-    int w = codec_->width, h = codec_->height;
-    double scale = std::min({1.0, double(maxW) / w, double(maxH) / h});
-    outW_ = std::max(2, int(std::lround(w * scale)) & ~1);
-    outH_ = std::max(2, int(std::lround(h * scale)) & ~1);
+    std::tie(outW_, outH_) = outputSize(codec_->width, codec_->height, maxW, maxH);
     pkt_ = av_packet_alloc();
     cur_ = av_frame_alloc();
     next_ = av_frame_alloc();
     fmt_ = fmt.release();
     return true;
+}
+
+std::pair<int, int> VideoDecoder::outputSize(int sourceW, int sourceH, int maxW, int maxH) {
+    double scale = std::min({1.0, double(maxW) / sourceW, double(maxH) / sourceH});
+    return {std::max(2, int(std::lround(sourceW * scale)) & ~1),
+            std::max(2, int(std::lround(sourceH * scale)) & ~1)};
 }
 
 bool VideoDecoder::decodeNext(AVFrame* into) {

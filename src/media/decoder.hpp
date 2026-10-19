@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
 struct AVFormatContext;
 struct AVCodecContext;
@@ -48,6 +49,7 @@ public:
     double frameDuration() const { return frameDur_; }
     int width() const { return outW_; }
     int height() const { return outH_; }
+    static std::pair<int, int> outputSize(int sourceW, int sourceH, int maxW, int maxH);
 
 private:
     bool decodeNext(AVFrame* into);

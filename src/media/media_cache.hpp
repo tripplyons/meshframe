@@ -57,7 +57,7 @@ private:
 
     void touch(const FrameKey& key);
     void insertFrame(const FrameKey& key, ImagePtr img);
-    DecoderSlot* acquireDecoder(const std::string& path, int w, int h, double t, std::string* err);
+    DecoderSlot* acquireDecoder(const FrameKey& key, int maxW, int maxH, double t, std::string* err);
     void setError(const std::string& path, std::string msg);
 
     mutable std::mutex mu_;

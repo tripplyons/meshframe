@@ -4,6 +4,7 @@
 #include "render/compositor.hpp"
 #include "render/waveform.hpp"
 #include "media/decoder.hpp"
+#include "media/media_cache.hpp"
 #include "audio/analysis.hpp"
 #include <chrono>
 #include <cmath>
@@ -22,6 +23,8 @@ int main(int argc, char** argv) {
     AudioAnalysis audio;audio.duration=600;audio.columns.resize(2048);
     for(size_t i=0;i<audio.columns.size();++i) audio.columns[i]={-.5f,.5f};
     VideoDecoder decoder;std::string error;
+    MediaCache cache; MediaSource media;
+    if(mode=="resize-cache" && !probeMedia("bench/media/clip_b.mp4",media,&error)) return 1;
     if(mode=="decode" && !decoder.open(argc>3?argv[3]:"bench/media/clip_b.mp4",1920,1080,&error)) {std::cerr<<error;return 1;}
     if(mode=="outline") drawText(image,*font,"Outlined animated title",30,120,160,Color::gray(1));
     const Image source = image;
@@ -33,6 +36,7 @@ int main(int argc, char** argv) {
         else if(mode=="outline") { image=outlineOf(source,12,Color::gray(1)); }
         else if(mode=="generator") {fill(image,Color::gray(.2));drawList(image,list,1);}
         else if(mode=="waveform") image=drawWaveform(audio,300,{});
+        else if(mode=="resize-cache") { auto f=cache.frame(media,.5,1920+(i%8)*16,1080+(i%8)*9);if(!f)return 1;image=*f; }
         else if(mode=="decode") {auto f=decoder.frameAt((i%90+.5)/30.);if(!f)return 1;image=*f;}
         else { std::cerr<<"unknown benchmark";return 1; }
     }

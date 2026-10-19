@@ -178,3 +178,21 @@ TEST(Media, CacheEvictsOverBudget) {
     for (int n = 0; n < 10; ++n) ASSERT_TRUE(cache.frame(v, n / 10.0, 64, 48));
     EXPECT_LE(cache.frameBytes(), size_t(64 * 48 * 4 * 3));
 }
+
+TEST(Media, CacheSharesEquivalentOutputSizesWithoutRoundingTwice) {
+    REQUIRE_FFMPEG();
+    MediaSource media;
+    std::string error;
+    ASSERT_TRUE(probeMedia(fixtures::countingVideo(), media, &error));
+    MediaCache cache;
+    auto original = cache.frame(media, .5, 64, 48);
+    ASSERT_TRUE(original);
+    EXPECT_EQ(cache.frame(media, .5, 4096, 4096), original);
+    EXPECT_EQ(cache.frame(media, .5, 64, 300), original);
+    auto small = cache.frame(media, .5, 32, 100);
+    ASSERT_TRUE(small);
+    EXPECT_EQ(cache.frame(media, .5, 200, 24), small);
+    EXPECT_EQ(cache.frameBytes(), original->bytes() + small->bytes());
+    // Even rounding is performed once, not again using the rounded result.
+    EXPECT_EQ(VideoDecoder::outputSize(641, 359, 500, 500), (std::pair{500, 280}));
+}

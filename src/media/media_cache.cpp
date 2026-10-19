@@ -34,13 +34,13 @@ void MediaCache::insertFrame(const FrameKey& key, ImagePtr img) {
     }
 }
 
-MediaCache::DecoderSlot* MediaCache::acquireDecoder(const std::string& path, int w, int h, double t,
+MediaCache::DecoderSlot* MediaCache::acquireDecoder(const FrameKey& key, int maxW, int maxH, double t,
                                                     std::string* err) {
     DecoderSlot* best = nullptr;
     DecoderSlot* oldest = nullptr;
     int count = 0;
     for (auto& s : decoders_) {
-        if (s->path != path || s->w != w || s->h != h) continue;
+        if (s->path != key.path || s->w != key.w || s->h != key.h) continue;
         ++count;
         if (s->busy) continue;
         double pos = s->dec->position();
@@ -52,10 +52,10 @@ MediaCache::DecoderSlot* MediaCache::acquireDecoder(const std::string& path, int
     if (!best) {
         auto slot = std::make_unique<DecoderSlot>();
         slot->dec = std::make_unique<VideoDecoder>();
-        slot->path = path;
-        slot->w = w;
-        slot->h = h;
-        if (!slot->dec->open(path, w, h, err)) return nullptr;
+        slot->path = key.path;
+        slot->w = key.w;
+        slot->h = key.h;
+        if (!slot->dec->open(key.path, maxW, maxH, err)) return nullptr;
         decoders_.push_back(std::move(slot));
         best = decoders_.back().get();
     }
@@ -70,7 +70,9 @@ ImagePtr MediaCache::frame(const MediaSource& m, double t, int maxW, int maxH) {
     bool still = m.kind == MediaKind::Image;
     if (still) t = 0;
     if (t < 0) t = 0;
-    FrameKey key{m.path, still ? 0 : int64_t(std::floor(t * fps + 1e-4)), maxW, maxH};
+    const auto [width, height] = m.width > 0 && m.height > 0
+        ? VideoDecoder::outputSize(m.width, m.height, maxW, maxH) : std::pair{maxW, maxH};
+    FrameKey key{m.path, still ? 0 : int64_t(std::floor(t * fps + 1e-4)), width, height};
     DecoderSlot* slot = nullptr;
     {
         std::lock_guard lock(mu_);
@@ -80,7 +82,7 @@ ImagePtr MediaCache::frame(const MediaSource& m, double t, int maxW, int maxH) {
         }
         if (errors_.contains(m.path)) return nullptr;
         std::string err;
-        slot = acquireDecoder(m.path, maxW, maxH, t, &err);
+        slot = acquireDecoder(key, maxW, maxH, t, &err);
         if (!slot) {
             errors_[m.path] = err;
             return nullptr;
