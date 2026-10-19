@@ -374,7 +374,7 @@ json revisionDiff(const Session& s, int64_t since) {
     auto base = std::ranges::find_if(revs, [&](const Revision& r) { return int64_t(r.number) == since; });
     if (base == revs.end())
         throw EditError(fmt::format("revision {} is no longer kept; the oldest is {}", since, revs.front().number));
-    json out = diffProjects(base->project, s.project());
+    json out = diffProjects(*base->project, s.project());
     json steps = json::array();
     for (auto it = std::next(base); it != revs.end(); ++it)
         steps.push_back({{"revision", it->number}, {"label", it->label}, {"source", it->source}});

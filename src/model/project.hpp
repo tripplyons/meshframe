@@ -181,6 +181,7 @@ struct Project {
     const Marker* findMarkerByName(std::string_view name) const;
     // Finds an effect in any clip chain or the master chain.
     Effect* findEffect(Id id, Clip** owner = nullptr);
+    const Effect* findEffect(Id id) const { return const_cast<Project*>(this)->findEffect(id); }
 
     static Project makeDefault();
 };

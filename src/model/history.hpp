@@ -3,6 +3,7 @@
 #include "model/project.hpp"
 
 #include <string>
+#include <memory>
 #include <vector>
 
 namespace mf {
@@ -14,6 +15,9 @@ public:
     explicit History(size_t limit = 500) : limit_(limit) {}
 
     void push(std::string label, Project before);
+    void push(std::string label, std::shared_ptr<const Project> before);
+    std::string undo(std::shared_ptr<const Project>& current);
+    std::string redo(std::shared_ptr<const Project>& current);
     bool canUndo() const { return !undo_.empty(); }
     bool canRedo() const { return !redo_.empty(); }
     // Swaps `current` with the stored state. Returns the label of the step.
@@ -27,7 +31,7 @@ public:
 private:
     struct Entry {
         std::string label;
-        Project state;
+        std::shared_ptr<const Project> state;
     };
     size_t limit_;
     std::vector<Entry> undo_;

@@ -12,7 +12,7 @@ namespace mf {
 bool Selection::hasClip(Id id) const { return std::ranges::contains(clips, id); }
 
 Session::Session(std::unique_ptr<AudioSink> sink)
-    : project_(Project::makeDefault()),
+    : project_(std::make_shared<const Project>(Project::makeDefault())),
       cache_(std::make_unique<MediaCache>()),
       evaluator_(std::make_unique<Evaluator>()),
       renderer_(std::make_unique<FrameRenderer>(*cache_)),
@@ -31,7 +31,7 @@ Session::~Session() {
 Evaluator& Session::evaluator() {
     if (evaluated_ != revision_) {
         std::string before = evaluator_->script().error ? evaluator_->script().error->message : "";
-        evaluator_->setProject(project_);
+        evaluator_->setProject(*project_);
         evaluated_ = revision_;
         const auto& err = evaluator_->script().error;
         if (err && err->message != before) log(LogLine::Level::Error, "script: " + err->message);
@@ -53,10 +53,10 @@ std::string Session::setSource(std::string source) {
 
 void Session::apply(const std::string& label, const std::function<void(Project&)>& fn) {
     if (gesture_) endGesture();
-    Project next = project_;
+    Project next = *project_;
     fn(next);
     history_.push(label, std::move(project_));
-    project_ = std::move(next);
+    project_ = std::make_shared<const Project>(std::move(next));
     changed(label);
 }
 
@@ -69,9 +69,9 @@ void Session::beginGesture(const std::string& label) {
 
 void Session::updateGesture(const std::function<void(Project&)>& fn) {
     if (!gesture_) beginGesture("edit");
-    Project next = project_;
+    Project next = *project_;
     fn(next);
-    project_ = std::move(next);
+    project_ = std::make_shared<const Project>(std::move(next));
     gestureChanged_ = true;
     changed(gestureLabel_);
 }
@@ -133,7 +133,7 @@ bool Session::redo() {
 
 void Session::newProject() {
     player_->pause();
-    project_ = Project::makeDefault();
+    project_ = std::make_shared<const Project>(Project::makeDefault());
     history_.clear();
     path_.clear();
     selection = {};
@@ -145,7 +145,7 @@ bool Session::open(const std::string& path, std::string* err) {
     try {
         Project p = loadProject(path);
         player_->pause();
-        project_ = std::move(p);
+        project_ = std::make_shared<const Project>(std::move(p));
         history_.clear();
         path_ = std::filesystem::absolute(path).string();
         selection = {};
@@ -175,7 +175,7 @@ bool Session::save(const std::string& path, std::string* err) {
         return false;
     }
     try {
-        saveProject(project_, target);
+        saveProject(*project_, target);
         path_ = std::filesystem::absolute(target).string();
         savedRevision_ = revision_;
         log(LogLine::Level::Info, "saved " + path_);
@@ -197,7 +197,7 @@ Id Session::importMedia(const std::string& path, std::string* err) {
         if (err) *err = e.what();
         return 0;
     }
-    if (m.hasAudio) cache_->audio(*project_.findMedia(id), project_.settings.sampleRate);  // decode in background
+    if (m.hasAudio) cache_->audio(*project_->findMedia(id), project_->settings.sampleRate);  // decode in background
     log(LogLine::Level::Info, "imported " + abs);
     return id;
 }
@@ -222,11 +222,11 @@ std::shared_ptr<Image> Session::renderClip(const Clip& c, double t, double scale
 }
 
 void Session::pruneSelection() {
-    std::erase_if(selection.clips, [&](Id id) { return !project_.findClip(id) && id < kScriptIdBase; });
-    if (selection.transition && !project_.findTransition(selection.transition)) selection.transition = 0;
-    if (selection.track && !project_.findTrack(selection.track)) selection.track = 0;
-    if (selection.media && !project_.findMedia(selection.media)) selection.media = 0;
-    if (selection.effect && !project_.findEffect(selection.effect)) selection.effect = 0;
+    std::erase_if(selection.clips, [&](Id id) { return !project_->findClip(id) && id < kScriptIdBase; });
+    if (selection.transition && !project_->findTransition(selection.transition)) selection.transition = 0;
+    if (selection.track && !project_->findTrack(selection.track)) selection.track = 0;
+    if (selection.media && !project_->findMedia(selection.media)) selection.media = 0;
+    if (selection.effect && !project_->findEffect(selection.effect)) selection.effect = 0;
 }
 
 void Session::log(LogLine::Level level, std::string text) {

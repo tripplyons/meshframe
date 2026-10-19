@@ -23,7 +23,7 @@ struct Revision {
     uint64_t number = 0;
     std::string label;   // the undo label, or "undo: ...", "open", and so on
     std::string source;  // "gui" or "cli"
-    Project project;
+    std::shared_ptr<const Project> project;
 };
 
 struct LogLine {
@@ -52,9 +52,10 @@ public:
     explicit Session(std::unique_ptr<AudioSink> sink = nullptr);
     ~Session();
 
-    const Project& project() const { return project_; }
+    const Project& project() const { return *project_; }
     // Effective project (with script clips), synced with the latest edits.
     Evaluator& evaluator();
+    std::shared_ptr<const Project> snapshot() const { return project_; }
     uint64_t revision() const { return revision_; }
     // The latest revisions, oldest first; the last is the current one.
     static constexpr size_t kRevisionsKept = 200;
@@ -126,13 +127,13 @@ public:
 private:
     void changed(const std::string& label);
 
-    Project project_;
+    std::shared_ptr<const Project> project_;
     History history_;
-    std::optional<Project> gesture_;
+    std::optional<std::shared_ptr<const Project>> gesture_;
     std::string gestureLabel_;
     bool gestureChanged_ = false;
     struct BatchStart {
-        Project project;
+        std::shared_ptr<const Project> project;
         History history;
         Selection selection;
         uint64_t revision;

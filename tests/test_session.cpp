@@ -1090,3 +1090,21 @@ TEST(Commands, MediaFitModes) {
     }
     EXPECT_NE(fails(c, {"prop.set", clip, "fit", "zoom"}).find("invalid value"), std::string::npos);
 }
+
+TEST(Session, SnapshotsStayImmutableAcrossEditsUndoAndBatches) {
+    Session s;
+    auto original = s.snapshot();
+    s.apply("rename", [](Project& p) { p.name = "edited"; });
+    auto edited = s.snapshot();
+    EXPECT_NE(original, edited);
+    EXPECT_NE(original->name, "edited");
+    EXPECT_EQ(s.revisions().back().project, edited);
+    s.beginBatch();
+    s.apply("batch", [](Project& p) { p.name = "batch"; });
+    s.rollbackBatch();
+    EXPECT_EQ(s.snapshot(), edited);
+    ASSERT_TRUE(s.undo());
+    EXPECT_EQ(s.snapshot(), original);
+    ASSERT_TRUE(s.redo());
+    EXPECT_EQ(s.snapshot(), edited);
+}
