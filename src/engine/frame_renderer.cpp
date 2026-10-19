@@ -181,7 +181,8 @@ std::shared_ptr<Image> renderText(Evaluator& ev, const Clip& c, Font& font, doub
 
 }  // namespace
 
-FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double t, double unit, int w, int h) {
+FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double t, double unit, int w, int h,
+                                            bool inspectOpacity) {
     work::addLayer(1);
     const Project& p = ev.project();
     Layer layer;
@@ -211,7 +212,8 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
             ImagePtr frame = cache_.frame(*m, src, int(std::ceil(layer.displayW)), int(std::ceil(layer.displayH)));
             if (frame) {
                 layer.image = std::make_shared<Image>(*frame);
-                opaque = fullyOpaque(*layer.image);
+                // Only the CPU's deferred background fill needs this scan.
+                opaque = inspectOpacity && fullyOpaque(*layer.image);
             }
             break;
         }
@@ -359,7 +361,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
         }
     }
     if (!layer.image) {
-        layer = content(ev, c, t, unit, layerW, layerH);
+        layer = content(ev, c, t, unit, layerW, layerH, !gpu);
         bool solid = layer.solid;
         Color solidColor = layer.color;
         bool wantsPixels = false;
