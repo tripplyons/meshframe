@@ -7,6 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+
 using namespace mf;
 
 namespace {
@@ -133,6 +137,52 @@ TEST(Render, BlendModes) {
     EXPECT_PX(*f.render(p, 0), 5, 5, 191, 191, 191, 1);
 }
 
+TEST(Render, AlignedOpaqueLayerCopiesEveryChannelValueAndClips) {
+    Image src(256, 4);
+    for (int y = 0; y < src.h; ++y) for (int x = 0; x < src.w; ++x) {
+        uint8_t* s = src.at(x, y);
+        s[0] = uint8_t(x);
+        s[1] = uint8_t(255 - x);
+        s[2] = uint8_t(x * 73 + y);
+        s[3] = 255;
+    }
+    for (auto [left, top] : {std::pair{0, 0}, {-43, -2}, {17, 5}, {400, 0}}) {
+        Image actual(279, 8);
+        fill(actual, Color{0.2f, 0.4f, 0.6f, 0.5f});
+        Image expected = actual;
+        for (int y = 0; y < src.h; ++y) for (int x = 0; x < src.w; ++x) {
+            if (x + left >= 0 && x + left < actual.w && y + top >= 0 && y + top < actual.h)
+                std::copy_n(src.at(x, y), 4, expected.at(x + left, y + top));
+        }
+        drawLayer(actual, src, Placement{left + src.w / 2.0, top + src.h / 2.0}, 1, Blend::Normal);
+        EXPECT_EQ(actual.px, expected.px);
+    }
+}
+
+TEST(Render, AlignedLayerBlendsAlphaOpacityAndModes) {
+    const std::array<uint8_t, 4> alpha{0, 64, 128, 255};
+    Image src(4, 1);
+    for (int x = 0; x < src.w; ++x) {
+        src.at(x, 0)[0] = alpha[x];
+        src.at(x, 0)[3] = alpha[x];
+    }
+    for (float opacity : {0.0f, 0.5f, 1.0f}) {
+        for (Blend blend : {Blend::Normal, Blend::Add, Blend::Multiply, Blend::Screen}) {
+            Image dst(4, 1);
+            fill(dst, Color{0, 0, 1, 1});
+            drawLayer(dst, src, Placement{2, 0.5}, opacity, blend);
+            for (int x = 0; x < dst.w; ++x) {
+                int strength = int(std::lround(alpha[x] * opacity));
+                int remaining = int(std::lround(255.0f - alpha[x] * opacity));
+                EXPECT_EQ(px(dst, x, 0).r, blend == Blend::Multiply ? 0 : strength);
+                EXPECT_EQ(px(dst, x, 0).g, 0);
+                EXPECT_EQ(px(dst, x, 0).b, blend == Blend::Normal || blend == Blend::Multiply ? remaining : 255);
+                EXPECT_EQ(px(dst, x, 0).a, 255);
+            }
+        }
+    }
+}
+
 TEST(Render, VideoEffects) {
     Fixture f;
     auto with = [&](Color c, const char* type, std::vector<std::pair<const char*, Value>> props) {
@@ -170,6 +220,41 @@ TEST(Render, VideoEffects) {
     EXPECT_GT(px(*soft, 30, 16).r, 20);
     EXPECT_LT(px(*soft, 33, 16).r, 235);
     EXPECT_PX(*soft, 63, 16, 255, 255, 255, 1);
+}
+
+TEST(Render, BlurMatchesClampedKernelOnNarrowAndWideImages) {
+    for (auto [w, h] : {std::pair{1, 1}, {1, 9}, {11, 1}, {3, 5}, {19, 13}, {67, 33}}) {
+        for (int radius : {0, 1, 3, 24}) {
+            SCOPED_TRACE(::testing::Message() << w << 'x' << h << " radius " << radius);
+            Image actual(w, h);
+            uint32_t seed = 17;
+            for (auto& c : actual.px) {
+                seed = seed * 1664525u + 1013904223u;
+                c = uint8_t(seed >> 24);
+            }
+            Image expected = actual;
+            if (radius > 0) {
+                const float norm = 1.0f / (2 * radius + 1);
+                for (int pass = 0; pass < 6; ++pass) {
+                    Image next(w, h);
+                    for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+                        std::array<int, 4> sum{};
+                        for (int offset = -radius; offset <= radius; ++offset) {
+                            int sx = pass < 3 ? std::clamp(x + offset, 0, w - 1) : x;
+                            int sy = pass < 3 ? y : std::clamp(y + offset, 0, h - 1);
+                            for (int c = 0; c < 4; ++c) sum[c] += expected.at(sx, sy)[c];
+                        }
+                        for (int c = 0; c < 4; ++c) next.at(x, y)[c] = uint8_t(sum[c] * norm + 0.5f);
+                    }
+                    expected = std::move(next);
+                }
+            }
+            applyEffect(actual, "blur", [&](std::string_view name) -> Value {
+                return name == "radius" ? Value{double(radius * 2)} : Value{};
+            }, 1);
+            EXPECT_EQ(actual.px, expected.px);
+        }
+    }
 }
 
 TEST(Render, TransitionsMixAcrossTheCut) {
