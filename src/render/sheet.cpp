@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <bit>
+#include <array>
 
 namespace mf {
 
@@ -32,7 +34,7 @@ Image composeSheet(std::span<const SheetCell> cells, int columns, SheetLayout* l
     l.cellW = first.w;
     l.cellH = first.h + strip;
     l.gap = std::max(2, first.w / 80);
-    Image out(l.gap + l.columns * (l.cellW + l.gap), l.gap + l.rows * (l.cellH + l.gap));
+    Image out = Image::forOverwrite(l.gap + l.columns * (l.cellW + l.gap), l.gap + l.rows * (l.cellH + l.gap));
     auto fill = [&](int x0, int y0, int w, int h, uint8_t v) {
         for (int y = y0; y < y0 + h; ++y) {
             uint8_t* row = out.at(x0, y);
@@ -49,8 +51,10 @@ Image composeSheet(std::span<const SheetCell> cells, int columns, SheetLayout* l
             const uint8_t* src = f.row(r);
             uint8_t* dst = out.at(x, y + r);
             for (int c = 0; c < std::min(f.w, first.w); ++c, src += 4, dst += 4) {
-                std::memcpy(dst, src, 3);
-                dst[3] = 255;
+                uint32_t pixel;
+                std::memcpy(&pixel, src, sizeof pixel);
+                pixel |= std::bit_cast<uint32_t>(std::array<uint8_t, 4>{0, 0, 0, 255});
+                std::memcpy(dst, &pixel, sizeof pixel);
             }
         }
         fill(x, y + first.h, l.cellW, strip, 40);
