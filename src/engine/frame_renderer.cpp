@@ -278,9 +278,9 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
             }
             ev.clearRuntimeError(key);
             layer.image = std::make_shared<Image>(w, h);
-            if (!rasterGpu || !gpuGeneratorWorthwhile(dl, float(unit), w, h) ||
-                !rasterGpu->rasterize(layer.image, dl, float(unit)))
-                drawList(*layer.image, dl, float(unit));
+            layer.gpuPixels = rasterGpu && gpuGeneratorWorthwhile(dl, float(unit), w, h) &&
+                              rasterGpu->rasterize(layer.image, dl, float(unit));
+            if (!layer.gpuPixels) drawList(*layer.image, dl, float(unit));
             layer.displayW = w;
             layer.displayH = h;
             break;
@@ -390,15 +390,11 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
     }
     if (!layer.image) {
         bool wantsPixels = false;
-        bool rasterNeedsPadding = false;
         for (const auto& e : c.videoEffects)
-            if (e.enabled) {
-                wantsPixels = true;
-                rasterNeedsPadding |= e.type == "drop_shadow";
-            }
+            if (e.enabled) wantsPixels = true;
         // CPU effects need the generator's bytes immediately. Keep the entire
         // raster/effect chain on one side of the CPU/GPU boundary.
-        GpuFrame* rasterGpu = gpu && (gpuEffects || !wantsPixels) && !rasterNeedsPadding ? gpu : nullptr;
+        GpuFrame* rasterGpu = gpu && (gpuEffects || !wantsPixels) ? gpu : nullptr;
         layer = content(ev, c, t, unit, layerW, layerH, !gpu, rasterGpu);
         bool solid = layer.solid;
         Color solidColor = layer.color;
@@ -446,7 +442,14 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
         layer.effectContent = content;
         if (margin > 0) {
             auto padded = std::make_shared<Image>(layer.image->w + 2 * margin, layer.image->h + 2 * margin);
-            for (int y = 0; y < layer.image->h; ++y) std::copy_n(layer.image->row(y), layer.image->w * 4, padded->at(margin, margin + y));
+            if (layer.gpuPixels) {
+                // The generator's bytes await GPU execution. Copy them into
+                // the zeroed halo on the GPU before the effect reads them.
+                gpu->drawLayer(padded, layer.image, Placement{padded->w / 2.0, padded->h / 2.0}, 1, Blend::Normal);
+            } else {
+                for (int y = 0; y < layer.image->h; ++y)
+                    std::copy_n(layer.image->row(y), layer.image->w * 4, padded->at(margin, margin + y));
+            }
             layer.displayW *= double(padded->w) / layer.image->w;
             layer.displayH *= double(padded->h) / layer.image->h;
             layer.image = std::move(padded);

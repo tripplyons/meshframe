@@ -56,9 +56,9 @@ Consecutive color, crop, and mask effects share a Metal dispatch while retaining
 the byte rounding between effects. Blur and shadow passes separate these batches.
 Generator lists containing clears and rectangles use Metal rasterization when
 their clipped work averages at least 65,536 pixels per command. Smaller lists,
-other drawing commands, CPU-only effect chains, and generators needing padded
-storage keep CPU rasterization. Optional rectangle and shadow shaders initialize
-only when first needed.
+other drawing commands and CPU-only effect chains keep CPU rasterization.
+GPU-generated content also stays on Metal when a shadow needs padded storage.
+Optional rectangle and shadow shaders initialize only when first needed.
 Apple silicon shares image memory with Metal; other devices download the final
 canvas. A 64 MiB pool reuses page-backed image storage and lazily attached Metal
 views between frames. Other platforms, unavailable devices, and failed GPU
