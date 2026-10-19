@@ -307,21 +307,43 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
     if (fill.a > 0 && trimStart == 0 && trimEnd == 1) {
         std::vector<double> coverage(dst.w);
         std::vector<std::pair<double, int>> hits;
-        size_t work = 0;
+        struct FillEdge {
+            PathPoint a, b;
+            double lower, upper;
+        };
+        std::vector<FillEdge> edges;
+        size_t originalEdgeCount = 0;
+        for (const auto& contour : p.contours) {
+            if (contour.points.size() < 3) continue;
+            originalEdgeCount += contour.points.size();
+            for (size_t i = 0; i < contour.points.size(); ++i) {
+                auto a = contour.points[i], b = contour.points[(i + 1) % contour.points.size()];
+                if (a.y != b.y) edges.push_back({a, b, std::min(a.y, b.y), std::max(a.y, b.y)});
+            }
+        }
+        // Keep the existing geometry limit even though inactive edges no longer
+        // need a test on every subrow.
+        if (uint64_t(originalEdgeCount) * 4 * dst.h > 100000000) fail("fill exceeds render work limit");
+        std::sort(edges.begin(), edges.end(), [](const FillEdge& a, const FillEdge& b) { return a.lower < b.lower; });
+        std::vector<const FillEdge*> active;
+        active.reserve(edges.size());
+        size_t nextEdge = 0;
+        uint64_t edgeSteps = edges.size();
         for (int y = 0; y < dst.h; ++y) {
             std::fill(coverage.begin(), coverage.end(), 0.);
             for (int sub = 0; sub < 4; ++sub) {
                 double yy = y + (sub + .5) / 4;
                 hits.clear();
-                for (auto& c : p.contours) {
-                    if (c.points.size() < 3) continue;
-                    work::addEdge(c.points.size());
-                    for (size_t i = 0; i < c.points.size(); ++i) {
-                        if (++work > 100000000) fail("fill exceeds render work limit");
-                        auto a = c.points[i], b = c.points[(i + 1) % c.points.size()];
-                        if ((a.y <= yy && b.y > yy) || (b.y <= yy && a.y > yy))
-                            hits.push_back({a.x + (yy - a.y) * (b.x - a.x) / (b.y - a.y), b.y > a.y ? 1 : -1});
-                    }
+                std::erase_if(active, [&](const FillEdge* edge) { return edge->upper <= yy; });
+                while (nextEdge < edges.size() && edges[nextEdge].lower <= yy) {
+                    const auto& edge = edges[nextEdge++];
+                    if (edge.upper > yy) active.push_back(&edge);
+                }
+                edgeSteps += active.size();
+                for (const FillEdge* edge : active) {
+                    const auto& a = edge->a;
+                    const auto& b = edge->b;
+                    hits.push_back({a.x + (yy - a.y) * (b.x - a.x) / (b.y - a.y), b.y > a.y ? 1 : -1});
                 }
                 std::sort(hits.begin(), hits.end());
                 int winding = 0;
@@ -344,6 +366,7 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
             for (int x = 0; x < dst.w; ++x)
                 if (coverage[x] > 0) blend(dst.at(x, y), fill, coverage[x]);
         }
+        work::addEdge(edgeSteps);
     }
     if (stroke.a <= 0 || width <= 0 || trimEnd <= trimStart) return;
     if (linecap != "round" && linecap != "butt" && linecap != "square") fail("invalid stroke cap");
