@@ -456,3 +456,26 @@ TEST(Render, MediaClipShowsTheSourceFrame) {
     EXPECT_EQ(px(*img, 2, 16).a, 255);
     EXPECT_PX(*img, 2, 16, 0, 0, 0, 0);  // pillarbox
 }
+
+TEST(Render, KnownOpaqueSourceMatchesAlphaInspectionAcrossTransformsAndBlends) {
+    Image source(19, 11);
+    for (int y = 0; y < source.h; ++y)
+        for (int x = 0; x < source.w; ++x) {
+            auto* p = source.at(x, y);
+            p[0] = uint8_t(x * 13);
+            p[1] = uint8_t(y * 23);
+            p[2] = uint8_t(x * 7 + y * 11);
+            p[3] = 255;
+        }
+    for (const Placement at : {Placement{15.5, 10.5}, Placement{2.5, 1.5}, Placement{15.25, 9.75},
+                               Placement{13, 8, 1.7, .6, .37}, Placement{3, 17, -.8, 1.2, -.61}})
+        for (float opacity : {.37f, 1.0f})
+            for (Blend blend : {Blend::Normal, Blend::Add, Blend::Multiply, Blend::Screen}) {
+                Image expected(31, 21);
+                fill(expected, Color{.2f, .4f, .6f, .7f});
+                Image actual = expected;
+                drawLayer(expected, source, at, opacity, blend);
+                drawLayer(actual, source, at, opacity, blend, true);
+                EXPECT_EQ(actual.px, expected.px);
+            }
+}

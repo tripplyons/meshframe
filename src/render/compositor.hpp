@@ -19,7 +19,8 @@ struct Placement {
 };
 
 // Composites src onto dst with bilinear sampling, opacity, and a blend mode.
-void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity, Blend blend);
+// Set sourceOpaque only when every source alpha byte is known to be 255.
+void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity, Blend blend, bool sourceOpaque = false);
 
 // Composites a w x h layer that is a single repeated premultiplied colour,
 // which drawLayer would otherwise have to be handed an image of. Only the

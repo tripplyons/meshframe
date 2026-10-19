@@ -200,7 +200,7 @@ void fill(Image& img, Color c) {
     for (size_t i = 0; i < img.px.size(); i += 4) std::copy_n(px, 4, img.px.data() + i);
 }
 
-void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity, Blend blend) {
+void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity, Blend blend, bool sourceOpaque) {
     if (src.empty() || dst.empty() || opacity <= 0 || at.sx == 0 || at.sy == 0) return;
     double cs = std::cos(at.rotation), sn = std::sin(at.rotation);
     double hw = src.w / 2.0, hh = src.h / 2.0;
@@ -217,6 +217,12 @@ void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity,
     double ox = at.cx - hw, oy = at.cy - hh;
     bool aligned = at.rotation == 0 && at.sx == 1 && at.sy == 1 && ox == std::floor(ox) && oy == std::floor(oy);
     if (aligned) {
+        if (sourceOpaque && opacity == 1 && blend == Blend::Normal) {
+            for (int y = y0; y < y1; ++y)
+                std::copy_n(src.at(x0 - int(ox), y - int(oy)), size_t(x1 - x0) * 4, dst.at(x0, y));
+            work::addCopy(uint64_t(x1 - x0) * (y1 - y0));
+            return;
+        }
         // Clipping already bounds the source coordinates. Read aligned rows
         // directly, without scanning alpha bounds or constructing sample caches.
         forRows(y1 - y0, [&](int r0, int r1) {
@@ -241,35 +247,37 @@ void drawLayer(Image& dst, const Image& src, const Placement& at, float opacity,
         });
         return;
     }
-    // Only texels with alpha contribute: a destination pixel whose bilinear
-    // footprint misses them all samples nothing and is then discarded. Bound the
-    // destination box by the image of the alpha-bearing texels, widened by two
-    // texels so the kernel's right and lower taps and the rounding of the
-    // corner mapping can never drop a pixel that would have blended.
-    int bx0 = src.w, by0 = src.h, bx1 = -1, by1 = -1;
-    for (int y = 0; y < src.h; ++y) {
-        const uint8_t* row = src.row(y);
-        for (int x = 0; x < src.w; ++x)
-            if (row[x * 4 + 3]) {
-                bx0 = std::min(bx0, x), bx1 = std::max(bx1, x);
-                by0 = std::min(by0, y), by1 = std::max(by1, y);
-            }
-    }
-    if (bx1 < 0) return;  // fully transparent
-    double cminx = 1e30, cmaxx = -1e30, cminy = 1e30, cmaxy = -1e30;
-    for (double u : {double(bx0 - 2) - hw, double(bx1 + 2) - hw}) {
-        for (double v : {double(by0 - 2) - hh, double(by1 + 2) - hh}) {
-            double px = at.cx + u * at.sx * cs - v * at.sy * sn;
-            double py = at.cy + u * at.sx * sn + v * at.sy * cs;
-            cminx = std::min(cminx, px), cmaxx = std::max(cmaxx, px);
-            cminy = std::min(cminy, py), cmaxy = std::max(cmaxy, py);
+    if (!sourceOpaque) {
+        // Only texels with alpha contribute: a destination pixel whose bilinear
+        // footprint misses them all samples nothing and is then discarded. Bound the
+        // destination box by the image of the alpha-bearing texels, widened by two
+        // texels so the kernel's right and lower taps and the rounding of the
+        // corner mapping can never drop a pixel that would have blended.
+        int bx0 = src.w, by0 = src.h, bx1 = -1, by1 = -1;
+        for (int y = 0; y < src.h; ++y) {
+            const uint8_t* row = src.row(y);
+            for (int x = 0; x < src.w; ++x)
+                if (row[x * 4 + 3]) {
+                    bx0 = std::min(bx0, x), bx1 = std::max(bx1, x);
+                    by0 = std::min(by0, y), by1 = std::max(by1, y);
+                }
         }
+        if (bx1 < 0) return;  // fully transparent
+        double cminx = 1e30, cmaxx = -1e30, cminy = 1e30, cmaxy = -1e30;
+        for (double u : {double(bx0 - 2) - hw, double(bx1 + 2) - hw}) {
+            for (double v : {double(by0 - 2) - hh, double(by1 + 2) - hh}) {
+                double px = at.cx + u * at.sx * cs - v * at.sy * sn;
+                double py = at.cy + u * at.sx * sn + v * at.sy * cs;
+                cminx = std::min(cminx, px), cmaxx = std::max(cmaxx, px);
+                cminy = std::min(cminy, py), cmaxy = std::max(cmaxy, py);
+            }
+        }
+        x0 = std::max(x0, int(std::floor(cminx)));
+        x1 = std::min(x1, int(std::ceil(cmaxx)));
+        y0 = std::max(y0, int(std::floor(cminy)));
+        y1 = std::min(y1, int(std::ceil(cmaxy)));
+        if (x0 >= x1 || y0 >= y1) return;
     }
-    x0 = std::max(x0, int(std::floor(cminx)));
-    x1 = std::min(x1, int(std::ceil(cmaxx)));
-    y0 = std::max(y0, int(std::floor(cminy)));
-    y1 = std::min(y1, int(std::ceil(cmaxy)));
-    if (x0 >= x1 || y0 >= y1) return;
 
     // Without rotation the source columns a destination row reads are the same
     // for every row, and each destination row reads two source rows that the

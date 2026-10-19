@@ -493,12 +493,12 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
     if (gpu) {
         if (layer.image) gpu->drawLayer(target, layer.image, at, opacity, mode);
         else gpu->drawSolid(target, solidW, solidH, layer.color, at, opacity, mode);
-    } else if (layer.image) drawLayer(dst, *layer.image, at, opacity, mode);
+    } else if (layer.image) drawLayer(dst, *layer.image, at, opacity, mode, alphaKept);
     else if (!drawSolidLayer(dst, at, solidW, solidH, layer.color, opacity, mode)) {
         // The placement resamples between texels, so build the pixels after all.
         auto image = std::make_shared<Image>(solidW, solidH);
         fill(*image, layer.color);
-        drawLayer(dst, *image, at, opacity, mode);
+        drawLayer(dst, *image, at, opacity, mode, alphaKept);
     }
     return true;
 }
