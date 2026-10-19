@@ -76,21 +76,26 @@ public:
     void fill(Image& dst, Color c) const {
         float pr = c.r * c.a, pg = c.g * c.a, pb = c.b * c.a;
         work::addRaster(uint64_t(w_) * h_);
-        for (int y = 0; y < h_; ++y) {
-            const float* row = acc_.data() + size_t(y) * (w_ + 2);
-            uint8_t* out = dst.at(x0_, y0_ + y);
-            float acc = 0;
-            for (int x = 0; x < w_; ++x, out += 4) {
-                acc += row[x];
-                float cov = std::min(1.0f, std::abs(acc));
-                if (cov <= 0.002f) continue;
-                float sa = c.a * cov, inv = 1 - sa;
-                out[0] = uint8_t(std::min(255.0f, pr * cov * 255 + out[0] * inv + 0.5f));
-                out[1] = uint8_t(std::min(255.0f, pg * cov * 255 + out[1] * inv + 0.5f));
-                out[2] = uint8_t(std::min(255.0f, pb * cov * 255 + out[2] * inv + 0.5f));
-                out[3] = uint8_t(std::min(255.0f, sa * 255 + out[3] * inv + 0.5f));
+        auto rows = [&](size_t begin, size_t end) {
+            for (size_t y = begin; y < end; ++y) {
+                const float* row = acc_.data() + size_t(y) * (w_ + 2);
+                uint8_t* out = dst.at(x0_, y0_ + int(y));
+                float acc = 0;
+                for (int x = 0; x < w_; ++x, out += 4) {
+                    acc += row[x];
+                    float cov = std::min(1.0f, std::abs(acc));
+                    if (cov <= 0.002f) continue;
+                    float sa = c.a * cov, inv = 1 - sa;
+                    out[0] = uint8_t(std::min(255.0f, pr * cov * 255 + out[0] * inv + 0.5f));
+                    out[1] = uint8_t(std::min(255.0f, pg * cov * 255 + out[1] * inv + 0.5f));
+                    out[2] = uint8_t(std::min(255.0f, pb * cov * 255 + out[2] * inv + 0.5f));
+                    out[3] = uint8_t(std::min(255.0f, sa * 255 + out[3] * inv + 0.5f));
+                }
             }
-        }
+        };
+        if (uint64_t(w_) * h_ >= 65536)
+            ThreadPool::shared().parallelFor(0, size_t(h_), rows, 32);
+        else rows(0, size_t(h_));
     }
 
 private:
