@@ -4,72 +4,12 @@
 
 #include <algorithm>
 #if defined(__APPLE__) && defined(MF_METAL)
-#include <array>
-#include <mutex>
-#include <sys/mman.h>
 #include <unistd.h>
 #endif
 
 namespace mf {
 
 namespace detail {
-#if defined(__APPLE__) && defined(MF_METAL)
-namespace {
-// Reuse complete VM regions without weakening Metal's no-copy ownership rule.
-// Image's vector still initializes every logical byte before exposing it.
-class PixelPool {
-    struct Block {
-        void* data = nullptr;
-        size_t size = 0;
-    };
-    static constexpr size_t kBudget = 64 * 1024 * 1024;
-    std::array<Block, 32> blocks_{};
-    size_t count_ = 0, bytes_ = 0;
-    std::mutex mutex_;
-
-    void remove(size_t i) {
-        bytes_ -= blocks_[i].size;
-        std::move(blocks_.begin() + i + 1, blocks_.begin() + count_, blocks_.begin() + i);
-        --count_;
-    }
-
-public:
-    ~PixelPool() {
-        for (size_t i = 0; i < count_; ++i) munmap(blocks_[i].data, blocks_[i].size);
-    }
-    void* take(size_t bytes) {
-        std::lock_guard lock(mutex_);
-        for (size_t i = count_; i > 0; --i) {
-            if (blocks_[i - 1].size != bytes) continue;
-            void* p = blocks_[i - 1].data;
-            remove(i - 1);
-            return p;
-        }
-        return nullptr;
-    }
-    void put(void* p, size_t bytes) noexcept {
-        if (bytes > kBudget) {
-            munmap(p, bytes);
-            return;
-        }
-        std::lock_guard lock(mutex_);
-        // Evict oldest regions, keeping the working set bounded after resizes.
-        while (count_ && (count_ == blocks_.size() || bytes_ + bytes > kBudget)) {
-            munmap(blocks_[0].data, blocks_[0].size);
-            remove(0);
-        }
-        blocks_[count_++] = Block{p, bytes};
-        bytes_ += bytes;
-    }
-};
-
-PixelPool& pixelPool() {
-    static PixelPool pool;
-    return pool;
-}
-}  // namespace
-#endif
-
 size_t pixelAlignment() {
 #if defined(__APPLE__) && defined(MF_METAL)
     static const size_t page = [] {
@@ -88,26 +28,10 @@ size_t pixelAllocationSize(size_t bytes) {
     return (bytes + alignment - 1) / alignment * alignment;
 }
 
-void* allocatePixels(size_t bytes) {
-#if defined(__APPLE__) && defined(MF_METAL)
-    if (!bytes) return nullptr;
-    bytes = pixelAllocationSize(bytes);
-    if (void* p = pixelPool().take(bytes)) return p;
-    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (p == MAP_FAILED) throw std::bad_alloc();
-    return p;
-#else
-    return ::operator new(bytes);
+#ifndef MF_METAL
+void* allocatePixels(size_t bytes) { return ::operator new(bytes); }
+void freePixels(void* p, size_t) noexcept { ::operator delete(p); }
 #endif
-}
-
-void freePixels(void* p, size_t bytes) noexcept {
-#if defined(__APPLE__) && defined(MF_METAL)
-    if (p) pixelPool().put(p, pixelAllocationSize(bytes));
-#else
-    ::operator delete(p);
-#endif
-}
 }  // namespace detail
 
 bool savePng(const Image& img, const char* path) {

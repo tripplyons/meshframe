@@ -238,6 +238,25 @@ TEST(Render, RecycledImageStorageIsZeroedAndIndependentAcrossThreads) {
     for (auto& worker : workers) worker.join();
 }
 
+TEST(Render, RetainedImagesSurviveStorageEvictionAndResizing) {
+    Image retained(1024, 512);
+    std::fill(retained.px.begin(), retained.px.end(), uint8_t(73));
+    {
+        std::vector<Image> temporary;
+        for (int i = 0; i < 40; ++i) {
+            temporary.emplace_back(1024 + 2 * i, 512);
+            std::fill(temporary.back().px.begin(), temporary.back().px.end(), uint8_t(i + 1));
+        }
+    }
+    for (int i = 0; i < 40; ++i) {
+        Image image(1024 + 2 * i, 512);
+        EXPECT_TRUE(std::ranges::all_of(image.px, [](uint8_t v) { return v == 0; }));
+        image.resize(257, 127);
+        std::fill(image.px.begin(), image.px.end(), uint8_t(29));
+    }
+    EXPECT_TRUE(std::ranges::all_of(retained.px, [](uint8_t v) { return v == 73; }));
+}
+
 TEST(Render, VideoEffects) {
     Fixture f;
     auto with = [&](Color c, const char* type, std::vector<std::pair<const char*, Value>> props) {

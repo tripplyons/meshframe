@@ -9,11 +9,126 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <mutex>
+#include <sys/mman.h>
 #include <unordered_map>
 #include <vector>
 
 namespace mf {
 namespace {
+
+id<MTLDevice> metalDevice() {
+    static id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    return device;
+}
+
+// CPU images own complete VM regions. Attach a Metal view only when needed and
+// reuse it with the region, avoiding GPU setup for CPU-only image allocations.
+class PixelStorage {
+    struct Block {
+        void* data = nullptr;
+        size_t bytes = 0;
+        id<MTLBuffer> buffer = nil;
+    };
+    static constexpr size_t kBudget = 64 * 1024 * 1024;
+    std::array<Block, 32> free_{};
+    std::unordered_map<void*, Block> live_;
+    size_t count_ = 0, bytes_ = 0;
+    std::mutex mutex_;
+
+    static void release(Block& b) {
+        if (b.data && !b.buffer) munmap(b.data, b.bytes);
+        b = {};
+    }
+    void remove(size_t i) {
+        bytes_ -= free_[i].bytes;
+        std::move(free_.begin() + i + 1, free_.begin() + count_, free_.begin() + i);
+        free_[--count_] = {};
+    }
+
+public:
+    ~PixelStorage() {
+        for (size_t i = 0; i < count_; ++i) release(free_[i]);
+    }
+
+    void* allocate(size_t bytes) {
+        if (!bytes) return nullptr;
+        bytes = detail::pixelAllocationSize(bytes);
+        Block block;
+        {
+            std::lock_guard lock(mutex_);
+            for (size_t i = count_; i > 0; --i) {
+                if (free_[i - 1].bytes != bytes) continue;
+                block = free_[i - 1];
+                remove(i - 1);
+                break;
+            }
+        }
+        if (!block.data) {
+            void* data = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+            if (data == MAP_FAILED) throw std::bad_alloc();
+            block = {data, bytes};
+        }
+        try {
+            std::lock_guard lock(mutex_);
+            live_.emplace(block.data, block);
+        } catch (...) {
+            release(block);
+            throw;
+        }
+        return block.data;
+    }
+
+    void free(void* data) noexcept {
+        if (!data) return;
+        std::lock_guard lock(mutex_);
+        auto it = live_.find(data);
+        Block block = it->second;
+        live_.erase(it);
+        if (block.bytes > kBudget) {
+            release(block);
+            return;
+        }
+        while (count_ && (count_ == free_.size() || bytes_ + block.bytes > kBudget)) {
+            Block old = free_[0];
+            remove(0);
+            release(old);
+        }
+        free_[count_++] = block;
+        bytes_ += block.bytes;
+    }
+
+    id<MTLBuffer> buffer(void* data) {
+        std::lock_guard lock(mutex_);
+        auto it = live_.find(data);
+        if (it == live_.end()) return nil;
+        Block& block = it->second;
+        if (@available(macOS 10.15, *)) {
+            id<MTLDevice> device = metalDevice();
+            if (!block.buffer && device.hasUnifiedMemory && block.bytes <= device.maxBufferLength) {
+                // Transfer the VM region's final release to the view. Metal
+                // may retain it beyond the last CPU image or autorelease pool.
+                __block bool ownsMemory = false;
+                id<MTLBuffer> view = [device newBufferWithBytesNoCopy:block.data
+                                                              length:block.bytes
+                                                             options:MTLResourceStorageModeShared
+                                                         deallocator:^(void* data, NSUInteger length) {
+                                                             if (ownsMemory) munmap(data, length);
+                                                         }];
+                if (view) {
+                    ownsMemory = true;
+                    block.buffer = view;
+                }
+            }
+        }
+        return block.buffer;
+    }
+};
+
+PixelStorage& pixelStorage() {
+    static PixelStorage storage;
+    return storage;
+}
 
 constexpr const char* kShaders = R"METAL(
 #include <metal_stdlib>
@@ -275,7 +390,7 @@ struct Device {
 
     Device() {
         @autoreleasepool {
-            device = MTLCreateSystemDefaultDevice();
+            device = metalDevice();
             if (!device) {
                 error = "no Metal device";
                 return;
@@ -363,15 +478,7 @@ class MetalFrame final : public GpuFrame {
             valid_ = false;
             return nil;
         }
-        id<MTLBuffer> result = nil;
-        if (@available(macOS 10.15, *)) {
-            if (device_.device.hasUnifiedMemory) {
-                result = [device_.device newBufferWithBytesNoCopy:const_cast<uint8_t*>(image->px.data())
-                                                           length:detail::pixelAllocationSize(bytes)
-                                                          options:MTLResourceStorageModeShared
-                                                      deallocator:nil];
-            }
-        }
+        id<MTLBuffer> result = pixelStorage().buffer(const_cast<uint8_t*>(image->px.data()));
         if (!result) {
             result = initialize ? [device_.device newBufferWithBytes:image->px.data()
                                                               length:bytes
@@ -739,6 +846,19 @@ class MetalFrame final : public GpuFrame {
 };
 
 } // namespace
+
+namespace detail {
+void* allocatePixels(size_t bytes) {
+    @autoreleasepool {
+        return pixelStorage().allocate(bytes);
+    }
+}
+void freePixels(void* data, size_t) noexcept {
+    @autoreleasepool {
+        pixelStorage().free(data);
+    }
+}
+} // namespace detail
 
 bool gpuAvailable() { return sharedDevice().available(); }
 std::string gpuError() { return sharedDevice().error; }

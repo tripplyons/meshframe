@@ -51,9 +51,9 @@ in one command buffer, including transition surfaces. Media and generator
 layers also use GPU blur, color effects, vignette, crop, and mask. Large blur
 radii, threshold cutoffs, and cached text/path effects keep their CPU paths.
 Apple silicon shares image memory with Metal; other devices download the final
-canvas. A 64 MiB pool reuses page-backed image storage between frames. Other
-platforms, unavailable devices, and failed GPU commands fall
-back to the CPU. Configure `-DMESHFRAME_METAL=OFF` to build without Metal.
+canvas. A 64 MiB pool reuses page-backed image storage and lazily attached Metal
+views between frames. Other platforms, unavailable devices, and failed GPU
+commands fall back to the CPU. Configure `-DMESHFRAME_METAL=OFF` to build without Metal.
 
 `--backend metal` requires actual GPU rendering and fails if any frame falls
 back. `--compare-cpu` renders a CPU reference for every frame and reports the
