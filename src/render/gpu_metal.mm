@@ -645,6 +645,7 @@ class MetalFrame final : public GpuFrame {
         ImagePtr image;
         id<MTLBuffer> buffer;
         bool privatePixels = false, effectsApplied = false;
+        std::shared_ptr<Image> readback;
     };
     struct Stats {
         id<MTLBuffer> buffer;
@@ -1062,7 +1063,7 @@ class MetalFrame final : public GpuFrame {
         }
     }
 
-    void copyImage(const std::shared_ptr<Image>& dst, ImagePtr src) override {
+    void copyImage(const std::shared_ptr<Image>& dst, ImagePtr src, bool readback) override {
         @autoreleasepool {
             if (!valid_ || dst.get() == src.get()) return;
             if (dst->w != src->w || dst->h != src->h) {
@@ -1072,6 +1073,7 @@ class MetalFrame final : public GpuFrame {
             if (dst->empty()) return;
             id<MTLBuffer> in = buffer(std::move(src)), out = buffer(dst, false);
             if (!valid_) return;
+            if (readback) surfaces_.at(dst.get()).readback = dst;
             id<MTLBlitCommandEncoder> enc = [commands_ blitCommandEncoder];
             if (!enc) {
                 valid_ = false;
@@ -1194,6 +1196,12 @@ class MetalFrame final : public GpuFrame {
             [commands_ waitUntilCompleted];
             if (commands_.status != MTLCommandBufferStatusCompleted) return false;
             elapsedSeconds_ = std::max(0.0, commands_.GPUEndTime - commands_.GPUStartTime);
+            for (const auto& [image, surface] : surfaces_) {
+                if (surface.readback && surface.buffer.contents != surface.readback->px.data()) {
+                    std::memcpy(surface.readback->px.data(), surface.buffer.contents, surface.readback->bytes());
+                    work::addCopy(surface.readback->bytes() / 4);
+                }
+            }
             if (out.contents != dst->px.data()) {
                 std::memcpy(dst->px.data(), out.contents, dst->bytes());
                 work::addCopy(dst->px.size() / 4);

@@ -31,7 +31,7 @@ bool isPlacementProp(std::string_view name) {
 }
 
 bool gpuEffectsFor(Evaluator& ev, const Clip& c, double unit, const GpuFrame& gpu) {
-    if (c.kind != ClipKind::Media && c.kind != ClipKind::Generator) return false;
+    if (c.kind != ClipKind::Media && c.kind != ClipKind::Generator && c.kind != ClipKind::Text && c.kind != ClipKind::Path) return false;
     bool any = false;
     for (const auto& e : c.videoEffects) {
         if (!e.enabled) continue;
@@ -146,6 +146,14 @@ std::vector<CachedLayer>& layerCache() {
 }
 
 constexpr size_t kLayerCacheSize = 16;
+
+void cacheLayer(CachedLayer layer) {
+    std::lock_guard lock(layerCacheMutex());
+    auto& cache = layerCache();
+    std::erase_if(cache, [&](const CachedLayer& entry) { return entry.clip == layer.clip; });
+    cache.insert(cache.begin(), std::move(layer));
+    if (cache.size() > kLayerCacheSize) cache.resize(kLayerCacheSize);
+}
 
 // Whether every pixel of img has alpha 255.
 bool fullyOpaque(const Image& img) {
@@ -479,19 +487,36 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
     }  // rebuilt from scratch
     if (layer.image && layer.image->empty()) return false;
     // GPU-produced bytes remain pending until finish; cache CPU-ready images.
-    if (reusable && !hit && layer.image && !layer.gpuPixels) {
-        std::lock_guard lock(layerCacheMutex());
-        std::vector<CachedLayer>& cache = layerCache();
-        std::erase_if(cache, [&](const CachedLayer& e) { return e.clip == c.id; });
-        cache.insert(cache.begin(), CachedLayer{c.id, std::move(key), layer.image, layer.offsetX, layer.offsetY,
-                                                layer.displayW, layer.displayH, alphaKept, layer.effectContent});
-        if (cache.size() > kLayerCacheSize) cache.resize(kLayerCacheSize);
+    const bool cacheGpuEffects = gpuEffects && (c.kind == ClipKind::Text || c.kind == ClipKind::Path);
+    if (reusable && !hit && layer.image && !layer.gpuPixels && !cacheGpuEffects) {
+        cacheLayer(CachedLayer{c.id, std::move(key), layer.image, layer.offsetX, layer.offsetY,
+                              layer.displayW, layer.displayH, alphaKept, layer.effectContent});
     }
-    if (gpuEffects && layer.image) {
+    if (gpuEffects && layer.image && !(cacheGpuEffects && hit)) {
         std::vector<GpuEffect> effects;
-        for (const auto& e : c.videoEffects) if (e.enabled) effects.push_back({e.type, ev.effectParams(e, false)});
+        for (const auto& e : c.videoEffects) if (e.enabled) {
+            ParamFn params = ev.effectParams(e, false);
+            if (c.kind == ClipKind::Path && e.type == "mask") {
+                params = [params, x = layer.offsetX / unit, y = layer.offsetY / unit](std::string_view name) -> Value {
+                    if (name == "x") return asNumber(params(name)) - x;
+                    if (name == "y") return asNumber(params(name)) - y;
+                    return params(name);
+                };
+            }
+            effects.push_back({e.type, std::move(params)});
+        }
         double effectUnit = unit * layer.image->w / layer.displayW;
         gpu->applyEffects(layer.image, effects, effectUnit, layer.effectContent);
+        if (cacheGpuEffects) {
+            auto processed = std::make_shared<Image>(Image::forOverwrite(layer.image->w, layer.image->h));
+            gpu->copyImage(processed, layer.image, true);
+            layer.image = std::move(processed);
+            // Publish only completed pixels. Other renderers share this cache.
+            pendingGpuLayers_.push_back([entry = CachedLayer{c.id, std::move(key), layer.image, layer.offsetX, layer.offsetY,
+                                                            layer.displayW, layer.displayH, alphaKept, layer.effectContent}] {
+                cacheLayer(entry);
+            });
+        }
     }
     double scale = ev.num(c, "scale", 1);
     Placement at;
@@ -553,6 +578,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
 }
 
 std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, double t, double scale, int padX, int padY) {
+    pendingGpuLayers_.clear();
     ev.setTime(t);
     fillBackground_ = false;  // a clip preview is drawn over transparency
     const auto& st = ev.project().settings;
@@ -565,6 +591,8 @@ std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, d
     drawClip(ev, canvas, c, t, double(w) / st.width, false, gpu.get(), padX, padY);
     usedGpu_ = gpu && gpu->finish(canvas);
     gpuSeconds_ = usedGpu_ ? gpu->elapsedSeconds() : 0;
+    if (usedGpu_) for (auto& publish : pendingGpuLayers_) publish();
+    pendingGpuLayers_.clear();
     if (gpu && !usedGpu_) {
         canvas = std::make_shared<Image>(w + 2 * padX, h + 2 * padY);
         drawClip(ev, canvas, c, t, double(w) / st.width, false, nullptr, padX, padY);
@@ -574,11 +602,14 @@ std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, d
 }
 
 std::shared_ptr<Image> FrameRenderer::render(Evaluator& ev, double t, int w, int h) {
+    pendingGpuLayers_.clear();
     auto gpu = backend_ != RenderBackend::Cpu && (backend_ == RenderBackend::Metal || int64_t(w) * h >= 262144)
                    ? createGpuFrame() : nullptr;
     auto canvas = renderFrame(ev, t, w, h, gpu.get());
     usedGpu_ = gpu && gpu->finish(canvas);
     gpuSeconds_ = usedGpu_ ? gpu->elapsedSeconds() : 0;
+    if (usedGpu_) for (auto& publish : pendingGpuLayers_) publish();
+    pendingGpuLayers_.clear();
     return gpu && !usedGpu_ ? renderFrame(ev, t, w, h, nullptr) : canvas;
 }
 

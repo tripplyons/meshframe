@@ -551,3 +551,44 @@ TEST_F(GpuRendering, CopiedMediaSourcesKeepIndependentEffectsAndOwnership) {
     ASSERT_TRUE(gpu->finish(actual));
     expectNear(*actual, expected, 1);
 }
+
+TEST_F(GpuRendering, TextAndOffsetPathEffectsReuseCompletedPixels) {
+    for (ClipKind kind : {ClipKind::Text, ClipKind::Path}) {
+        Project project = Project::makeDefault();
+        project.script.clear();
+        project.settings.width = 512;
+        project.settings.height = 256;
+        Clip clip;
+        clip.kind = kind;
+        clip.track = project.findTrackByName("V1")->id;
+        clip.duration = 3;
+        Id id = edit::addClip(project, clip);
+        if (kind == ClipKind::Text) {
+            edit::setPropConstant(project, id, "text", std::string("GPU text"));
+            edit::setPropConstant(project, id, "size", 56.0);
+        } else {
+            edit::setPropConstant(project, id, "path", std::string("M 20 10 L 160 10 L 130 90 L 20 60 Z"));
+        }
+        Id blur = edit::addEffect(project, id, false, "blur");
+        edit::setPropConstant(project, blur, "radius", 7.0);
+        Id shadow = edit::addEffect(project, id, false, "drop_shadow");
+        edit::setPropConstant(project, shadow, "blur", 11.0);
+        Id mask = edit::addEffect(project, id, false, "mask");
+        edit::setPropConstant(project, mask, "width", 220.0);
+        edit::setPropConstant(project, mask, "height", 140.0);
+        edit::setPropConstant(project, mask, "x", 45.0);
+        MediaCache cache;
+        FrameRenderer cpu(cache, RenderBackend::Cpu), metal(cache, RenderBackend::Metal);
+        Evaluator evaluator;
+        evaluator.setProject(project);
+        for (int repeat = 0; repeat < 3; ++repeat) {
+            auto expected = cpu.render(evaluator, .5, 512, 256);
+            auto actual = metal.render(evaluator, .5, 512, 256);
+            ASSERT_TRUE(metal.usedGpuLastFrame());
+            expectNear(*actual, *expected, 2);
+        }
+        edit::setPropConstant(project, blur, "radius", 3.0);
+        evaluator.setProject(project);
+        expectNear(*metal.render(evaluator, 1, 512, 256), *cpu.render(evaluator, 1, 512, 256), 2);
+    }
+}

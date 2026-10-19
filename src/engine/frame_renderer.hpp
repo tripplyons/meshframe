@@ -5,6 +5,8 @@
 #include "render/image.hpp"
 #include "render/gpu.hpp"
 
+#include <functional>
+
 namespace mf {
 
 // Renders a project frame: evaluates every visible video clip at time t,
@@ -45,6 +47,7 @@ private:
     bool usedGpu_ = false, fillBackground_ = false;
     double gpuSeconds_ = 0;
     Color background_{};
+    std::vector<std::function<void()>> pendingGpuLayers_;
 };
 
 }  // namespace mf

@@ -26,7 +26,8 @@ class GpuFrame {
     virtual bool supportsDropShadow(double blurRadius) const = 0;
     virtual void fill(const std::shared_ptr<Image>& dst, Color color) = 0;
     // Retains both images until completion. Destination dimensions must match.
-    virtual void copyImage(const std::shared_ptr<Image>& dst, ImagePtr src) = 0;
+    // With readback, finish also makes dst readable on non-unified devices.
+    virtual void copyImage(const std::shared_ptr<Image>& dst, ImagePtr src, bool readback = false) = 0;
     // Draws supported generator commands into dst. Unsupported lists return
     // false without encoding anything, so the caller can rasterize on the CPU.
     virtual bool rasterize(const std::shared_ptr<Image>& dst, const DrawList& list, float scale) = 0;
