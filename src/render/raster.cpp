@@ -99,8 +99,55 @@ private:
 };
 
 void fillRect(Image& dst, float x, float y, float w, float h, Color c) {
-    Vec2 pts[4] = {{x, y}, {x + w, y}, {x + w, y + h}, {x, y + h}};
-    fillPolygon(dst, pts, c);
+    if (dst.empty() || c.a <= 0) return;
+    float left = std::min(x, x + w), right = std::max(x, x + w);
+    float top = std::min(y, y + h), bottom = std::max(y, y + h);
+    if (!std::isfinite(left) || !std::isfinite(right) || !std::isfinite(top) || !std::isfinite(bottom) ||
+        left >= right || top >= bottom) return;
+    int x0 = int(std::clamp(std::floor(left), 0.0f, float(dst.w)));
+    int x1 = int(std::clamp(std::ceil(right), 0.0f, float(dst.w)));
+    int y0 = int(std::clamp(std::floor(top), 0.0f, float(dst.h)));
+    int y1 = int(std::clamp(std::ceil(bottom), 0.0f, float(dst.h)));
+    if (x0 >= x1 || y0 >= y1) return;
+    const int fullStart = int(std::clamp(std::ceil(left), float(x0), float(x1)));
+    const int fullEnd = int(std::clamp(std::floor(right), float(x0), float(x1)));
+    const float pr = c.r * c.a, pg = c.g * c.a, pb = c.b * c.a;
+    auto fringe = [&](int px, int py, float rowCoverage) {
+        float columnCoverage = std::clamp(std::min(float(px + 1), right) - std::max(float(px), left), 0.0f, 1.0f);
+        float cov = rowCoverage * columnCoverage;
+        if (cov <= 0.002f) return;
+        uint8_t* out = dst.at(px, py);
+        float sa = c.a * cov, inv = 1 - sa;
+        out[0] = uint8_t(std::min(255.0f, pr * cov * 255 + out[0] * inv + 0.5f));
+        out[1] = uint8_t(std::min(255.0f, pg * cov * 255 + out[1] * inv + 0.5f));
+        out[2] = uint8_t(std::min(255.0f, pb * cov * 255 + out[2] * inv + 0.5f));
+        out[3] = uint8_t(std::min(255.0f, sa * 255 + out[3] * inv + 0.5f));
+    };
+    work::addRaster(uint64_t(x1 - x0) * (y1 - y0));
+    for (int py = y0; py < y1; ++py) {
+        float cov = std::clamp(std::min(float(py + 1), bottom) - std::max(float(py), top), 0.0f, 1.0f);
+        if (fullStart >= fullEnd) {
+            // A subpixel rectangle can have two fringes and no whole texel.
+            for (int px = x0; px < x1; ++px) fringe(px, py, cov);
+            continue;
+        }
+        if (x0 < fullStart) fringe(x0, py, cov);
+        if (fullEnd < x1) fringe(fullEnd, py, cov);
+        if (cov <= 0.002f) continue;
+        float sa = c.a * cov, inv = 1 - sa;
+        const float source[4] = {pr * cov * 255, pg * cov * 255, pb * cov * 255, sa * 255};
+        uint8_t* out = dst.at(fullStart, py);
+        if (inv == 0) {
+            uint8_t pixel[4];
+            for (int channel = 0; channel < 4; ++channel)
+                pixel[channel] = uint8_t(std::min(255.0f, source[channel] + 0.5f));
+            for (int px = fullStart; px < fullEnd; ++px, out += 4) std::copy_n(pixel, 4, out);
+        } else {
+            for (int px = fullStart; px < fullEnd; ++px, out += 4)
+                for (int channel = 0; channel < 4; ++channel)
+                    out[channel] = uint8_t(std::min(255.0f, source[channel] + out[channel] * inv + 0.5f));
+        }
+    }
 }
 
 }  // namespace

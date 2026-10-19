@@ -77,6 +77,37 @@ TEST(Render, PolygonCoverageIsExactOnPixelEdges) {
     EXPECT_EQ(px(img, 4, 1).a, 0);
 }
 
+TEST(Render, RectanglesMatchPolygonCoverageWithFractionalEdgesAndClipping) {
+    uint32_t random = 17;
+    auto next = [&] {
+        random = random * 1664525u + 1013904223u;
+        return float(int(random >> 16) % 800 - 300) / 13;
+    };
+    for (int i = 0; i < 256; ++i) {
+        float x = next(), y = next(), w = next(), h = next();
+        Color color{0.9f, 0.3f, 0.6f, i % 3 == 0 ? 1.0f : 0.37f};
+        Image expected(37, 29), actual(37, 29);
+        fill(actual, Color{0.2f, 0.6f, 0.4f, 0.7f});
+        expected = actual;
+        Vec2 points[4] = {{x, y}, {x + w, y}, {x + w, y + h}, {x, y + h}};
+        fillPolygon(expected, points, color);
+        DrawList list;
+        DrawCmd command;
+        command.type = DrawCmd::Type::Rect;
+        command.a = x;
+        command.b = y;
+        command.c = w;
+        command.d = h;
+        command.color = color;
+        list.cmds.push_back(command);
+        drawList(actual, list, 1);
+        int worst = 0;
+        for (size_t channel = 0; channel < actual.bytes(); ++channel)
+            worst = std::max(worst, std::abs(int(actual.px[channel]) - expected.px[channel]));
+        EXPECT_LE(worst, 1) << "rectangle " << x << ',' << y << ',' << w << ',' << h;
+    }
+}
+
 TEST(Render, SolidTransformOpacityAndBackground) {
     Project p = smallProject();
     p.settings.background = Color::gray(0.0f);
