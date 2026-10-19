@@ -436,12 +436,17 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
             x1 = int(std::clamp(std::ceil(a.x + radius + 1), 0., double(dst.w)));
         int y0 = int(std::clamp(std::floor(a.y - radius - 1), 0., double(dst.h))),
             y1 = int(std::clamp(std::ceil(a.y + radius + 1), 0., double(dst.h)));
+        size_t pixels = size_t(x1 - x0) * (y1 - y0);
+        if (pixels > 100000000 - work) fail("stroke exceeds render work limit");
+        work += pixels;
+        work::addTaps(pixels);
         for (int y = y0; y < y1; ++y)
             for (int x = x0; x < x1; ++x) {
-                if (++work > 100000000) fail("stroke exceeds render work limit");
-                work::addTaps(1);
+                // Render geometry is bounded, so squaring these distances
+                // cannot overflow and does not need hypot's scaling machinery.
+                double dx = x + .5 - a.x, dy = y + .5 - a.y;
                 auto& v = mask[size_t(y) * dst.w + x];
-                v = std::max(v, float(std::clamp(radius + .5 - std::hypot(x + .5 - a.x, y + .5 - a.y), 0., 1.)));
+                v = std::max(v, float(std::clamp(radius + .5 - std::sqrt(dx * dx + dy * dy), 0., 1.)));
             }
     };
     double total = 0;
