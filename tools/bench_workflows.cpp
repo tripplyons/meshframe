@@ -1,6 +1,7 @@
 #include "session/session.hpp"
 #include "session/diff.hpp"
 #include "media/scenes.hpp"
+#include "model/serialize.hpp"
 #include <chrono>
 #include <iostream>
 using namespace mf;
@@ -20,6 +21,7 @@ int main(int argc, char** argv) {
     }
     Session s;
     s.apply("setup", [&](Project& out) { out = p; });
+    if (mode.starts_with("preview")) { std::string err; if (!s.open("bench/projects/text_paths.mfproj", &err)) { std::cerr << err; return 1; } }
     Project after = p; after.clips.back().name = "changed";
     Evaluator ev;
     p.script = "mf.synth('tone', function(t) return math.sin(t * 440 * 2 * math.pi) end)";
@@ -31,6 +33,12 @@ int main(int argc, char** argv) {
     auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < count; ++i) {
         if (mode == "edit") s.apply("rename", [&](Project& out) { out.clips.back().name = std::to_string(i); });
+        else if (mode.starts_with("preview")) {
+            double t = i / 30.0;
+            s.renderFrame(t, 960, 540);
+            auto frame = mode == "preview-reuse" ? s.analysisFrame(t, 320, 180) : s.renderFrame(t, 320, 180);
+            checksum += frame->px[100];
+        }
         else if (mode == "lookup") { for (const auto& c : ev.project().clips) checksum += ev.clipVisibleAt(c, .25); }
         else if (mode == "evaluate") { ev.setProject(p); checksum += ev.graph().size(); }
         else if (mode == "diff") checksum += diffProjects(p, after).dump().size();

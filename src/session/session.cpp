@@ -3,6 +3,7 @@
 #include "media/decoder.hpp"
 #include "model/edit.hpp"
 #include "model/serialize.hpp"
+#include "render/compositor.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -215,7 +216,23 @@ double Session::tick() {
     return t;
 }
 
-std::shared_ptr<Image> Session::renderFrame(double t, int w, int h) { return renderer_->render(evaluator(), t, w, h); }
+std::shared_ptr<Image> Session::renderFrame(double t, int w, int h) {
+    auto frame = renderer_->render(evaluator(), t, w, h);
+    previewFrame_ = frame;
+    previewRevision_ = revision_;
+    previewTime_ = t;
+    return frame;
+}
+
+ImagePtr Session::analysisFrame(double t, int w, int h) {
+    if (!previewFrame_ || previewRevision_ != revision_ || previewTime_ != t ||
+        previewFrame_->w < w || previewFrame_->h < h) return renderFrame(t, w, h);
+    if (previewFrame_->w == w && previewFrame_->h == h) return previewFrame_;
+    auto reduced = std::make_shared<Image>(w, h);
+    Placement place{w / 2.0, h / 2.0, double(w) / previewFrame_->w, double(h) / previewFrame_->h};
+    drawLayer(*reduced, *previewFrame_, place, 1, Blend::Normal);
+    return reduced;
+}
 
 std::shared_ptr<Image> Session::renderClip(const Clip& c, double t, double scale, int padX, int padY) {
     return renderer_->renderClip(evaluator(), c, t, scale, padX, padY);

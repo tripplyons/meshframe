@@ -49,7 +49,7 @@ private:
         const ProjectSettings& ps = s.project().settings;
         int w = std::min(kScopeWidth, ps.width);
         int h = std::max(1, int(std::round(double(w) * ps.height / std::max(1, ps.width))));
-        auto img = s.renderFrame(t, w, h);
+        auto img = s.analysisFrame(t, w, h);
         time_ = t;
         revision_ = s.revision();
         analyzed_ = img && !img->empty();

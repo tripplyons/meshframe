@@ -108,6 +108,8 @@ public:
 
     // Renders a frame at time t; w x h may be smaller than the project size.
     std::shared_ptr<Image> renderFrame(double t, int w, int h);
+    // Reuses a current larger preview for analysis, otherwise renders at the requested size.
+    ImagePtr analysisFrame(double t, int w, int h);
     // Renders one clip alone with a margin; see FrameRenderer::renderClip.
     std::shared_ptr<Image> renderClip(const Clip& c, double t, double scale, int padX, int padY);
 
@@ -150,6 +152,9 @@ private:
     std::unique_ptr<AudioMixer> mixer_;
     std::unique_ptr<AudioSink> sink_;
     std::unique_ptr<Player> player_;
+    ImagePtr previewFrame_;
+    uint64_t previewRevision_ = 0;
+    double previewTime_ = 0;
     ExportJob exportJob_;
     std::deque<LogLine> log_;
     uint64_t logCount_ = 0;

@@ -1108,3 +1108,17 @@ TEST(Session, SnapshotsStayImmutableAcrossEditsUndoAndBatches) {
     ASSERT_TRUE(s.redo());
     EXPECT_EQ(s.snapshot(), edited);
 }
+
+TEST(Session, AnalysisFrameReusesOnlyCurrentRevisionAndTime) {
+    Session s;
+    auto frame = s.renderFrame(0, 64, 36);
+    EXPECT_EQ(s.analysisFrame(0, 64, 36), frame);
+    auto reduced = s.analysisFrame(0, 32, 18);
+    ASSERT_TRUE(reduced);
+    EXPECT_EQ(reduced->w, 32);
+    EXPECT_EQ(reduced->h, 18);
+    s.apply("background", [](Project& p) { p.settings.background = {1, 0, 0, 1}; });
+    auto changed = s.analysisFrame(0, 32, 18);
+    EXPECT_EQ(changed->px[0], 255);
+    EXPECT_NE(s.analysisFrame(1, 32, 18), changed);
+}
