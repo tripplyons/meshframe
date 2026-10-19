@@ -1062,6 +1062,27 @@ class MetalFrame final : public GpuFrame {
         }
     }
 
+    void copyImage(const std::shared_ptr<Image>& dst, ImagePtr src) override {
+        @autoreleasepool {
+            if (!valid_ || dst.get() == src.get()) return;
+            if (dst->w != src->w || dst->h != src->h) {
+                valid_ = false;
+                return;
+            }
+            if (dst->empty()) return;
+            id<MTLBuffer> in = buffer(std::move(src)), out = buffer(dst, false);
+            if (!valid_) return;
+            id<MTLBlitCommandEncoder> enc = [commands_ blitCommandEncoder];
+            if (!enc) {
+                valid_ = false;
+                return;
+            }
+            [enc copyFromBuffer:in sourceOffset:0 toBuffer:out destinationOffset:0 size:dst->bytes()];
+            [enc endEncoding];
+            work::addCopy(dst->bytes() / 4);
+        }
+    }
+
     bool rasterize(const std::shared_ptr<Image>& dst, const DrawList& list, float scale) override {
         bool hasRects = false;
         for (const auto& cmd : list.cmds) {

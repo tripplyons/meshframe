@@ -236,7 +236,11 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
             layer.displayH = m->height * sy;
             ImagePtr frame = cache_.frame(*m, src, int(std::ceil(layer.displayW)), int(std::ceil(layer.displayH)));
             if (frame) {
-                layer.image = std::make_shared<Image>(*frame);
+                if (rasterGpu) {
+                    layer.image = std::make_shared<Image>(Image::forOverwrite(frame->w, frame->h));
+                    rasterGpu->copyImage(layer.image, frame);
+                    layer.gpuPixels = true;
+                } else layer.image = std::make_shared<Image>(*frame);
                 // Only the CPU's deferred background fill needs this scan.
                 opaque = inspectOpacity && fullyOpaque(*layer.image);
             }
@@ -444,7 +448,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
         if (margin > 0) {
             auto padded = std::make_shared<Image>(layer.image->w + 2 * margin, layer.image->h + 2 * margin);
             if (layer.gpuPixels) {
-                // The generator's bytes await GPU execution. Copy them into
+                // The source's bytes await GPU execution. Copy them into
                 // the zeroed halo on the GPU before the effect reads them.
                 gpu->drawLayer(padded, layer.image, Placement{padded->w / 2.0, padded->h / 2.0}, 1, Blend::Normal);
             } else {
@@ -471,7 +475,8 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
         }
     }  // rebuilt from scratch
     if (layer.image && layer.image->empty()) return false;
-    if (reusable && !hit && layer.image) {
+    // GPU-produced bytes remain pending until finish; cache CPU-ready images.
+    if (reusable && !hit && layer.image && !layer.gpuPixels) {
         std::lock_guard lock(layerCacheMutex());
         std::vector<CachedLayer>& cache = layerCache();
         std::erase_if(cache, [&](const CachedLayer& e) { return e.clip == c.id; });

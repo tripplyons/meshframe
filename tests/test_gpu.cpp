@@ -413,7 +413,7 @@ TEST_F(GpuRendering, DropShadowsMatchCpuForColorOffsetsAndBlurRadii) {
                 }
 }
 
-TEST_F(GpuRendering, CachedMediaShadowKeepsContentBoundsForFollowingEffects) {
+TEST_F(GpuRendering, MediaShadowsKeepContentBoundsAcrossRepeatedRenders) {
     if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg CLI not installed";
     Project project = Project::makeDefault();
     project.script.clear();
@@ -528,4 +528,26 @@ TEST_F(GpuRendering, IdentityEffectChainsPreserveTransparentSourceBytes) {
     gpu->applyEffects(image, effects, .7, {});
     ASSERT_TRUE(gpu->finish(image));
     EXPECT_EQ(image->px, original.px);
+}
+
+TEST_F(GpuRendering, CopiedMediaSourcesKeepIndependentEffectsAndOwnership) {
+    auto source = pattern(13, 9);
+    const Image original = *source;
+    auto a = std::make_shared<Image>(Image::forOverwrite(13, 9));
+    auto b = std::make_shared<Image>(Image::forOverwrite(13, 9));
+    auto actual = std::make_shared<Image>(26, 9);
+    Image expected(26, 9), left = original, right = original;
+    ParamFn params = [](std::string_view name) -> Value { return name == "mix" ? Value{.7} : Value{}; };
+    applyEffect(left, "invert", params, 1);
+    drawLayer(expected, left, Placement{6.5, 4.5}, 1, Blend::Normal);
+    drawLayer(expected, right, Placement{19.5, 4.5}, 1, Blend::Normal);
+    auto gpu = createGpuFrame();
+    gpu->copyImage(a, source);
+    gpu->copyImage(b, source);
+    gpu->applyEffects(a, {{"invert", params}}, 1, {});
+    source.reset();
+    gpu->drawLayer(actual, a, Placement{6.5, 4.5}, 1, Blend::Normal);
+    gpu->drawLayer(actual, b, Placement{19.5, 4.5}, 1, Blend::Normal);
+    ASSERT_TRUE(gpu->finish(actual));
+    expectNear(*actual, expected, 1);
 }
