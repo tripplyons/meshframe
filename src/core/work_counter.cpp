@@ -2,6 +2,7 @@
 
 #include <array>
 #include <mutex>
+#include <memory>
 #include <vector>
 
 namespace mf {
@@ -14,29 +15,28 @@ std::mutex& registryMutex() {
 }
 
 // Every thread's counters, so workCounts() can sum them.
-std::vector<WorkCounts*>& registry() {
-    static std::vector<WorkCounts*> r;
+std::vector<std::unique_ptr<WorkCounts>>& registry() {
+    static std::vector<std::unique_ptr<WorkCounts>> r;
     return r;
 }
 
 }  // namespace
 
 WorkCounts& threadWorkCounts() {
-    static thread_local WorkCounts counts;
-    // Declared second, so the counters exist before they are registered.
-    static thread_local const bool registered = [] {
+    // The registry owns counters after their originating thread exits, so
+    // totals and resets remain valid after temporary media/export workers join.
+    static thread_local WorkCounts* counts = [] {
         std::lock_guard<std::mutex> lock(registryMutex());
-        registry().push_back(&counts);
-        return true;
+        registry().push_back(std::make_unique<WorkCounts>());
+        return registry().back().get();
     }();
-    (void)registered;
-    return counts;
+    return *counts;
 }
 
 WorkCounts workCounts() {
     std::lock_guard<std::mutex> lock(registryMutex());
     WorkCounts sum;
-    for (const WorkCounts* c : registry()) {
+    for (const auto& c : registry()) {
         sum.blendPixels += c->blendPixels;
         sum.sampleTaps += c->sampleTaps;
         sum.mapPixels += c->mapPixels;
@@ -58,7 +58,7 @@ WorkCounts workCounts() {
 
 void resetWorkCounts() {
     std::lock_guard<std::mutex> lock(registryMutex());
-    for (WorkCounts* c : registry()) *c = WorkCounts{};
+    for (const auto& c : registry()) *c = WorkCounts{};
 }
 
 uint64_t WorkCounts::total() const {

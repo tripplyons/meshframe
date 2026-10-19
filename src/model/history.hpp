@@ -9,7 +9,7 @@
 namespace mf {
 
 // Snapshot undo. Each entry holds the project state before an edit.
-// Projects hold no media data, so snapshots stay small.
+// History and session revisions share immutable snapshots.
 class History {
 public:
     explicit History(size_t limit = 500) : limit_(limit) {}
