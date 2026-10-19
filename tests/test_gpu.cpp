@@ -177,8 +177,8 @@ TEST_F(GpuRendering, EffectsMatchCpuAndKeepTheSourceImmutable) {
 }
 
 TEST_F(GpuRendering, BlurHandlesRadiiLargerThanEitherDimension) {
-    for (auto [w, h] : {std::pair{1, 1}, {1, 9}, {11, 1}, {3, 5}, {67, 33}}) {
-        for (double radius : {0.0, 2.0, 6.0, 48.0}) {
+    for (auto [w, h] : {std::pair{1, 1}, {1, 9}, {11, 1}, {3, 5}, {67, 33}, {129, 7}, {257, 33}}) {
+        for (double radius : {0.0, 2.0, 6.0, 8.0, 18.0, 48.0, 64.0, 66.0}) {
             auto image = pattern(w, h);
             Image expected = *image;
             ParamFn params = [=](std::string_view name) -> Value { return name == "radius" ? Value{radius} : Value{}; };

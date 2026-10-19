@@ -171,6 +171,28 @@ kernel void blur_image(device const uchar4* src [[buffer(0)]], device uchar4* ds
     dst[xy.y * p.x + xy.x] = uchar4(float4(sum) * (1.0f / float(2 * r + 1)) + 0.5f);
 }
 
+// A row tile reads each texel once, including its clamped halo. SIMD prefix
+// sums turn every box window into two threadgroup reads and a subtraction.
+kernel void blur_rows(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
+                      constant uint4& p [[buffer(2)]], uint tid [[thread_index_in_threadgroup]],
+                      uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
+                      uint2 group [[threadgroup_position_in_grid]]) {
+    threadgroup uint4 totals[4], prefix[128];
+    uint core = 128 - 2 * p.z;
+    int sx = clamp(int(group.x * core + tid) - int(p.z), 0, int(p.x) - 1);
+    uint4 sum = simd_prefix_inclusive_sum(uint4(src[group.y * p.x + sx]));
+    if (lane + 1 == p.w) totals[simd] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = 0; i < simd; ++i) sum += totals[i];
+    prefix[tid] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint x = group.x * core + tid;
+    if (tid >= core || x >= p.x) return;
+    sum = prefix[tid + 2 * p.z];
+    if (tid) sum -= prefix[tid - 1];
+    dst[group.y * p.x + x] = uchar4(float4(sum) * (1.0f / float(2 * p.z + 1)) + 0.5f);
+}
+
 kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
                          constant EffectParams& p [[buffer(2)]], device packed_uint3* counts [[buffer(3)]],
                          uint2 xy [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
@@ -233,7 +255,7 @@ kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* 
 struct Device {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
-    id<MTLComputePipelineState> fill, draw, transition, blur, effect;
+    id<MTLComputePipelineState> fill, draw, transition, blur, blurRows, effect;
     std::string error;
 
     Device() {
@@ -260,12 +282,13 @@ struct Device {
             draw = pipeline(@"draw_layer");
             transition = pipeline(@"transition_image");
             blur = pipeline(@"blur_image");
+            blurRows = pipeline(@"blur_rows");
             effect = pipeline(@"effect_image");
-            if (!fill || !draw || !transition || !blur || !effect)
+            if (!fill || !draw || !transition || !blur || !blurRows || !effect)
                 error = err ? err.localizedDescription.UTF8String : "cannot create Metal pipeline";
         }
     }
-    bool available() const { return fill && draw && transition && blur && effect; }
+    bool available() const { return fill && draw && transition && blur && blurRows && effect; }
 };
 
 Device& sharedDevice() {
@@ -390,19 +413,41 @@ class MetalFrame final : public GpuFrame {
             id<MTLBuffer> b = surface.privatePixels ? surface.buffer : privateBuffer(image->bytes());
             if (!valid_) return;
             id<MTLBuffer> in = surface.buffer;
+            const size_t lanes = device_.blurRows.threadExecutionWidth;
+            const bool prefixRows = r >= 4 && r <= 32 && lanes >= 32 && 128 % lanes == 0 &&
+                                    device_.blurRows.maxTotalThreadsPerThreadgroup >= 128;
             for (int pass = 0; pass < 6; ++pass) {
                 id<MTLBuffer> out = pass % 2 ? b : a;
-                uint32_t params[4] = {uint32_t(w), uint32_t(h), uint32_t(r), uint32_t(pass < 3)};
+                const bool prefix = prefixRows && pass < 3;
+                uint32_t params[4] = {uint32_t(w), uint32_t(h), uint32_t(r),
+                                      uint32_t(prefix ? lanes : pass < 3)};
                 id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
+                if (!enc) {
+                    valid_ = false;
+                    return;
+                }
                 [enc setBuffer:in offset:0 atIndex:0];
                 [enc setBuffer:out offset:0 atIndex:1];
                 [enc setBytes:params length:sizeof params atIndex:2];
-                dispatch(enc, device_.blur, w, h);
+                if (prefix) {
+                    const size_t groups = (w + 127 - 2 * r) / (128 - 2 * r);
+                    [enc setComputePipelineState:device_.blurRows];
+                    [enc dispatchThreadgroups:MTLSizeMake(groups, h, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+                    [enc endEncoding];
+                    // Seed each prefix, count scan/carry additions, then the
+                    // subtraction for every window except the tile's first.
+                    size_t steps = 128;
+                    for (size_t stride = 1; stride < lanes; stride *= 2) steps += (lanes - stride) * (128 / lanes);
+                    for (size_t simd = 1; simd < 128 / lanes; ++simd) steps += simd * lanes;
+                    work::addBlur(uint64_t(h) * (groups * steps + w - groups));
+                } else {
+                    dispatch(enc, device_.blur, w, h);
+                    work::addBlur(uint64_t(w) * h * (2 * r + 1));
+                }
                 in = out;
             }
             surface.buffer = in;
             surface.privatePixels = true;
-            work::addBlur(uint64_t(w) * h * 6 * (2 * r + 1));
             return;
         }
         EffectParams p{};
