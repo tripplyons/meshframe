@@ -3,6 +3,7 @@
 #include "model/serialize.hpp"
 
 #include <fmt/format.h>
+#include <map>
 
 namespace mf {
 
@@ -27,10 +28,16 @@ bool hasIds(const json& a) {
     return true;
 }
 
-const json* findId(const json& a, const json& id) {
-    for (const auto& e : a)
-        if (e["id"] == id) return &e;
-    return nullptr;
+// Keep the original array traversal order while resolving ids logarithmically.
+using IdIndex = std::map<json, const json*>;
+IdIndex indexIds(const json& array) {
+    IdIndex index;
+    for (const auto& value : array) index.try_emplace(value["id"], &value);
+    return index;
+}
+const json* findId(const IdIndex& index, const json& id) {
+    auto it = index.find(id);
+    return it == index.end() ? nullptr : it->second;
 }
 
 // Adds each differing leaf under `path` to `out`. Objects recurse by key and
@@ -46,13 +53,14 @@ void diffValues(const std::string& path, const json& a, const json& b, json& out
     }
     bool aIds = hasIds(a) || (a.is_array() && a.empty()), bIds = hasIds(b) || (b.is_array() && b.empty());
     if (!a.is_null() && !b.is_null() && aIds && bIds) {
+        auto oldIndex = indexIds(a), newIndex = indexIds(b);
         auto item = [&](const json& id) { return fmt::format("{}[{}]", path, id.dump()); };
         for (const auto& e : a) {
-            const json* other = findId(b, e["id"]);
+            const json* other = findId(newIndex, e["id"]);
             diffValues(item(e["id"]), e, other ? *other : json(), out);
         }
         for (const auto& e : b)
-            if (!findId(a, e["id"])) diffValues(item(e["id"]), json(), e, out);
+            if (!findId(oldIndex, e["id"])) diffValues(item(e["id"]), json(), e, out);
         return;
     }
     out[path] = {{"old", a}, {"new", b}};
@@ -89,8 +97,9 @@ json diffProjects(const Project& before, const Project& after) {
 
     for (const auto& c : kCollections) {
         const json &oldList = a[c.key], &newList = b[c.key];
+        auto oldIndex = indexIds(oldList), newIndex = indexIds(newList);
         for (const auto& o : oldList) {
-            const json* n = findId(newList, o["id"]);
+            const json* n = findId(newIndex, o["id"]);
             if (!n) {
                 out["removed"].push_back(entry(c.kind, o, c.nameField));
                 continue;
@@ -106,7 +115,7 @@ json diffProjects(const Project& before, const Project& after) {
             out["changed"].push_back(std::move(e));
         }
         for (const auto& n : newList)
-            if (!findId(oldList, n["id"])) out["added"].push_back(entry(c.kind, n, c.nameField));
+            if (!findId(oldIndex, n["id"])) out["added"].push_back(entry(c.kind, n, c.nameField));
     }
     return out;
 }
