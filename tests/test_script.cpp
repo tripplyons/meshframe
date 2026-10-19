@@ -176,3 +176,22 @@ TEST(Script, UnchangedSignalSkipsDependents) {
     EXPECT_DOUBLE_EQ(ev.num(c, "x"), 10.0);
     EXPECT_EQ(ev.graph().node(node).evalCount, before + 1);
 }
+
+TEST(Script, SynthBlockErrorsAndTimeoutRemainRecoverable) {
+    Project p = Project::makeDefault();
+    p.script = "mf.synth('bad', function(t) error('sample failed') end)\n"
+               "mf.synth('loop', function(t) while true do end end)\n"
+               "mf.synth('good', function(t) return t, -t end)";
+    Evaluator ev; ev.setProject(p);
+    float samples[8] = {};
+    std::string err;
+    EXPECT_FALSE(ev.lua().synth("bad", 0, 48000, 4, samples, &err));
+    EXPECT_NE(err.find("sample failed"), std::string::npos);
+    err.clear();
+    EXPECT_FALSE(ev.lua().synth("loop", 0, 48000, 4, samples, &err));
+    EXPECT_NE(err.find("time budget exceeded"), std::string::npos);
+    err.clear();
+    ASSERT_TRUE(ev.lua().synth("good", .25, 48000, 4, samples, &err)) << err;
+    EXPECT_FLOAT_EQ(samples[0], .25f);
+    EXPECT_FLOAT_EQ(samples[1], -.25f);
+}

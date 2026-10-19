@@ -607,17 +607,33 @@ bool LuaRuntime::synth(const std::string& name, double t0, double sampleRate, in
         if (err) *err = "no synth '" + name + "'";
         return false;
     }
-    for (int i = 0; i < frames; ++i) {
-        lua_rawgeti(L_, LUA_REGISTRYINDEX, it->second);
-        lua_pushnumber(L_, t0 + i / sampleRate);
-        if (!pcall(1, 2, err, 0.5)) return false;
-        float l = float(lua_tonumber(L_, -2));
-        float r = lua_isnil(L_, -1) ? l : float(lua_tonumber(L_, -1));
-        lua_pop(L_, 2);
-        stereo[i * 2] = std::isfinite(l) ? l : 0.0f;
-        stereo[i * 2 + 1] = std::isfinite(r) ? r : 0.0f;
-    }
-    return true;
+    // One protected call and deadline per block. The hook still interrupts a
+    // runaway sample, and errors unwind to pcall without crossing C++ objects.
+    lua_pushcclosure(L_, [](lua_State* L) -> int {
+        const double t0 = lua_tonumber(L, 2), rate = lua_tonumber(L, 3);
+        const int frames = int(lua_tointeger(L, 4));
+        auto* stereo = static_cast<float*>(lua_touserdata(L, 5));
+        for (int i = 0; i < frames; ++i) {
+            lua_pushvalue(L, 1);
+            lua_pushnumber(L, t0 + i / rate);
+            lua_call(L, 1, 2);
+            float l = float(lua_tonumber(L, -2));
+            float r = lua_isnil(L, -1) ? l : float(lua_tonumber(L, -1));
+            lua_pop(L, 2);
+            stereo[i * 2] = std::isfinite(l) ? l : 0.0f;
+            stereo[i * 2 + 1] = std::isfinite(r) ? r : 0.0f;
+        }
+        return 0;
+    }, 0);
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, it->second);
+    lua_pushnumber(L_, t0);
+    lua_pushnumber(L_, sampleRate);
+    lua_pushinteger(L_, frames);
+    lua_pushlightuserdata(L_, stereo);
+    luaJIT_setmode(L_, 0, LUAJIT_MODE_ENGINE | LUAJIT_MODE_OFF);
+    bool ok = pcall(5, 0, err, 0.5);
+    luaJIT_setmode(L_, 0, LUAJIT_MODE_ENGINE | LUAJIT_MODE_ON);
+    return ok;
 }
 
 Value LuaRuntime::eval(const std::string& code, std::string* err) {
