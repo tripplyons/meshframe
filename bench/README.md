@@ -81,3 +81,39 @@ describe operations on each backend, not
 their relative speed: parallel GPU sampling may perform more taps than the
 CPU's sample caches while finishing sooner. Do timing comparisons without
 `--compare-cpu`, and alternate backend order across repeated runs.
+
+## Targeted feature benchmarks
+
+`MESHFRAME_BENCH=ON` also builds `meshframe_features_bench`. It accepts a mode
+and an iteration count and prints JSON with elapsed seconds and an output hash:
+
+```sh
+./build/meshframe_features_bench layout 500
+./build/meshframe_features_bench outline 20
+./build/meshframe_features_bench generator 100
+./build/meshframe_features_bench resize-cache 16
+./build/meshframe_features_bench peaks-linear 100
+./build/meshframe_features_bench peaks 100
+./build/meshframe_features_bench scopes 1000
+./build/meshframe_features_bench threshold 200
+./build/meshframe_features_bench sheet 200
+```
+
+`text`, `waveform`, and `decode` are also available. `decode` accepts an optional
+media path after the iteration count. Media modes otherwise use the generated
+assets in `bench/media`.
+
+Setup and hashing are outside the measured interval. `peaks-linear` preserves
+the original timeline range scan as a comparison for exact multiresolution
+peak queries. `resize-cache` requests eight different limits that produce the
+same decoded frame size. `sheet` composes twelve translucent thumbnail frames.
+
+Measure export through `meshframe-cli export ... wait=true` with a fixed
+project, range, dimensions, and CRF. Export overlaps encoding with rendering
+using one queued frame; evaluation and media access stay on their original
+thread. The x264 preset and CRF are unchanged. Compare decoded video and audio
+as well as elapsed time, and test cancellation while encoding is active.
+
+Compare medians from alternating before/after runs. Feature results describe
+their specific workloads and should not be multiplied together or treated as
+whole-project speedups.
