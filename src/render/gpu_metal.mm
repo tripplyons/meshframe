@@ -131,6 +131,49 @@ PixelStorage& pixelStorage() {
     return storage;
 }
 
+// Scratch and statistics buffers have no CPU image owner. A frame leases them
+// until its commands complete, then returns them to this bounded shared pool.
+class TemporaryBuffers {
+    static constexpr size_t kBudget = 64 * 1024 * 1024;
+    std::array<id<MTLBuffer>, 32> free_{};
+    size_t count_ = 0, bytes_ = 0;
+    std::mutex mutex_;
+
+    void remove(size_t index) {
+        bytes_ -= free_[index].length;
+        std::move(free_.begin() + index + 1, free_.begin() + count_, free_.begin() + index);
+        free_[--count_] = nil;
+    }
+
+public:
+    id<MTLBuffer> acquire(id<MTLDevice> device, size_t bytes) {
+        {
+            std::lock_guard lock(mutex_);
+            for (size_t i = count_; i > 0; --i) {
+                if (free_[i - 1].length != bytes) continue;
+                id<MTLBuffer> result = free_[i - 1];
+                remove(i - 1);
+                return result;
+            }
+        }
+        return [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    }
+
+    void recycle(id<MTLBuffer> buffer) {
+        size_t bytes = buffer.length;
+        if (!buffer || bytes > kBudget) return;
+        std::lock_guard lock(mutex_);
+        while (count_ && (count_ == free_.size() || bytes_ + bytes > kBudget)) remove(0);
+        free_[count_++] = buffer;
+        bytes_ += bytes;
+    }
+};
+
+TemporaryBuffers& temporaryBuffers() {
+    static TemporaryBuffers buffers;
+    return buffers;
+}
+
 constexpr const char* kShaders = R"METAL(
 #include <metal_stdlib>
 using namespace metal;
@@ -611,6 +654,7 @@ class MetalFrame final : public GpuFrame {
     Device& device_;
     std::vector<Stats> stats_;
     std::unordered_map<const Image*, Surface> surfaces_;
+    std::vector<id<MTLBuffer>> leased_;
     // Release the command buffer before the image owners behind no-copy buffers.
     id<MTLCommandBuffer> commands_;
     bool valid_ = true;
@@ -647,10 +691,8 @@ class MetalFrame final : public GpuFrame {
     id<MTLBuffer> counters(id<MTLComputePipelineState> pipeline, int w, int h, bool effects = false) {
         MTLSize size = threadgroupSize(pipeline);
         size_t groups = ((w + size.width - 1) / size.width) * ((h + size.height - 1) / size.height);
-        id<MTLBuffer> buffer = [device_.device newBufferWithLength:groups * 3 * sizeof(uint32_t)
-                                                           options:MTLResourceStorageModeShared];
-        if (!buffer) valid_ = false;
-        else stats_.push_back(Stats{buffer, groups, effects});
+        id<MTLBuffer> buffer = privateBuffer(groups * 3 * sizeof(uint32_t));
+        if (buffer) stats_.push_back(Stats{buffer, groups, effects});
         return buffer;
     }
 
@@ -665,8 +707,9 @@ class MetalFrame final : public GpuFrame {
     }
 
     id<MTLBuffer> privateBuffer(size_t bytes) {
-        id<MTLBuffer> result = [device_.device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> result = temporaryBuffers().acquire(device_.device, bytes);
         if (!result) valid_ = false;
+        else leased_.push_back(result);
         return result;
     }
 
@@ -971,6 +1014,19 @@ class MetalFrame final : public GpuFrame {
     explicit MetalFrame(Device& d) : device_(d) {
         commands_ = [d.queue commandBuffer];
         valid_ = commands_ != nil;
+    }
+
+    ~MetalFrame() override {
+        @autoreleasepool {
+            // Also cover destruction after a failed or interrupted finish.
+            // Uncommitted commands are discarded before their buffers return.
+            if (commands_.status == MTLCommandBufferStatusCommitted || commands_.status == MTLCommandBufferStatusScheduled)
+                [commands_ waitUntilCompleted];
+            commands_ = nil;
+            stats_.clear();
+            surfaces_.clear();
+            for (id<MTLBuffer> buffer : leased_) temporaryBuffers().recycle(buffer);
+        }
     }
 
     bool supportsBlur(double radius) const override {

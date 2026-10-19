@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <thread>
 
 using namespace mf;
 
@@ -450,4 +451,39 @@ TEST_F(GpuRendering, CachedMediaShadowKeepsContentBoundsForFollowingEffects) {
             ASSERT_TRUE(metal.usedGpuLastFrame());
             expectNear(*actual, *expected, 2);
         }
+}
+
+TEST_F(GpuRendering, RecycledBuffersKeepConcurrentAndAbandonedFramesIndependent) {
+    std::array<std::thread, 4> workers;
+    for (size_t worker = 0; worker < workers.size(); ++worker)
+        workers[worker] = std::thread([worker] {
+            ParamFn params = [worker](std::string_view name) -> Value {
+                if (name == "radius") return 9.0;
+                if (name == "amount") return .2 + worker * .1;
+                if (name == "color") return Color{.7f, .3f, .8f, .6f};
+                return {};
+            };
+            for (int repeat = 0; repeat < 8; ++repeat) {
+                int w = repeat % 2 ? 257 : 67, h = repeat % 2 ? 257 : 33;
+                auto source = pattern(w, h);
+                const Image original = *source;
+                Image expected = original;
+                applyEffect(expected, "blur", params, .7);
+                applyEffect(expected, "tint", params, .7);
+                // Discard encoded work without submitting it. These leases
+                // must become reusable without allowing abandoned writes.
+                {
+                    auto abandoned = createGpuFrame();
+                    abandoned->applyEffects(source, {{"blur", params}, {"tint", params}}, .7, {});
+                }
+                auto actual = std::make_shared<Image>(w, h);
+                auto gpu = createGpuFrame();
+                gpu->applyEffects(source, {{"blur", params}, {"tint", params}}, .7, {});
+                gpu->drawLayer(actual, source, Placement{w / 2.0, h / 2.0}, 1, Blend::Normal);
+                ASSERT_TRUE(gpu->finish(actual));
+                expectNear(*actual, expected, 1);
+                EXPECT_EQ(source->px, original.px);
+            }
+        });
+    for (auto& worker : workers) worker.join();
 }

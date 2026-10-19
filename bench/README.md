@@ -63,6 +63,8 @@ Apple silicon shares image memory with Metal; other devices download the final
 canvas. A 64 MiB pool reuses page-backed image storage and lazily attached Metal
 views between frames. Other platforms, unavailable devices, and failed GPU
 commands fall back to the CPU. Configure `-DMESHFRAME_METAL=OFF` to build without Metal.
+A separate 64 MiB pool reuses Metal scratch and statistics buffers after their
+frame commands complete. Unsubmitted commands are discarded before reuse.
 
 `--backend metal` requires actual GPU rendering and fails if any frame falls
 back. `--compare-cpu` renders a CPU reference for every frame and reports the
