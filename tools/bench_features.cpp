@@ -5,6 +5,7 @@
 #include "render/compositor.hpp"
 #include "render/font.hpp"
 #include "render/raster.hpp"
+#include "render/scopes.hpp"
 #include "render/waveform.hpp"
 #include <chrono>
 #include <cmath>
@@ -46,6 +47,11 @@ int main(int argc, char **argv) {
     }
     if (mode == "outline")
         drawText(image, *font, "Outlined animated title", 30, 120, 160, Color::gray(1));
+    if (mode == "scopes") {
+        image.resize(320, 180);
+        for (size_t i = 0; i < image.bytes(); ++i)
+            image.px[i] = uint8_t(i * 113);
+    }
     const Image source = image;
     TextBlock block;
     AudioBuffer peaks;
@@ -74,7 +80,9 @@ int main(int argc, char **argv) {
         } else if (mode == "generator") {
             fill(image, Color::gray(.2));
             drawList(image, list, 1);
-        } else if (mode == "waveform")
+        } else if (mode == "scopes")
+            image = analyzeFrameScopes(source, Color{.4f, .8f, .6f, 1}).waveform;
+        else if (mode == "waveform")
             image = drawWaveform(audio, 300, {});
         else if (mode == "resize-cache") {
             auto f = cache.frame(media, .5, 1920 + (i % 8) * 16, 1080 + (i % 8) * 9);

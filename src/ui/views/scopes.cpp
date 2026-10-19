@@ -1,5 +1,6 @@
 #include "ui/views/common.hpp"
 #include "ui/views/views.hpp"
+#include "render/scopes.hpp"
 
 #include <fmt/format.h>
 
@@ -10,10 +11,6 @@ namespace mf::ui::views {
 namespace {
 
 constexpr int kScopeWidth = 320;  // analysis frame width in pixels
-constexpr int kLevels = 128;      // waveform rows
-
-float luma(const uint8_t* px) { return (0.2126f * px[0] + 0.7152f * px[1] + 0.0722f * px[2]) / 255.0f; }
-
 // Luma waveform and histogram of the frame at the playhead.
 class ScopesView : public View {
 public:
@@ -58,24 +55,9 @@ private:
         analyzed_ = img && !img->empty();
         if (!analyzed_) return;
 
-        histogram_.fill(0);
-        std::vector<uint32_t> counts(size_t(img->w) * kLevels, 0);
-        for (int y = 0; y < img->h; ++y)
-            for (int x = 0; x < img->w; ++x) {
-                float l = luma(img->at(x, y));
-                histogram_[std::min(255, int(l * 255 + 0.5f))]++;
-                counts[size_t(std::min(kLevels - 1, int(l * (kLevels - 1) + 0.5f))) * img->w + x]++;
-            }
-        // Each column holds img->h samples; scale so a few hits are visible.
-        Color c = env.ui.col(Slot::Waveform);
-        Image wave(img->w, kLevels);
-        for (int row = 0; row < kLevels; ++row)
-            for (int x = 0; x < img->w; ++x) {
-                float v = std::min(1.0f, std::sqrt(float(counts[size_t(row) * img->w + x]) / float(img->h)) * 2.5f);
-                uint8_t* px = wave.at(x, kLevels - 1 - row);
-                px[0] = uint8_t(c.r * v * 255), px[1] = uint8_t(c.g * v * 255), px[2] = uint8_t(c.b * v * 255), px[3] = uint8_t(v * 255);
-            }
-        waveTexture_.update(env.ui.painter.renderer(), wave);
+        auto scopes = analyzeFrameScopes(*img, env.ui.col(Slot::Waveform));
+        histogram_ = scopes.histogram;
+        waveTexture_.update(env.ui.painter.renderer(), scopes.waveform);
     }
 
     void drawWaveform(Context& ui, Rect r) {

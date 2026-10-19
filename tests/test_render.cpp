@@ -4,6 +4,7 @@
 #include "model/edit.hpp"
 #include "render/compositor.hpp"
 #include "render/raster.hpp"
+#include "render/scopes.hpp"
 
 #include <gtest/gtest.h>
 
@@ -541,4 +542,24 @@ TEST(Render, IdentityEffectsPreservePremultipliedBytesAtEveryAlpha) {
         applyEffect(actual, type, params, .7);
         EXPECT_EQ(actual.px, original.px);
     }
+}
+
+TEST(Render, FrameScopesCountLumaAndDensityWithoutChangingColorRounding) {
+    Image source(17, 31);
+    fill(source, Color::gray(128.0f / 255));
+    auto scopes = analyzeFrameScopes(source, Color{.4f, .8f, .6f, 1});
+    EXPECT_EQ(scopes.histogram[128], 17u * 31);
+    EXPECT_EQ(scopes.waveform.w, 17);
+    EXPECT_EQ(scopes.waveform.h, 128);
+    for (int y = 0; y < 128; ++y)
+        for (int x = 0; x < 17; ++x) {
+            const uint8_t* pixel = scopes.waveform.at(x, y);
+            EXPECT_EQ(pixel[3], y == 63 ? 255 : 0);
+            if (y == 63) {
+                EXPECT_EQ(pixel[0], 102);
+                EXPECT_EQ(pixel[1], 204);
+                EXPECT_EQ(pixel[2], 153);
+            }
+        }
+    EXPECT_TRUE(analyzeFrameScopes(Image(), Color::gray(1)).waveform.empty());
 }
