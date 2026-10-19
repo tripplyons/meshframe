@@ -352,6 +352,9 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
     double radius = width * unit / 2;
     if (!std::isfinite(radius) || radius > 1e7) fail("excessive stroke width");
     std::vector<float> mask(size_t(dst.w) * dst.h, 0);
+    std::vector<uint8_t> samples(dst.w);
+    std::vector<double> crossings;
+    crossings.reserve(4);
     size_t work = 0;
     auto polygon = [&](const std::vector<PathPoint>& pts) {
         double lx = dst.w, ly = dst.h, hx = 0, hy = 0;
@@ -365,25 +368,45 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
             x1 = int(std::clamp(std::ceil(hx + 1), 0., double(dst.w)));
         int y0 = int(std::clamp(std::floor(ly - 1), 0., double(dst.h))),
             y1 = int(std::clamp(std::ceil(hy + 1), 0., double(dst.h)));
-        for (int y = y0; y < y1; ++y)
-            for (int x = x0; x < x1; ++x) {
-                if (++work > 100000000) fail("stroke exceeds render work limit");
-                work::addTaps(16);
-                int covered = 0;
-                for (int sy = 0; sy < 4; ++sy)
-                    for (int sx = 0; sx < 4; ++sx) {
-                        double xx = x + (sx + .5) / 4, yy = y + (sy + .5) / 4;
-                        bool inside = false;
-                        for (size_t j = 0, k = pts.size() - 1; j < pts.size(); k = j++) {
-                            auto a = pts[j], b = pts[k];
-                            if ((a.y > yy) != (b.y > yy) && xx < (b.x - a.x) * (yy - a.y) / (b.y - a.y) + a.x)
-                                inside = !inside;
-                        }
-                        covered += inside;
-                    }
-                auto& v = mask[size_t(y) * dst.w + x];
-                v = std::max(v, covered / 16.f);
+        if (x0 >= x1 || y0 >= y1) return;
+        size_t pixels = size_t(x1 - x0) * (y1 - y0);
+        if (pixels > 100000000 - work) fail("stroke exceeds render work limit");
+        work += pixels;
+        work::addEdge(uint64_t(pts.size()) * 4 * (y1 - y0));
+        uint64_t rasterized = 0;
+        for (int y = y0; y < y1; ++y) {
+            std::fill(samples.begin() + x0, samples.begin() + x1, uint8_t(0));
+            int maskBegin = x1, maskEnd = x0;
+            for (int sy = 0; sy < 4; ++sy) {
+                double yy = y + (sy + .5) / 4;
+                crossings.clear();
+                for (size_t j = 0, k = pts.size() - 1; j < pts.size(); k = j++) {
+                    auto a = pts[j], b = pts[k];
+                    if ((a.y > yy) != (b.y > yy))
+                        crossings.push_back((b.x - a.x) * (yy - a.y) / (b.y - a.y) + a.x);
+                }
+                std::sort(crossings.begin(), crossings.end());
+                for (size_t i = 0; i + 1 < crossings.size(); i += 2) {
+                    // Keep the original 4x4 grid exactly: sample s sits at
+                    // (s + .5) / 4, and the filled interval is [left, right).
+                    int begin = int(std::clamp(std::ceil(crossings[i] * 4 - .5), double(x0 * 4), double(x1 * 4)));
+                    int end = int(std::clamp(std::ceil(crossings[i + 1] * 4 - .5), double(x0 * 4), double(x1 * 4)));
+                    if (begin >= end) continue;
+                    int first = begin / 4, last = (end + 3) / 4;
+                    maskBegin = std::min(maskBegin, first);
+                    maskEnd = std::max(maskEnd, last);
+                    for (int x = first; x < last; ++x)
+                        samples[x] += uint8_t(std::min(end, (x + 1) * 4) - std::max(begin, x * 4));
+                }
             }
+            if (maskBegin >= maskEnd) continue;
+            rasterized += maskEnd - maskBegin;
+            for (int x = maskBegin; x < maskEnd; ++x) {
+                auto& v = mask[size_t(y) * dst.w + x];
+                v = std::max(v, samples[x] / 16.f);
+            }
+        }
+        work::addRaster(rasterized);
     };
     auto disc = [&](PathPoint a) {
         int x0 = int(std::clamp(std::floor(a.x - radius - 1), 0., double(dst.w))),
