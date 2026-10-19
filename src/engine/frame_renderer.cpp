@@ -38,6 +38,8 @@ bool gpuEffectsFor(Evaluator& ev, const Clip& c, double unit, const GpuFrame& gp
         any = true;
         if (e.type == "blur") {
             if (!gpu.supportsBlur(asNumber(ev.effectParams(e, false)("radius"), 4) * unit)) return false;
+        } else if (e.type == "drop_shadow") {
+            if (!gpu.supportsDropShadow(asNumber(ev.effectParams(e, false)("blur"), 8) * unit)) return false;
         } else if (e.type != "brightness_contrast" && e.type != "saturation" && e.type != "invert" &&
                    e.type != "tint" && e.type != "vignette" && e.type != "crop" && e.type != "mask") {
             return false;
@@ -129,6 +131,7 @@ struct CachedLayer {
     std::shared_ptr<Image> image;
     double offsetX = 0, offsetY = 0, displayW = 0, displayH = 0;
     bool opaque = false;
+    PixelBox content{};
 };
 
 std::mutex& layerCacheMutex() {
@@ -375,6 +378,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
             layer.offsetX = cache[i].offsetX, layer.offsetY = cache[i].offsetY;
             layer.displayW = cache[i].displayW, layer.displayH = cache[i].displayH;
             alphaKept = cache[i].opaque;
+            layer.effectContent = cache[i].content;
             hit = true;
             if (i) {
                 CachedLayer found = std::move(cache[i]);
@@ -386,11 +390,15 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
     }
     if (!layer.image) {
         bool wantsPixels = false;
+        bool rasterNeedsPadding = false;
         for (const auto& e : c.videoEffects)
-            if (e.enabled) wantsPixels = true;
+            if (e.enabled) {
+                wantsPixels = true;
+                rasterNeedsPadding |= e.type == "drop_shadow";
+            }
         // CPU effects need the generator's bytes immediately. Keep the entire
         // raster/effect chain on one side of the CPU/GPU boundary.
-        GpuFrame* rasterGpu = gpu && (gpuEffects || !wantsPixels) ? gpu : nullptr;
+        GpuFrame* rasterGpu = gpu && (gpuEffects || !wantsPixels) && !rasterNeedsPadding ? gpu : nullptr;
         layer = content(ev, c, t, unit, layerW, layerH, !gpu, rasterGpu);
         bool solid = layer.solid;
         Color solidColor = layer.color;
@@ -435,6 +443,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
             }
         }
         PixelBox content{margin, margin, layer.image->w, layer.image->h};
+        layer.effectContent = content;
         if (margin > 0) {
             auto padded = std::make_shared<Image>(layer.image->w + 2 * margin, layer.image->h + 2 * margin);
             for (int y = 0; y < layer.image->h; ++y) std::copy_n(layer.image->row(y), layer.image->w * 4, padded->at(margin, margin + y));
@@ -463,14 +472,14 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
         std::vector<CachedLayer>& cache = layerCache();
         std::erase_if(cache, [&](const CachedLayer& e) { return e.clip == c.id; });
         cache.insert(cache.begin(), CachedLayer{c.id, std::move(key), layer.image, layer.offsetX, layer.offsetY,
-                                                layer.displayW, layer.displayH, alphaKept});
+                                                layer.displayW, layer.displayH, alphaKept, layer.effectContent});
         if (cache.size() > kLayerCacheSize) cache.resize(kLayerCacheSize);
     }
     if (gpuEffects && layer.image) {
         std::vector<GpuEffect> effects;
         for (const auto& e : c.videoEffects) if (e.enabled) effects.push_back({e.type, ev.effectParams(e, false)});
         double effectUnit = unit * layer.image->w / layer.displayW;
-        gpu->applyEffects(layer.image, effects, effectUnit, PixelBox{0, 0, layer.image->w, layer.image->h});
+        gpu->applyEffects(layer.image, effects, effectUnit, layer.effectContent);
     }
     double scale = ev.num(c, "scale", 1);
     Placement at;

@@ -1,3 +1,4 @@
+#include "fixtures.hpp"
 #include "engine/frame_renderer.hpp"
 #include "model/edit.hpp"
 #include "render/gpu.hpp"
@@ -331,7 +332,7 @@ TEST_F(GpuRendering, GeneratorRasterAndUnsupportedEffectsKeepCpuFallbackConsiste
             }
 }
 
-TEST_F(GpuRendering, EffectBatchesPreserveIntermediateRoundingAndBlurBoundaries) {
+TEST_F(GpuRendering, EffectBatchesPreserveIntermediateRoundingAndSpatialBoundaries) {
     ParamFn params = [](std::string_view name) -> Value {
         if (name == "brightness") return .013;
         if (name == "contrast") return 1.03;
@@ -356,9 +357,9 @@ TEST_F(GpuRendering, EffectBatchesPreserveIntermediateRoundingAndBlurBoundaries)
     for (auto [w, h] : {std::pair{17, 9}, {67, 33}, {257, 257}})
         for (bool longChain : {false, true}) {
             std::vector<GpuEffect> effects;
-            const std::array<const char*, 8> types{
-                "brightness_contrast", "saturation", "invert", "tint", "vignette", "crop", "mask", "blur"};
-            for (int i = 0; i < (longChain ? 70 : 13); ++i)
+            const std::array<const char*, 9> types{
+                "brightness_contrast", "saturation", "invert", "tint", "vignette", "crop", "mask", "blur", "drop_shadow"};
+            for (int i = 0; i < (longChain ? 70 : 22); ++i)
                 effects.push_back({longChain ? types[i % 5] : types[i % types.size()], params});
             auto source = pattern(w, h), expected = std::make_shared<Image>(*source);
             Image original = *source;
@@ -377,5 +378,76 @@ TEST_F(GpuRendering, EffectBatchesPreserveIntermediateRoundingAndBlurBoundaries)
             ASSERT_TRUE(gpu->finish(actual));
             expectNear(*actual, *expected, 1);
             EXPECT_EQ(source->px, original.px);
+        }
+}
+
+TEST_F(GpuRendering, DropShadowsMatchCpuForColorOffsetsAndBlurRadii) {
+    auto probe = createGpuFrame();
+    ASSERT_TRUE(probe->supportsDropShadow(9));
+    EXPECT_FALSE(probe->supportsDropShadow(300));
+    for (auto [w, h] : {std::pair{1, 1}, {3, 5}, {31, 19}, {257, 257}})
+        for (double radius : {0.0, 2.0, 9.0, 66.0, 140.0})
+            for (auto [x, y] : {std::pair{0.0, 0.0}, {2.3, -1.7}, {-400.0, 300.0}})
+                for (Color color : {Color{0, 0, 0, 1}, Color{.7f, .3f, .8f, .6f}}) {
+                    SCOPED_TRACE(::testing::Message() << w << 'x' << h << " blur " << radius << " offset " << x << ',' << y);
+                    ParamFn params = [=](std::string_view name) -> Value {
+                        if (name == "blur") return radius;
+                        if (name == "x") return x;
+                        if (name == "y") return y;
+                        if (name == "color") return color;
+                        if (name == "opacity") return .73;
+                        return {};
+                    };
+                    auto source = pattern(w, h);
+                    const Image original = *source;
+                    Image expected = original;
+                    applyEffect(expected, "drop_shadow", params, .7);
+                    auto actual = std::make_shared<Image>(w, h);
+                    auto gpu = createGpuFrame();
+                    gpu->applyEffects(source, {{"drop_shadow", params}}, .7, {});
+                    gpu->drawLayer(actual, source, Placement{w / 2.0, h / 2.0}, 1, Blend::Normal);
+                    ASSERT_TRUE(gpu->finish(actual));
+                    expectNear(*actual, expected, 1);
+                    EXPECT_EQ(source->px, original.px);
+                }
+}
+
+TEST_F(GpuRendering, CachedMediaShadowKeepsContentBoundsForFollowingEffects) {
+    if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg CLI not installed";
+    Project project = Project::makeDefault();
+    project.script.clear();
+    project.settings.width = 64;
+    project.settings.height = 32;
+    MediaSource source;
+    std::string error;
+    ASSERT_TRUE(probeMedia(fixtures::redImage(), source, &error)) << error;
+    Id media = edit::addMedia(project, source);
+    Clip clip;
+    clip.kind = ClipKind::Media;
+    clip.media = media;
+    clip.track = project.findTrackByName("V1")->id;
+    clip.duration = 2;
+    Id id = edit::addClip(project, clip);
+    Id shadow = edit::addEffect(project, id, false, "drop_shadow");
+    edit::setPropConstant(project, shadow, "blur", 9.0);
+    edit::setPropConstant(project, shadow, "x", -6.0);
+    edit::setPropConstant(project, shadow, "y", 4.0);
+    Id vignette = edit::addEffect(project, id, false, "vignette");
+    edit::setPropConstant(project, vignette, "amount", .7);
+    edit::setPropConstant(project, vignette, "softness", .8);
+    Id crop = edit::addEffect(project, id, false, "crop");
+    edit::setPropConstant(project, crop, "left", .17);
+    edit::setPropConstant(project, crop, "right", .13);
+    edit::setPropConstant(project, crop, "top", .2);
+    MediaCache cache;
+    FrameRenderer cpu(cache, RenderBackend::Cpu), metal(cache, RenderBackend::Metal);
+    Evaluator evaluator;
+    evaluator.setProject(project);
+    for (auto [w, h] : {std::pair{64, 32}, {96, 48}})
+        for (int repeat = 0; repeat < 2; ++repeat) {
+            auto expected = cpu.render(evaluator, 0, w, h);
+            auto actual = metal.render(evaluator, 0, w, h);
+            ASSERT_TRUE(metal.usedGpuLastFrame());
+            expectNear(*actual, *expected, 2);
         }
 }

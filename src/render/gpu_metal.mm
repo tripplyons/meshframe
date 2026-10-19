@@ -451,12 +451,43 @@ kernel void raster_rect(device uchar4* dst [[buffer(0)]], constant RectParams& p
 }
 )METAL";
 
+
+constexpr const char* kShadowShaders = R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+struct ShadowParams {
+    uint4 sizes;
+    int4 shifts;
+    float4 color;
+    float4 props;
+};
+uchar4 shadowPack(float4 c) { return uchar4(clamp(c * 255.0f + 0.5f, 0.0f, 255.0f)); }
+kernel void shadow_mask(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
+                         constant ShadowParams& p [[buffer(2)]], uint2 xy [[thread_position_in_grid]]) {
+    uint index = xy.y * p.sizes.x + xy.x;
+    float alpha = float(src[index].a) / 255.0f * p.props.x;
+    dst[index] = shadowPack(float4(p.color.rgb * alpha, alpha));
+}
+kernel void shadow_composite(device const uchar4* src [[buffer(0)]], device const uchar4* shadow [[buffer(1)]],
+                              device uchar4* dst [[buffer(2)]], constant ShadowParams& p [[buffer(3)]],
+                              uint2 xy [[thread_position_in_grid]]) {
+    uint index = xy.y * p.sizes.x + xy.x;
+    int2 shifted = int2(xy) - p.shifts.xy;
+    float4 under = 0;
+    if (all(shifted >= 0) && shifted.x < int(p.sizes.x) && shifted.y < int(p.sizes.y))
+        under = float4(shadow[shifted.y * p.sizes.x + shifted.x]) / 255.0f;
+    float4 original = float4(src[index]) / 255.0f;
+    dst[index] = shadowPack(original + under * (1.0f - original.a));
+}
+)METAL";
+
 struct Device {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     id<MTLComputePipelineState> fill, draw, solid, rect, transition, blur, blurRows, blurRowsWide, transpose, effect;
     std::string error;
-    std::once_flag rectInit;
+    std::once_flag rectInit, shadowInit;
+    id<MTLComputePipelineState> shadowMask, shadowComposite;
 
     Device() {
         @autoreleasepool {
@@ -507,6 +538,21 @@ struct Device {
         });
         return rect;
     }
+
+    bool shadowPipelinesAvailable() {
+        std::call_once(shadowInit, [&] {
+            @autoreleasepool {
+                NSError* err = nil;
+                id<MTLLibrary> library = [device newLibraryWithSource:[NSString stringWithUTF8String:kShadowShaders]
+                                                              options:nil error:&err];
+                id<MTLFunction> mask = [library newFunctionWithName:@"shadow_mask"];
+                id<MTLFunction> composite = [library newFunctionWithName:@"shadow_composite"];
+                shadowMask = mask ? [device newComputePipelineStateWithFunction:mask error:&err] : nil;
+                shadowComposite = composite ? [device newComputePipelineStateWithFunction:composite error:&err] : nil;
+            }
+        });
+        return shadowMask && shadowComposite;
+    }
 };
 
 Device& sharedDevice() {
@@ -532,6 +578,12 @@ struct RectParams {
     float bounds[4];
     float color[4];
 };
+struct ShadowParams {
+    uint32_t sizes[4];
+    int32_t shifts[4];
+    float color[4];
+    float props[4];
+};
 struct TransitionParams {
     uint32_t sizes[4];
     int32_t shifts[4];
@@ -543,7 +595,7 @@ struct EffectParams {
     float p0[4], p1[4], color[4];
 };
 static_assert(sizeof(DrawParams) == 96 && sizeof(RectParams) == 48 && sizeof(TransitionParams) == 64 &&
-              sizeof(EffectParams) == 64);
+              sizeof(EffectParams) == 64 && sizeof(ShadowParams) == 64);
 
 class MetalFrame final : public GpuFrame {
     struct Surface {
@@ -663,6 +715,118 @@ class MetalFrame final : public GpuFrame {
         pending.clear();
     }
 
+    void blurSurface(Surface& surface, int w, int h, int r) {
+        if (r < 1) return;
+        id<MTLBuffer> a = privateBuffer(size_t(w) * h * 4);
+        id<MTLBuffer> b = surface.privatePixels ? surface.buffer : privateBuffer(size_t(w) * h * 4);
+        if (!valid_) return;
+        id<MTLBuffer> in = surface.buffer;
+        id<MTLComputePipelineState> pipeline = blurPipeline(r);
+        const size_t tile = r <= 32 ? 128 : 512;
+        const size_t lanes = pipeline.threadExecutionWidth;
+        const bool prefixRows = pipeline != nil;
+        // Transpose larger images so column prefixes also read contiguous
+        // memory. Small images avoid the two extra dispatches.
+        const bool transposeCols = prefixRows && uint64_t(w) * h >= 65536 &&
+                                   device_.transpose.maxTotalThreadsPerThreadgroup >= 256;
+        int width = w, height = h;
+        for (int pass = 0; pass < 6; ++pass) {
+            if (pass == 3 && transposeCols) {
+                id<MTLBuffer> out = in == a ? b : a;
+                transpose(in, out, width, height);
+                if (!valid_) return;
+                in = out;
+                std::swap(width, height);
+            }
+            id<MTLBuffer> out = in == a ? b : a;
+            const bool horizontal = pass < 3 || transposeCols;
+            const bool prefix = prefixRows && horizontal;
+            uint32_t params[4] = {uint32_t(width), uint32_t(height), uint32_t(r),
+                                  uint32_t(prefix ? lanes : horizontal)};
+            id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
+            if (!enc) {
+                valid_ = false;
+                return;
+            }
+            [enc setBuffer:in offset:0 atIndex:0];
+            [enc setBuffer:out offset:0 atIndex:1];
+            [enc setBytes:params length:sizeof params atIndex:2];
+            if (prefix) {
+                const size_t groups = (width + tile - 2 * r - 1) / (tile - 2 * r);
+                [enc setComputePipelineState:pipeline];
+                [enc dispatchThreadgroups:MTLSizeMake(groups, height, 1)
+                   threadsPerThreadgroup:MTLSizeMake(tile, 1, 1)];
+                [enc endEncoding];
+                // Seed each prefix, count scan/carry additions, then the
+                // subtraction for every window except the tile's first.
+                size_t scanSteps = 0;
+                for (size_t stride = 1; stride < lanes; stride *= 2) scanSteps += lanes - stride;
+                size_t steps = tile + scanSteps * (tile / lanes);
+                if (tile > 128) steps += lanes + scanSteps + tile;
+                else {
+                    for (size_t simd = 1; simd < tile / lanes; ++simd) steps += simd * lanes;
+                }
+                work::addBlur(uint64_t(height) * (groups * steps + width - groups));
+            } else {
+                dispatch(enc, device_.blur, width, height);
+                work::addBlur(uint64_t(w) * h * (2 * r + 1));
+            }
+            in = out;
+        }
+        if (transposeCols) {
+            id<MTLBuffer> out = in == a ? b : a;
+            transpose(in, out, width, height);
+            if (!valid_) return;
+            in = out;
+        }
+        surface.buffer = in;
+        surface.privatePixels = true;
+    }
+
+    void dropShadow(Surface& surface, int w, int h, const ParamFn& params, double unit) {
+        if (!device_.shadowPipelinesAvailable()) {
+            valid_ = false;
+            return;
+        }
+        auto n = [&](std::string_view name, double fallback) { return asNumber(params(name), fallback); };
+        Color color = asColor(params("color"), Color::gray(0));
+        ShadowParams p{};
+        p.sizes[0] = w;
+        p.sizes[1] = h;
+        p.shifts[0] = int(std::lround(n("x", 6) * unit));
+        p.shifts[1] = int(std::lround(n("y", 6) * unit));
+        p.color[0] = color.r;
+        p.color[1] = color.g;
+        p.color[2] = color.b;
+        p.props[0] = float(std::clamp(n("opacity", .6), 0.0, 1.0)) * color.a;
+        size_t bytes = size_t(w) * h * 4;
+        id<MTLBuffer> source = surface.buffer, mask = privateBuffer(bytes);
+        if (!valid_) return;
+        id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
+        [enc setBuffer:source offset:0 atIndex:0];
+        [enc setBuffer:mask offset:0 atIndex:1];
+        [enc setBytes:&p length:sizeof p atIndex:2];
+        dispatch(enc, device_.shadowMask, w, h);
+        work::addCopy(uint64_t(w) * h);
+        Surface shadow{{}, mask, true};
+        int radius = int(std::lround(std::max(0.0, n("blur", 8) * unit) / 2));
+        blurSurface(shadow, w, h, radius);
+        id<MTLBuffer> out = surface.privatePixels ? source : privateBuffer(bytes);
+        if (!valid_) return;
+        enc = [commands_ computeCommandEncoder];
+        [enc setBuffer:source offset:0 atIndex:0];
+        [enc setBuffer:shadow.buffer offset:0 atIndex:1];
+        [enc setBuffer:out offset:0 atIndex:2];
+        [enc setBytes:&p length:sizeof p atIndex:3];
+        dispatch(enc, device_.shadowComposite, w, h);
+        uint64_t shifted = uint64_t(std::max<int64_t>(0, int64_t(w) - std::abs(int64_t(p.shifts[0])))) *
+                           std::max<int64_t>(0, int64_t(h) - std::abs(int64_t(p.shifts[1])));
+        work::addCopy(uint64_t(w) * h + shifted);
+        work::addBlend(uint64_t(w) * h);
+        surface.buffer = out;
+        surface.privatePixels = true;
+    }
+
     void effect(ImagePtr image, const GpuEffect& e, double unit, PixelBox content, std::vector<EffectParams>& pending) {
         Surface& surface = surfaces_.at(image.get());
         auto n = [&](std::string_view name, double fallback) { return asNumber(e.params(name), fallback); };
@@ -672,70 +836,13 @@ class MetalFrame final : public GpuFrame {
             if (r < 1) return;
             flushPointEffects(image, pending);
             if (!valid_) return;
-            id<MTLBuffer> a = privateBuffer(image->bytes());
-            id<MTLBuffer> b = surface.privatePixels ? surface.buffer : privateBuffer(image->bytes());
+            blurSurface(surface, w, h, r);
+            return;
+        }
+        if (e.type == "drop_shadow") {
+            flushPointEffects(image, pending);
             if (!valid_) return;
-            id<MTLBuffer> in = surface.buffer;
-            id<MTLComputePipelineState> pipeline = blurPipeline(r);
-            const size_t tile = r <= 32 ? 128 : 512;
-            const size_t lanes = pipeline.threadExecutionWidth;
-            const bool prefixRows = pipeline != nil;
-            // Transpose larger images so column prefixes also read contiguous
-            // memory. Small images avoid the two extra dispatches.
-            const bool transposeCols = prefixRows && uint64_t(w) * h >= 65536 &&
-                                       device_.transpose.maxTotalThreadsPerThreadgroup >= 256;
-            int width = w, height = h;
-            for (int pass = 0; pass < 6; ++pass) {
-                if (pass == 3 && transposeCols) {
-                    id<MTLBuffer> out = in == a ? b : a;
-                    transpose(in, out, width, height);
-                    if (!valid_) return;
-                    in = out;
-                    std::swap(width, height);
-                }
-                id<MTLBuffer> out = in == a ? b : a;
-                const bool horizontal = pass < 3 || transposeCols;
-                const bool prefix = prefixRows && horizontal;
-                uint32_t params[4] = {uint32_t(width), uint32_t(height), uint32_t(r),
-                                      uint32_t(prefix ? lanes : horizontal)};
-                id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
-                if (!enc) {
-                    valid_ = false;
-                    return;
-                }
-                [enc setBuffer:in offset:0 atIndex:0];
-                [enc setBuffer:out offset:0 atIndex:1];
-                [enc setBytes:params length:sizeof params atIndex:2];
-                if (prefix) {
-                    const size_t groups = (width + tile - 2 * r - 1) / (tile - 2 * r);
-                    [enc setComputePipelineState:pipeline];
-                    [enc dispatchThreadgroups:MTLSizeMake(groups, height, 1)
-                       threadsPerThreadgroup:MTLSizeMake(tile, 1, 1)];
-                    [enc endEncoding];
-                    // Seed each prefix, count scan/carry additions, then the
-                    // subtraction for every window except the tile's first.
-                    size_t scanSteps = 0;
-                    for (size_t stride = 1; stride < lanes; stride *= 2) scanSteps += lanes - stride;
-                    size_t steps = tile + scanSteps * (tile / lanes);
-                    if (tile > 128) steps += lanes + scanSteps + tile;
-                    else {
-                        for (size_t simd = 1; simd < tile / lanes; ++simd) steps += simd * lanes;
-                    }
-                    work::addBlur(uint64_t(height) * (groups * steps + width - groups));
-                } else {
-                    dispatch(enc, device_.blur, width, height);
-                    work::addBlur(uint64_t(w) * h * (2 * r + 1));
-                }
-                in = out;
-            }
-            if (transposeCols) {
-                id<MTLBuffer> out = in == a ? b : a;
-                transpose(in, out, width, height);
-                if (!valid_) return;
-                in = out;
-            }
-            surface.buffer = in;
-            surface.privatePixels = true;
+            dropShadow(surface, w, h, e.params, unit);
             return;
         }
         EffectParams p{};
@@ -869,6 +976,10 @@ class MetalFrame final : public GpuFrame {
     bool supportsBlur(double radius) const override {
         if (!std::isfinite(radius) || radius > 256) return false;
         return radius <= 64 || blurPipeline(int(std::lround(radius / 2))) != nil;
+    }
+
+    bool supportsDropShadow(double blurRadius) const override {
+        return supportsBlur(blurRadius) && device_.shadowPipelinesAvailable();
     }
 
     void fill(const std::shared_ptr<Image>& dst, Color color) override {

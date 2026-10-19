@@ -30,6 +30,7 @@ private:
         double displayW = 0, displayH = 0;  // size in output pixels before the clip's scale
         bool opaque = false, solid = false;
         Color color{};
+        PixelBox effectContent{};
     };
     Layer content(Evaluator& ev, const Clip& c, double t, double unit, int w, int h, bool inspectOpacity,
                   GpuFrame* rasterGpu);
