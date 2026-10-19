@@ -6,6 +6,7 @@
 #include "render/font.hpp"
 #include "render/raster.hpp"
 #include "render/scopes.hpp"
+#include "render/sheet.hpp"
 #include "render/waveform.hpp"
 #include <chrono>
 #include <cmath>
@@ -52,6 +53,25 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < image.bytes(); ++i)
             image.px[i] = uint8_t(i * 113);
     }
+    if (mode == "sheet") {
+        image.resize(320, 180);
+        fill(image, Color{.7f, .2f, .5f, .6f});
+    }
+    if (mode == "threshold") {
+        for (size_t i = 0; i < image.bytes(); i += 4) {
+            unsigned alpha = unsigned(i * 37 / 4) % 256;
+            image.px[i] = uint8_t((i * 71) % (alpha + 1));
+            image.px[i + 1] = uint8_t((i * 113) % (alpha + 1));
+            image.px[i + 2] = uint8_t((i * 17) % (alpha + 1));
+            image.px[i + 3] = uint8_t(alpha);
+        }
+    }
+    std::vector<SheetCell> cells;
+    if (mode == "sheet") {
+        auto frame = std::make_shared<Image>(image);
+        for (int i = 0; i < 12; ++i)
+            cells.push_back({frame, "00:00:01.000"});
+    }
     const Image source = image;
     TextBlock block;
     AudioBuffer peaks;
@@ -80,6 +100,11 @@ int main(int argc, char **argv) {
         } else if (mode == "generator") {
             fill(image, Color::gray(.2));
             drawList(image, list, 1);
+        } else if (mode == "threshold") {
+            image = source;
+            applyEffect(image, "threshold", [](std::string_view) -> Value { return .5; }, 1);
+        } else if (mode == "sheet") {
+            image = composeSheet(cells, 4);
         } else if (mode == "scopes")
             image = analyzeFrameScopes(source, Color{.4f, .8f, .6f, 1}).waveform;
         else if (mode == "waveform")

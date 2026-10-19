@@ -526,10 +526,20 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
         });
     } else if (type == "threshold") {
         float level = float(numParam(param, "level", 0.5));
-        mapStraight(img, [&](float& r, float& g, float& b, int, int) {
-            float v = luma(r, g, b) >= level ? 1.0f : 0.0f;
-            r = g = b = v;
-            return true;
+        forRows(img.h, [&](int begin, int end) {
+            uint64_t mapped = 0;
+            for (int y = begin; y < end; ++y)
+                for (uint8_t* pixel = img.row(y), *last = pixel + size_t(img.w) * 4; pixel != last; pixel += 4) {
+                    if (!pixel[3]) continue;
+                    float alpha = pixel[3] / 255.0f;
+                    float r = pixel[0] / 255.0f / alpha, g = pixel[1] / 255.0f / alpha, b = pixel[2] / 255.0f / alpha;
+                    // A binary straight color repremultiplies to either zero
+                    // or the original alpha byte, without three float clamps.
+                    uint8_t value = luma(r, g, b) >= level ? pixel[3] : 0;
+                    pixel[0] = pixel[1] = pixel[2] = value;
+                    ++mapped;
+                }
+            work::addMap(mapped);
         });
     } else if (type == "drop_shadow") {
         Color c = asColor(param("color"), Color::gray(0));

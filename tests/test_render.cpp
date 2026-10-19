@@ -563,3 +563,34 @@ TEST(Render, FrameScopesCountLumaAndDensityWithoutChangingColorRounding) {
         }
     EXPECT_TRUE(analyzeFrameScopes(Image(), Color::gray(1)).waveform.empty());
 }
+
+TEST(Render, ThresholdPreservesEveryAlphaByteAndBinaryCutoffs) {
+    Image source(256, 256);
+    for (int alpha = 0; alpha < 256; ++alpha)
+        for (int x = 0; x < 256; ++x) {
+            auto* p = source.at(x, alpha);
+            p[0] = uint8_t(x % (alpha + 1));
+            p[1] = uint8_t((x * 13 + alpha) % (alpha + 1));
+            p[2] = uint8_t((x * 7 + 3) % (alpha + 1));
+            p[3] = uint8_t(alpha);
+        }
+    source.at(1, 0)[0] = 71;
+    for (float level : {0.0f, .2126f, .5f, .7152f, 1.0f}) {
+        Image actual = source;
+        applyEffect(actual, "threshold", [=](std::string_view) -> Value { return double(level); }, 1);
+        for (int alpha = 0; alpha < 256; ++alpha)
+            for (int x = 0; x < 256; ++x) {
+                const auto* input = source.at(x, alpha);
+                const auto* output = actual.at(x, alpha);
+                EXPECT_EQ(output[3], alpha);
+                if (alpha == 0) {
+                    for (int c = 0; c < 3; ++c) EXPECT_EQ(output[c], input[c]);
+                    continue;
+                }
+                float a = alpha / 255.0f;
+                float r = input[0] / 255.0f / a, g = input[1] / 255.0f / a, b = input[2] / 255.0f / a;
+                int expected = .2126f * r + .7152f * g + .0722f * b >= level ? alpha : 0;
+                for (int c = 0; c < 3; ++c) EXPECT_EQ(output[c], expected);
+            }
+    }
+}
