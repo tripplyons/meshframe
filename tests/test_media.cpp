@@ -196,3 +196,25 @@ TEST(Media, CacheSharesEquivalentOutputSizesWithoutRoundingTwice) {
     // Even rounding is performed once, not again using the rounded result.
     EXPECT_EQ(VideoDecoder::outputSize(641, 359, 500, 500), (std::pair{500, 280}));
 }
+
+TEST(Media, PeakPyramidMatchesDirectRangesIncludingUnalignedTails) {
+    AudioBuffer buffer;
+    buffer.peaks.resize(10003 * 2);
+    for (size_t i = 0; i < 10003; ++i) {
+        buffer.peaks[i * 2] = -float(i % 127) / 127;
+        buffer.peaks[i * 2 + 1] = float(i % 131) / 131;
+    }
+    buffer.buildPeakPyramid();
+    for (size_t first = 0; first < 10010; first += 37)
+        for (size_t length : {size_t(0), size_t(1), size_t(15), size_t(16), size_t(257), size_t(10000)}) {
+            float lo = 0, hi = 0;
+            for (size_t i = first; i < std::min(first + length, size_t(10003)); ++i) {
+                lo = std::min(lo, buffer.peaks[2 * i]);
+                hi = std::max(hi, buffer.peaks[2 * i + 1]);
+            }
+            EXPECT_EQ(buffer.peakRange(first, first + length), (std::pair{lo, hi}));
+        }
+    buffer.peaks.clear();
+    buffer.buildPeakPyramid();
+    EXPECT_EQ(buffer.peakRange(0, 100), (std::pair{0.0f, 0.0f}));
+}

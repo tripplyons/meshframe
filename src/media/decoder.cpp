@@ -200,7 +200,44 @@ std::shared_ptr<AudioBuffer> decodeAudio(const std::string& path, int sampleRate
         buf->peaks[b * 2] = lo;
         buf->peaks[b * 2 + 1] = hi;
     }
+    buf->buildPeakPyramid();
     return buf;
+}
+
+void AudioBuffer::buildPeakPyramid() {
+    peakPyramid_.clear();
+    const std::vector<float>* source = &peaks;
+    while (source->size() / 2 > 16) {
+        std::vector<float> level(((source->size() / 2 + 15) / 16) * 2);
+        for (size_t group = 0; group < level.size() / 2; ++group) {
+            float lo = 0, hi = 0;
+            for (size_t i = group * 16; i < std::min(source->size() / 2, (group + 1) * 16); ++i) {
+                lo = std::min(lo, (*source)[i * 2]);
+                hi = std::max(hi, (*source)[i * 2 + 1]);
+            }
+            level[group * 2] = lo;
+            level[group * 2 + 1] = hi;
+        }
+        peakPyramid_.push_back(std::move(level));
+        source = &peakPyramid_.back();
+    }
+}
+
+std::pair<float, float> AudioBuffer::peakRange(size_t first, size_t last) const {
+    last = std::min(last, peaks.size() / 2);
+    float lo = 0, hi = 0;
+    while (first < last) {
+        size_t level = 0, stride = 1;
+        while (level < peakPyramid_.size() && stride <= (last - first) / 16 && first % (stride * 16) == 0) {
+            stride *= 16;
+            ++level;
+        }
+        const auto& values = level ? peakPyramid_[level - 1] : peaks;
+        lo = std::min(lo, values[first / stride * 2]);
+        hi = std::max(hi, values[first / stride * 2 + 1]);
+        first += stride;
+    }
+    return {lo, hi};
 }
 
 VideoDecoder::~VideoDecoder() {

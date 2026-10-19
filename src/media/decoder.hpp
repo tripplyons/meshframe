@@ -28,6 +28,12 @@ struct AudioBuffer {
 
     size_t frames() const { return samples.size() / 2; }
     double duration() const { return double(frames()) / sampleRate; }
+    // Rebuild after populating peaks. Queries use half-open block ranges.
+    void buildPeakPyramid();
+    std::pair<float, float> peakRange(size_t first, size_t last) const;
+
+private:
+    std::vector<std::vector<float>> peakPyramid_;
 };
 
 std::shared_ptr<AudioBuffer> decodeAudio(const std::string& path, int sampleRate, std::string* err);

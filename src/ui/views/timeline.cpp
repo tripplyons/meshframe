@@ -355,11 +355,7 @@ private:
             double ta = c.in + (timeAt(x) - c.start) * c.speed, tb = c.in + (timeAt(x + 1) - c.start) * c.speed;
             size_t b0 = size_t(std::max(0.0, ta * blocksPerSec)), b1 = size_t(std::max(0.0, tb * blocksPerSec)) + 1;
             if (b0 >= blocks) break;
-            float lo = 0, hi = 0;
-            for (size_t b = b0; b < std::min(b1, blocks); ++b) {
-                lo = std::min(lo, buf->peaks[b * 2]);
-                hi = std::max(hi, buf->peaks[b * 2 + 1]);
-            }
+            auto [lo, hi] = buf->peakRange(b0, b1);
             ui.painter.vline(x, mid - hi * half, mid - lo * half + 1, col);
         }
     }
