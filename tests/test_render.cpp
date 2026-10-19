@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <thread>
 
 using namespace mf;
 
@@ -215,6 +216,26 @@ TEST(Render, NegativeScaleMirrorsLayersAndSolidFallback) {
         for (int x = 0; x < actual.w; ++x)
             for (int c = 0; c < 4; ++c) EXPECT_EQ(actual.at(x, y)[c], source.at(7 - x, 3 - y)[c]);
     EXPECT_FALSE(drawSolidLayer(actual, Placement{4, 2, -1, 1}, 8, 4, Color{1, 0, 0, 1}, 1, Blend::Normal));
+}
+
+TEST(Render, RecycledImageStorageIsZeroedAndIndependentAcrossThreads) {
+    std::array<std::thread, 4> workers;
+    for (size_t worker = 0; worker < workers.size(); ++worker) {
+        workers[worker] = std::thread([worker] {
+            for (int round = 0; round < 32; ++round) {
+                Image retained(257, 127);
+                const uint8_t value = uint8_t(worker * 32 + round + 1);
+                std::fill(retained.px.begin(), retained.px.end(), value);
+                for (int reuse = 0; reuse < 4; ++reuse) {
+                    Image image(257 + round % 3, 127);
+                    EXPECT_TRUE(std::ranges::all_of(image.px, [](uint8_t v) { return v == 0; }));
+                    std::fill(image.px.begin(), image.px.end(), uint8_t(value + reuse));
+                }
+                EXPECT_TRUE(std::ranges::all_of(retained.px, [value](uint8_t v) { return v == value; }));
+            }
+        });
+    }
+    for (auto& worker : workers) worker.join();
 }
 
 TEST(Render, VideoEffects) {
