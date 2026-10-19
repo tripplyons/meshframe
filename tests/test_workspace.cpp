@@ -8,11 +8,22 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <thread>
+#include <chrono>
 
 using namespace mf;
 using namespace mf::ui;
 
 namespace {
+
+bool waitForRecovery(const std::function<bool()>& ready) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    do {
+        if (ready()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+    return ready();
+}
 
 struct PaneMarker : PaneState {
     int value = 0;
@@ -376,6 +387,11 @@ TEST(Shell, RecoveryRestoresCopiesOfEditorsThatDidNotQuit) {
         ASSERT_TRUE(a.run({"save", path})["ok"]);
         ASSERT_TRUE(a.run({"track.add", "video", "name=Unsaved"})["ok"]);
         a.frame();
+        ASSERT_TRUE(waitForRecovery([&] {
+            for (const auto& e : fs::directory_iterator(dir))
+                if (e.path().extension() == ".json") return true;
+            return false;
+        }));
         std::vector<fs::path> files;
         for (const auto& e : fs::directory_iterator(dir)) files.push_back(e.path());
         ASSERT_EQ(files.size(), 3u) << "a copy, its details, and a lock";
@@ -461,7 +477,7 @@ TEST(Shell, RecoveryKeepsCopiesOfUnsavedWorkOnly) {
     EXPECT_EQ(copies(), 0) << "nothing unsaved";
     ASSERT_TRUE(h.run({"track.add", "video", "name=First"})["ok"]);
     h.frame();
-    ASSERT_EQ(copies(), 1);
+    ASSERT_TRUE(waitForRecovery([&] { return copies() == 1; }));
 
     // Later edits wait for the interval.
     ASSERT_TRUE(h.run({"track.add", "video", "name=Second"})["ok"]);
@@ -474,7 +490,7 @@ TEST(Shell, RecoveryKeepsCopiesOfUnsavedWorkOnly) {
     EXPECT_FALSE(hasTrack(copy(), "Second"));
     h.now += Recovery::kInterval;
     h.frame();
-    EXPECT_TRUE(hasTrack(copy(), "Second"));
+    ASSERT_TRUE(waitForRecovery([&] { return hasTrack(copy(), "Second"); }));
 
     // Saving removes the copy.
     ASSERT_TRUE(h.run({"save", path})["ok"]);

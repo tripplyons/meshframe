@@ -61,24 +61,43 @@ Recovery::~Recovery() {
 void Recovery::update(const Session& s, double now) {
     if (lockFd_ < 0) return;
     if (!s.dirty()) return clear();
+    if (pending_.valid()) {
+        if (pending_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+        if (!pending_.get()) copied_ = 0;
+    }
     if (s.revision() == copied_ || now - copiedAt_ < kInterval) return;
-    copied_ = s.revision();
-    copiedAt_ = now;
-    fs::path base = fs::path(dir_) / stem_;
+    const auto base = (fs::path(dir_) / stem_).string();
+    auto project = s.snapshot();
+    auto path = s.path();
     try {
-        saveProject(s.project(), base.string() + ".mfproj");
-        nlohmann::json info = {{"path", s.path()}, {"name", s.project().name}, {"savedAt", std::time(nullptr)}};
-        std::ofstream out(base.string() + ".json", std::ios::trunc);
-        out << info.dump(2) << '\n';
+        pending_ = std::async(std::launch::async, [project = std::move(project), path = std::move(path), base] {
+            try {
+                saveProject(*project, base + ".mfproj");
+                nlohmann::json info = {{"path", path}, {"name", project->name}, {"savedAt", std::time(nullptr)}};
+                {
+                    std::ofstream out(base + ".json.tmp", std::ios::trunc);
+                    out << info.dump(2) << '\n';
+                    if (!out) return false;
+                }
+                fs::rename(base + ".json.tmp", base + ".json");
+                return true;
+            } catch (const std::exception&) { return false; }
+        });
+        copied_ = s.revision();
+        copiedAt_ = now;
         hasCopy_ = true;
     } catch (const std::exception&) {
-        // A full disk or a removed directory: try again after the next interval.
+        // Try again on a later update if a worker could not be started.
     }
 }
 
 void Recovery::clear() {
+    if (pending_.valid()) pending_.get();
     if (!hasCopy_) return;
     remove({(fs::path(dir_) / (stem_ + ".mfproj")).string(), {}, {}, 0});
+    std::error_code ec;
+    fs::remove(fs::path(dir_) / (stem_ + ".json.tmp"), ec);
+    fs::remove(fs::path(dir_) / (stem_ + ".mfproj.tmp"), ec);
     hasCopy_ = false;
     copied_ = 0;
     copiedAt_ = -1e300;

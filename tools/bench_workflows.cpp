@@ -2,6 +2,8 @@
 #include "session/diff.hpp"
 #include "media/scenes.hpp"
 #include "model/serialize.hpp"
+#include "session/recovery.hpp"
+#include <filesystem>
 #include <chrono>
 #include <iostream>
 using namespace mf;
@@ -29,6 +31,7 @@ int main(int argc, char** argv) {
     Clip synth; synth.kind = ClipKind::Synth;
     synth.props["synth"].constant = std::string("tone");
     std::vector<float> audio(4096 * 2);
+    Recovery recovery("build-ar/workflow-round4/recovery-bench");
     uint64_t checksum = 0;
     auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < count; ++i) {
@@ -39,6 +42,7 @@ int main(int argc, char** argv) {
             auto frame = mode == "preview-reuse" ? s.analysisFrame(t, 320, 180) : s.renderFrame(t, 320, 180);
             checksum += frame->px[100];
         }
+        else if (mode == "recovery") { recovery.update(s, i * 11.0); }
         else if (mode == "lookup") { for (const auto& c : ev.project().clips) checksum += ev.clipVisibleAt(c, .25); }
         else if (mode == "evaluate") { ev.setProject(p); checksum += ev.graph().size(); }
         else if (mode == "diff") checksum += diffProjects(p, after).dump().size();

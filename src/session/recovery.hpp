@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ctime>
+#include <future>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,7 @@ private:
     std::string dir_;
     std::string stem_;  // this editor's files: <dir>/<stem>.mfproj, .json, .lock
     int lockFd_ = -1;
+    std::future<bool> pending_;
     bool hasCopy_ = false;
     uint64_t copied_ = 0;
     double copiedAt_ = -1e300;
