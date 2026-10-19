@@ -49,6 +49,7 @@ public:
 private:
     Font() = default;
     void setSize(float px);
+    const Glyph& glyphAtSize(uint32_t codepoint, int size);
 
     FT_FaceRec_* face_ = nullptr;
     std::string path_;

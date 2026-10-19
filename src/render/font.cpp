@@ -114,7 +114,10 @@ FontMetrics Font::metrics(float px) {
 
 const Glyph& Font::glyph(uint32_t codepoint, float px) {
     std::lock_guard lock(mu_);
-    int sk = sizeKey(px);
+    return glyphAtSize(codepoint, sizeKey(px));
+}
+
+const Glyph& Font::glyphAtSize(uint32_t codepoint, int sk) {
     uint64_t key = (uint64_t(sk) << 32) | codepoint;
     if (auto it = glyphs_.find(key); it != glyphs_.end()) return *it->second;
     setSize(sk / 4.0f);
@@ -139,8 +142,10 @@ const Glyph& Font::glyph(uint32_t codepoint, float px) {
 }
 
 float Font::measure(std::string_view text, float px) {
+    std::lock_guard lock(mu_);
+    const int size = sizeKey(px);
     float w = 0;
-    for (size_t i = 0; i < text.size();) w += glyph(nextCodepoint(text, i), px).advance;
+    for (size_t i = 0; i < text.size();) w += glyphAtSize(nextCodepoint(text, i), size).advance;
     return w;
 }
 
