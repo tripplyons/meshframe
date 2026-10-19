@@ -490,7 +490,7 @@ TEST(Shell, RecoveryKeepsCopiesOfUnsavedWorkOnly) {
     EXPECT_FALSE(hasTrack(copy(), "Second"));
     h.now += Recovery::kInterval;
     h.frame();
-    ASSERT_TRUE(waitForRecovery([&] { return hasTrack(copy(), "Second"); }));
+    ASSERT_TRUE(waitForRecovery([&] { h.frame(); return hasTrack(copy(), "Second"); }));
 
     // Saving removes the copy.
     ASSERT_TRUE(h.run({"save", path})["ok"]);

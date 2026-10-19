@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
     VideoDecoder video;
     if (mode.starts_with("decode")) {
         std::string error;
-        if (!video.open(mode.find("long") != std::string::npos ? "build-ar/workflow-round4/long-gop.mp4" : "bench/media/clip_b.mp4", 1920, 1080, &error)) return 1;
+        if (!video.open(argc > 3 ? argv[3] : "bench/media/clip_b.mp4", 1920, 1080, &error)) return 1;
     }
     uint64_t checksum = 0;
     auto start = std::chrono::steady_clock::now();

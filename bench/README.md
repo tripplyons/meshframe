@@ -117,3 +117,73 @@ as well as elapsed time, and test cancellation while encoding is active.
 Compare medians from alternating before/after runs. Feature results describe
 their specific workloads and should not be multiplied together or treated as
 whole-project speedups.
+
+## Editing and media workflow benchmarks
+
+`meshframe_workflows_bench MODE ITERATIONS [VIDEO]` measures work outside the
+pixel kernels. Run from the repository root. Setup is outside the timer; output
+contains the mode, elapsed milliseconds, and a checksum.
+
+```sh
+./build-ar/meshframe_workflows_bench edit 300
+./build-ar/meshframe_workflows_bench evaluate 1000
+./build-ar/meshframe_workflows_bench synth 1000
+./build-ar/meshframe_workflows_bench lookup 50
+./build-ar/meshframe_workflows_bench diff 10
+./build-ar/meshframe_workflows_bench preview 30
+./build-ar/meshframe_workflows_bench preview-reuse 30
+./build-ar/meshframe_workflows_bench recovery 1
+./build-ar/meshframe_workflows_bench scenes 20
+./build-ar/meshframe_workflows_bench decode-seek 90
+```
+
+Editing, evaluator, and diff modes use 2,000 simple clips. `lookup` also creates
+1,999 transitions and queries every clip's visibility. `synth` renders blocks of
+4,096 stereo samples. `preview` renders a 960x540 preview plus a separate
+320x180 analysis frame; `preview-reuse` downsamples the current preview instead.
+Reuse requires a preview at the same time and revision, at least as large as the
+analysis frame. If scopes draw first, or there is no matching preview, they
+render an analysis frame normally.
+
+`recovery` measures scheduling latency on the calling thread, excluding the
+background write. The worker retains an immutable project snapshot, and only
+one write can run at a time. Saving or closing waits for an outstanding write
+before removing the recovery files. This is a responsiveness improvement, not
+a claim that disk writes themselves are faster.
+
+`decode` reads consecutive frames; `decode-seek` requests a repeatable scrambled
+sequence. Both accept an optional video path. To measure sparse reads through
+a long GOP, generate a fixture and pass it to `decode-long`:
+
+```sh
+ffmpeg -nostdin -v error -y -f lavfi \
+  -i testsrc2=size=1920x1080:rate=30:duration=12 \
+  -c:v libx264 -preset veryfast -crf 23 -g 360 -keyint_min 360 \
+  -sc_threshold 0 build-ar/long-gop.mp4
+./build-ar/meshframe_workflows_bench decode-long 15 build-ar/long-gop.mp4
+```
+
+The decoder consults known keyframes before a long forward seek. It continues
+forward when seeking would replay the current GOP. Backward reads and files
+without a usable index retain the previous seek behavior.
+
+On the M3 Max, five alternating before/after passes measured these medians:
+
+| Workload | Before, ms | After, ms | Speedup |
+| --- | ---: | ---: | ---: |
+| 300 edits | 14.263 | 7.566 | 1.89x |
+| 1,000 evaluator rebuilds | 197.742 | 190.128 | 1.04x |
+| 1,000 synth blocks | 408.426 | 236.305 | 1.73x |
+| 50 complete visibility scans | 249.772 | 0.400 | 624x |
+| 10 project diffs | 812.678 | 72.802 | 11.16x |
+| 30 preview and scopes frames | 267.354 | 128.730 | 2.08x |
+| Recovery scheduling | 4.468 | 0.022 | 205x |
+| 20 scene analyses | 840.057 | 834.920 | 1.006x |
+| 15 sparse long-GOP reads | 646.044 | 232.281 | 2.78x |
+| 90 scrambled reads | 1045.570 | 1049.560 | 1.00x |
+
+These are targeted workloads, not whole-editor multipliers. VideoToolbox decode
+with CPU frame download was also tested and rejected: the 90-frame workload
+was about ten times slower than software decode on this machine. Four-thread
+software decoding also regressed; automatic FFmpeg thread selection remains.
+The export encoder, x264 preset, and CRF remain unchanged.
