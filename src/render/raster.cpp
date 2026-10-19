@@ -1,6 +1,7 @@
 #include "render/raster.hpp"
 
 #include "core/work_counter.hpp"
+#include "core/thread_pool.hpp"
 #include "render/font.hpp"
 
 #include <algorithm>
@@ -215,39 +216,38 @@ Image outlineOf(const Image& src, float width, Color color) {
     constexpr float kFar = 1e20f;
     std::vector<float> d(size_t(w) * h);
     for (size_t i = 0; i < d.size(); ++i) d[i] = src.px[i * 4 + 3] >= 128 ? 0 : kFar;
-    auto transform = [](std::vector<float>& f, int n) {
-        std::vector<float> out(n), z(n + 1);
-        std::vector<int> v(n);
-        work::addDistance(uint64_t(n));
-        auto meet = [&](int q, int p) { return ((f[q] + float(q) * q) - (f[p] + float(p) * p)) / (2.0f * float(q - p)); };
-        int k = 0;
-        v[0] = 0;
-        z[0] = -kFar, z[1] = kFar;
-        for (int q = 1; q < n; ++q) {
-            float s = meet(q, v[k]);
-            while (k > 0 && s <= z[k]) s = meet(q, v[--k]);
-            v[++k] = q;
-            z[k] = s, z[k + 1] = kFar;
-        }
-        k = 0;
-        for (int q = 0; q < n; ++q) {
-            while (z[k + 1] < float(q)) ++k;
-            out[q] = float(q - v[k]) * float(q - v[k]) + f[v[k]];
-        }
-        f = std::move(out);
+    auto axis = [&](bool vertical) {
+        const int length = vertical ? h : w, count = vertical ? w : h;
+        ThreadPool::shared().parallelFor(0, size_t(count), [&](size_t begin, size_t end) {
+            std::vector<float> line(length), z(length + 1);
+            std::vector<int> v(length);
+            auto index = [&](int column, int q) { return vertical ? size_t(q) * w + column : size_t(column) * w + q; };
+            for (size_t column = begin; column < end; ++column) {
+                for (int q = 0; q < length; ++q) line[q] = d[index(int(column), q)];
+                auto meet = [&](int q, int p) {
+                    return ((line[q] + float(q) * q) - (line[p] + float(p) * p)) / (2.0f * float(q - p));
+                };
+                int k = 0;
+                v[0] = 0;
+                z[0] = -kFar, z[1] = kFar;
+                for (int q = 1; q < length; ++q) {
+                    float crossing = meet(q, v[k]);
+                    while (k > 0 && crossing <= z[k]) crossing = meet(q, v[--k]);
+                    v[++k] = q;
+                    z[k] = crossing, z[k + 1] = kFar;
+                }
+                k = 0;
+                for (int q = 0; q < length; ++q) {
+                    while (z[k + 1] < float(q)) ++k;
+                    d[index(int(column), q)] = float(q - v[k]) * float(q - v[k]) + line[v[k]];
+                }
+                work::addDistance(uint64_t(length));
+            }
+        }, 32);
     };
-    std::vector<float> line;
-    for (int x = 0; x < w; ++x) {
-        line.resize(h);
-        for (int y = 0; y < h; ++y) line[y] = d[size_t(y) * w + x];
-        transform(line, h);
-        for (int y = 0; y < h; ++y) d[size_t(y) * w + x] = line[y];
-    }
-    for (int y = 0; y < h; ++y) {
-        line.assign(d.begin() + size_t(y) * w, d.begin() + size_t(y + 1) * w);
-        transform(line, w);
-        std::copy(line.begin(), line.end(), d.begin() + size_t(y) * w);
-    }
+    if (w == 0 || h == 0) return Image(w, h);
+    axis(true);
+    axis(false);
     Image out = Image::forOverwrite(w, h);
     work::addDistance(d.size());
     for (size_t i = 0; i < d.size(); ++i) {

@@ -77,6 +77,26 @@ TEST(Render, PolygonCoverageIsExactOnPixelEdges) {
     EXPECT_EQ(px(img, 4, 1).a, 0);
 }
 
+TEST(Render, OutlinesMatchNearestCoveredPixelAtOddDimensions) {
+    for (auto [w, h] : {std::pair{13, 7}, std::pair{5, 19}, std::pair{1, 1}}) {
+        Image mask(w, h);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) mask.at(x, y)[3] = (x * 7 + y * 11) % 5 == 0 ? 255 : 63;
+        auto actual = outlineOf(mask, 2.5f, Color::gray(1));
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                float distance = 1e20f;
+                for (int sy = 0; sy < h; ++sy)
+                    for (int sx = 0; sx < w; ++sx)
+                        if (mask.at(sx, sy)[3] >= 128)
+                            distance = std::min(distance, float((sx - x) * (sx - x) + (sy - y) * (sy - y)));
+                float alpha = std::max(std::clamp(3.0f - std::sqrt(distance), 0.0f, 1.0f), mask.at(x, y)[3] / 255.0f);
+                EXPECT_EQ(actual.at(x, y)[3], uint8_t(alpha * 255 + .5f));
+            }
+    }
+    EXPECT_TRUE(outlineOf(Image(0, 7), 3, Color::gray(1)).empty());
+}
+
 TEST(Render, RectanglesMatchPolygonCoverageWithFractionalEdgesAndClipping) {
     uint32_t random = 17;
     auto next = [&] {
