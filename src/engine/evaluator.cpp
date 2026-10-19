@@ -29,8 +29,8 @@ Evaluator::Evaluator() { lua_.setHost(this); }
 
 void Evaluator::setProject(const Project& p) {
     // The script can read markers, so moving one reruns it.
-    bool markersChanged = p.markers != user_.markers;
-    user_ = p;
+    bool markersChanged = p.markers != lastMarkers_;
+    lastMarkers_ = p.markers;
     lua_.setConstants(p.settings.fps, p.settings.width, p.settings.height, p.settings.sampleRate);
     lua_.setMarkers(p.markers);
     if (!scriptRan_ || p.script != lastScript_ || markersChanged) {
@@ -40,8 +40,22 @@ void Evaluator::setProject(const Project& p) {
         lastScript_ = p.script;
         scriptRan_ = true;
     }
-    effective_ = user_;
+    effective_ = p;
     instantiateScriptClips();
+    trackClips_.clear();
+    clipTransitions_.clear();
+    std::unordered_map<Id, const Clip*> byId;
+    for (const auto& c : effective_.clips) {
+        trackClips_[c.track].push_back(&c);
+        if (!effective_.transitions.empty()) byId.try_emplace(c.id, &c);
+    }
+    for (const auto& tr : effective_.transitions) {
+        auto b = byId.find(tr.clipB);
+        double cut = b == byId.end() ? 0 : b->second->start;
+        ClipTransition indexed{&tr, cut - tr.duration / 2, cut + tr.duration / 2};
+        clipTransitions_[tr.clipA].push_back(indexed);
+        if (tr.clipB != tr.clipA) clipTransitions_[tr.clipB].push_back(indexed);
+    }
     rebuildGraph();
 }
 
@@ -268,12 +282,21 @@ std::pair<double, double> Evaluator::window(const Project& p, const Transition& 
 
 bool Evaluator::clipVisibleAt(const Clip& c, double t) const {
     if (t >= c.start && t < c.end()) return true;
-    for (const auto& tr : effective_.transitions) {
-        if (tr.clipA != c.id && tr.clipB != c.id) continue;
-        auto [ws, we] = window(effective_, tr);
-        if (t >= ws && t < we) return true;
-    }
+    for (const auto& tr : clipTransitions(c.id))
+        if (t >= tr.start && t < tr.end) return true;
     return false;
+}
+
+const std::vector<const Clip*>& Evaluator::trackClips(Id track) const {
+    static const std::vector<const Clip*> empty;
+    auto it = trackClips_.find(track);
+    return it == trackClips_.end() ? empty : it->second;
+}
+
+const std::vector<Evaluator::ClipTransition>& Evaluator::clipTransitions(Id clip) const {
+    static const std::vector<ClipTransition> empty;
+    auto it = clipTransitions_.find(clip);
+    return it == clipTransitions_.end() ? empty : it->second;
 }
 
 Value Evaluator::lookup(uint64_t owner, std::string_view name, const PropertyMap& props) {

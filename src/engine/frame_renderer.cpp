@@ -627,8 +627,8 @@ std::shared_ptr<Image> FrameRenderer::renderFrame(Evaluator& ev, double t, int w
     for (const auto& track : p.tracks) {
         if (track.kind != TrackKind::Video || track.hidden) continue;
         std::vector<const Clip*> clips;
-        for (const auto& c : p.clips)
-            if (c.track == track.id && ev.clipVisibleAt(c, t)) clips.push_back(&c);
+        for (const Clip* c : ev.trackClips(track.id))
+            if (ev.clipVisibleAt(*c, t)) clips.push_back(c);
         std::ranges::sort(clips, [](const Clip* a, const Clip* b) {
             return a->start != b->start ? a->start < b->start : a->id < b->id;
         });
@@ -636,11 +636,8 @@ std::shared_ptr<Image> FrameRenderer::renderFrame(Evaluator& ev, double t, int w
         for (const Clip* c : clips) {
             if (std::ranges::contains(done, c->id)) continue;
             const Transition* active = nullptr;
-            for (const auto& tr : p.transitions) {
-                if (tr.clipA != c->id && tr.clipB != c->id) continue;
-                auto [ws, we] = Evaluator::window(p, tr);
-                if (t >= ws && t < we) active = &tr;
-            }
+            for (const auto& tr : ev.clipTransitions(c->id))
+                if (t >= tr.start && t < tr.end) active = tr.transition;
             if (!active) {
                 drawClip(ev, canvas, *c, t, unit, true, gpu);
                 continue;

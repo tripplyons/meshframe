@@ -71,14 +71,14 @@ void AudioMixer::renderBlock(Evaluator& ev, double t0, int frames, float* out, b
         if (track.kind != TrackKind::Audio || track.muted) continue;
         bool any = false;
         std::fill(trackBuf_.begin(), trackBuf_.end(), 0.0f);
-        for (const auto& c : p.clips) {
-            if (c.track != track.id) continue;
+        for (const Clip* cp : ev.trackClips(track.id)) {
+            const Clip& c = *cp;
             // The clip sounds within its range, extended through any transition window.
             double from = c.start, to = c.end();
             double fade = 1;
-            for (const auto& tr : p.transitions) {
-                if (tr.clipA != c.id && tr.clipB != c.id) continue;
-                auto [ws, we] = Evaluator::window(p, tr);
+            for (const auto& indexed : ev.clipTransitions(c.id)) {
+                const auto& tr = *indexed.transition;
+                double ws = indexed.start, we = indexed.end;
                 from = std::min(from, ws);
                 to = std::max(to, we);
                 if (t0 >= ws && t0 < we) {

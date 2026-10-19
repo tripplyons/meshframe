@@ -55,6 +55,12 @@ public:
     static std::pair<double, double> window(const Project& p, const Transition& tr);
     // Whether a clip contributes at time t, including transition overhang.
     bool clipVisibleAt(const Clip& c, double t) const;
+    struct ClipTransition {
+        const Transition* transition;
+        double start, end;
+    };
+    const std::vector<const Clip*>& trackClips(Id track) const;
+    const std::vector<ClipTransition>& clipTransitions(Id clip) const;
 
     // Pulls output nodes so the graph shows current state.
     void refreshOutputs();
@@ -96,7 +102,9 @@ private:
                                  Graph::Kind kind = Graph::Kind::Property);
     Value lookup(uint64_t owner, std::string_view name, const PropertyMap& props);
 
-    Project user_;
+    std::unordered_map<Id, std::vector<const Clip*>> trackClips_;
+    std::unordered_map<Id, std::vector<ClipTransition>> clipTransitions_;
+    std::vector<Marker> lastMarkers_;
     Project effective_;
     ScriptOutput script_;
     std::vector<ScriptError> scriptClipErrors_;
