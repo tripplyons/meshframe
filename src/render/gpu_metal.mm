@@ -288,17 +288,27 @@ kernel void blur_image(device const uchar4* src [[buffer(0)]], device uchar4* ds
 
 // A row tile reads each texel once, including its clamped halo. SIMD prefix
 // sums turn every box window into two threadgroup reads and a subtraction.
-kernel void blur_rows(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
-                      constant uint4& p [[buffer(2)]], uint tid [[thread_index_in_threadgroup]],
-                      uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
-                      uint2 group [[threadgroup_position_in_grid]]) {
-    threadgroup uint4 totals[4], prefix[128];
-    uint core = 128 - 2 * p.z;
+template<uint Tile>
+__attribute__((always_inline)) inline
+void blurRows(device const uchar4* src, device uchar4* dst, constant uint4& p, uint tid, uint lane, uint simd, uint2 group,
+              threadgroup uint4* totals, threadgroup uint4* prefix) {
+    uint core = Tile - 2 * p.z;
     int sx = clamp(int(group.x * core + tid) - int(p.z), 0, int(p.x) - 1);
     uint4 sum = simd_prefix_inclusive_sum(uint4(src[group.y * p.x + sx]));
     if (lane + 1 == p.w) totals[simd] = sum;
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint i = 0; i < simd; ++i) sum += totals[i];
+    if (Tile > 128) {
+        // The first SIMD group scans the group totals. A wide tile needs one
+        // carry addition per thread instead of a loop over all earlier groups.
+        if (simd == 0) {
+            uint4 carry = simd_prefix_exclusive_sum(lane < Tile / p.w ? totals[lane] : uint4(0));
+            if (lane < Tile / p.w) totals[lane] = carry;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        sum += totals[simd];
+    } else {
+        for (uint i = 0; i < simd; ++i) sum += totals[i];
+    }
     prefix[tid] = sum;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     uint x = group.x * core + tid;
@@ -306,6 +316,22 @@ kernel void blur_rows(device const uchar4* src [[buffer(0)]], device uchar4* dst
     sum = prefix[tid + 2 * p.z];
     if (tid) sum -= prefix[tid - 1];
     dst[group.y * p.x + x] = uchar4(float4(sum) * (1.0f / float(2 * p.z + 1)) + 0.5f);
+}
+
+kernel void blur_rows(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
+                      constant uint4& p [[buffer(2)]], uint tid [[thread_index_in_threadgroup]],
+                      uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
+                      uint2 group [[threadgroup_position_in_grid]]) {
+    threadgroup uint4 totals[4], prefix[128];
+    blurRows<128>(src, dst, p, tid, lane, simd, group, totals, prefix);
+}
+
+kernel void blur_rows_wide(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
+                           constant uint4& p [[buffer(2)]], uint tid [[thread_index_in_threadgroup]],
+                           uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
+                           uint2 group [[threadgroup_position_in_grid]]) {
+    threadgroup uint4 totals[16], prefix[512];
+    blurRows<512>(src, dst, p, tid, lane, simd, group, totals, prefix);
 }
 
 kernel void transpose_image(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
@@ -385,7 +411,7 @@ kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* 
 struct Device {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
-    id<MTLComputePipelineState> fill, draw, transition, blur, blurRows, transpose, effect;
+    id<MTLComputePipelineState> fill, draw, transition, blur, blurRows, blurRowsWide, transpose, effect;
     std::string error;
 
     Device() {
@@ -413,6 +439,7 @@ struct Device {
             transition = pipeline(@"transition_image");
             blur = pipeline(@"blur_image");
             blurRows = pipeline(@"blur_rows");
+            blurRowsWide = pipeline(@"blur_rows_wide");
             transpose = pipeline(@"transpose_image");
             effect = pipeline(@"effect_image");
             if (!fill || !draw || !transition || !blur || !blurRows || !transpose || !effect)
@@ -525,6 +552,14 @@ class MetalFrame final : public GpuFrame {
         return result;
     }
 
+    id<MTLComputePipelineState> blurPipeline(int radius) const {
+        if (radius < 4 || radius > 128) return nil;
+        const size_t tile = radius <= 32 ? 128 : 512;
+        id<MTLComputePipelineState> pipeline = radius <= 32 ? device_.blurRows : device_.blurRowsWide;
+        const size_t lanes = pipeline.threadExecutionWidth;
+        return lanes >= 32 && tile % lanes == 0 && pipeline.maxTotalThreadsPerThreadgroup >= tile ? pipeline : nil;
+    }
+
     void transpose(id<MTLBuffer> in, id<MTLBuffer> out, int w, int h) {
         id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
         if (!enc) {
@@ -553,9 +588,10 @@ class MetalFrame final : public GpuFrame {
             id<MTLBuffer> b = surface.privatePixels ? surface.buffer : privateBuffer(image->bytes());
             if (!valid_) return;
             id<MTLBuffer> in = surface.buffer;
-            const size_t lanes = device_.blurRows.threadExecutionWidth;
-            const bool prefixRows = r >= 4 && r <= 32 && lanes >= 32 && 128 % lanes == 0 &&
-                                    device_.blurRows.maxTotalThreadsPerThreadgroup >= 128;
+            id<MTLComputePipelineState> pipeline = blurPipeline(r);
+            const size_t tile = r <= 32 ? 128 : 512;
+            const size_t lanes = pipeline.threadExecutionWidth;
+            const bool prefixRows = pipeline != nil;
             // Transpose larger images so column prefixes also read contiguous
             // memory. Small images avoid the two extra dispatches.
             const bool transposeCols = prefixRows && uint64_t(w) * h >= 65536 &&
@@ -583,16 +619,20 @@ class MetalFrame final : public GpuFrame {
                 [enc setBuffer:out offset:0 atIndex:1];
                 [enc setBytes:params length:sizeof params atIndex:2];
                 if (prefix) {
-                    const size_t groups = (width + 127 - 2 * r) / (128 - 2 * r);
-                    [enc setComputePipelineState:device_.blurRows];
+                    const size_t groups = (width + tile - 2 * r - 1) / (tile - 2 * r);
+                    [enc setComputePipelineState:pipeline];
                     [enc dispatchThreadgroups:MTLSizeMake(groups, height, 1)
-                       threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+                       threadsPerThreadgroup:MTLSizeMake(tile, 1, 1)];
                     [enc endEncoding];
                     // Seed each prefix, count scan/carry additions, then the
                     // subtraction for every window except the tile's first.
-                    size_t steps = 128;
-                    for (size_t stride = 1; stride < lanes; stride *= 2) steps += (lanes - stride) * (128 / lanes);
-                    for (size_t simd = 1; simd < 128 / lanes; ++simd) steps += simd * lanes;
+                    size_t scanSteps = 0;
+                    for (size_t stride = 1; stride < lanes; stride *= 2) scanSteps += lanes - stride;
+                    size_t steps = tile + scanSteps * (tile / lanes);
+                    if (tile > 128) steps += lanes + scanSteps + tile;
+                    else {
+                        for (size_t simd = 1; simd < tile / lanes; ++simd) steps += simd * lanes;
+                    }
                     work::addBlur(uint64_t(height) * (groups * steps + width - groups));
                 } else {
                     dispatch(enc, device_.blur, width, height);
@@ -731,6 +771,11 @@ class MetalFrame final : public GpuFrame {
     explicit MetalFrame(Device& d) : device_(d) {
         commands_ = [d.queue commandBuffer];
         valid_ = commands_ != nil;
+    }
+
+    bool supportsBlur(double radius) const override {
+        if (!std::isfinite(radius) || radius > 256) return false;
+        return radius <= 64 || blurPipeline(int(std::lround(radius / 2))) != nil;
     }
 
     void fill(const std::shared_ptr<Image>& dst, Color color) override {

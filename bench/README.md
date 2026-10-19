@@ -49,7 +49,9 @@ The automatic backend uses Metal on macOS for frames of at least 262,144
 pixels and keeps smaller previews on the CPU. Metal composites a whole frame
 in one command buffer, including transition surfaces. Media and generator
 layers also use GPU blur, color effects, vignette, crop, and mask. Large blur
-radii, threshold cutoffs, and cached text/path effects keep their CPU paths.
+radii up to 256 source pixels use wider prefix tiles when the device supports
+them. Unsupported radii, threshold cutoffs, and cached text/path effects keep
+their CPU paths.
 Apple silicon shares image memory with Metal; other devices download the final
 canvas. A 64 MiB pool reuses page-backed image storage and lazily attached Metal
 views between frames. Other platforms, unavailable devices, and failed GPU

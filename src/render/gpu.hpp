@@ -19,6 +19,8 @@ struct GpuEffect {
 class GpuFrame {
   public:
     virtual ~GpuFrame() = default;
+    // Radius is measured in source-image pixels. Unsupported chains stay CPU-side.
+    virtual bool supportsBlur(double radius) const = 0;
     virtual void fill(const std::shared_ptr<Image>& dst, Color color) = 0;
     virtual void drawLayer(const std::shared_ptr<Image>& dst, ImagePtr src, const Placement& at, float opacity,
                            Blend blend) = 0;

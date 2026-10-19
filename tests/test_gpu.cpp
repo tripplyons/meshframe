@@ -178,7 +178,7 @@ TEST_F(GpuRendering, EffectsMatchCpuAndKeepTheSourceImmutable) {
 
 TEST_F(GpuRendering, BlurHandlesRadiiLargerThanEitherDimension) {
     for (auto [w, h] : {std::pair{1, 1}, {1, 9}, {11, 1}, {3, 5}, {67, 33}, {129, 7}, {257, 33}, {513, 129}}) {
-        for (double radius : {0.0, 2.0, 6.0, 8.0, 18.0, 48.0, 64.0, 66.0}) {
+        for (double radius : {0.0, 2.0, 6.0, 8.0, 18.0, 48.0, 64.0, 66.0, 140.0, 256.0, 258.0}) {
             auto image = pattern(w, h);
             Image expected = *image;
             ParamFn params = [=](std::string_view name) -> Value { return name == "radius" ? Value{radius} : Value{}; };
@@ -188,6 +188,36 @@ TEST_F(GpuRendering, BlurHandlesRadiiLargerThanEitherDimension) {
             ASSERT_TRUE(gpu->finish(image));
             expectNear(*image, expected);
         }
+    }
+}
+
+TEST_F(GpuRendering, RendererKeepsLargeBlurAndCpuFallbackConsistent) {
+    auto probe = createGpuFrame();
+    EXPECT_TRUE(probe->supportsBlur(0));
+    EXPECT_TRUE(probe->supportsBlur(64));
+    EXPECT_FALSE(probe->supportsBlur(300));
+    Project project = Project::makeDefault();
+    project.settings.width = 64;
+    project.settings.height = 32;
+    project.script = R"(mf.generator("half", function(g) g:rect(0, 0, 32, 32, gray(1)) end))";
+    Clip clip;
+    clip.kind = ClipKind::Generator;
+    clip.track = project.findTrackByName("V1")->id;
+    clip.duration = 2;
+    Id id = edit::addClip(project, clip);
+    edit::setPropConstant(project, id, "generator", std::string("half"));
+    Id effect = edit::addEffect(project, id, false, "blur");
+    for (double radius : {64.0, 140.0, 300.0}) {
+        SCOPED_TRACE(radius);
+        edit::setPropConstant(project, effect, "radius", radius);
+        MediaCache cache;
+        FrameRenderer cpu(cache, RenderBackend::Cpu), metal(cache, RenderBackend::Metal);
+        Evaluator evaluator;
+        evaluator.setProject(project);
+        auto expected = cpu.render(evaluator, 0, 64, 32);
+        auto actual = metal.render(evaluator, 0, 64, 32);
+        EXPECT_TRUE(metal.usedGpuLastFrame());
+        expectNear(*actual, *expected);
     }
 }
 

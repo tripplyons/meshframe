@@ -30,15 +30,14 @@ bool isPlacementProp(std::string_view name) {
     return std::ranges::any_of(kPlacement, [&](std::string_view p) { return p == name; });
 }
 
-bool gpuEffectsFor(Evaluator& ev, const Clip& c, double unit) {
+bool gpuEffectsFor(Evaluator& ev, const Clip& c, double unit, const GpuFrame& gpu) {
     if (c.kind != ClipKind::Media && c.kind != ClipKind::Generator) return false;
     bool any = false;
     for (const auto& e : c.videoEffects) {
         if (!e.enabled) continue;
         any = true;
         if (e.type == "blur") {
-            // Large radii still use the CPU's linear-time running sum.
-            if (asNumber(ev.effectParams(e, false)("radius"), 4) * unit > 64) return false;
+            if (!gpu.supportsBlur(asNumber(ev.effectParams(e, false)("radius"), 4) * unit)) return false;
         } else if (e.type != "brightness_contrast" && e.type != "saturation" && e.type != "invert" &&
                    e.type != "tint" && e.type != "vignette" && e.type != "crop" && e.type != "mask") {
             return false;
@@ -332,7 +331,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
     // A generator's pixels come straight out of its script, so it is rebuilt
     // every frame; every other kind is reused while its key holds.
     const bool reusable = c.kind != ClipKind::Generator;
-    const bool gpuEffects = gpu && gpuEffectsFor(ev, c, unit);
+    const bool gpuEffects = gpu && gpuEffectsFor(ev, c, unit, *gpu);
     std::string key;
     if (reusable) {
         key = layerKey(ev, c, unit, layerW, layerH, t);
