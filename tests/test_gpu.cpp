@@ -198,7 +198,7 @@ TEST_F(GpuRendering, RendererKeepsLargeBlurAndCpuFallbackConsistent) {
     auto probe = createGpuFrame();
     EXPECT_TRUE(probe->supportsBlur(0));
     EXPECT_TRUE(probe->supportsBlur(64));
-    EXPECT_FALSE(probe->supportsBlur(300));
+    EXPECT_FALSE(probe->supportsBlur(513));
     Project project = Project::makeDefault();
     project.settings.width = 64;
     project.settings.height = 32;
@@ -210,7 +210,7 @@ TEST_F(GpuRendering, RendererKeepsLargeBlurAndCpuFallbackConsistent) {
     Id id = edit::addClip(project, clip);
     edit::setPropConstant(project, id, "generator", std::string("half"));
     Id effect = edit::addEffect(project, id, false, "blur");
-    for (double radius : {64.0, 140.0, 300.0}) {
+    for (double radius : {64.0, 140.0, 300.0, 512.0, 600.0}) {
         SCOPED_TRACE(radius);
         edit::setPropConstant(project, effect, "radius", radius);
         MediaCache cache;
@@ -385,9 +385,9 @@ TEST_F(GpuRendering, EffectBatchesPreserveIntermediateRoundingAndSpatialBoundari
 TEST_F(GpuRendering, DropShadowsMatchCpuForColorOffsetsAndBlurRadii) {
     auto probe = createGpuFrame();
     ASSERT_TRUE(probe->supportsDropShadow(9));
-    EXPECT_FALSE(probe->supportsDropShadow(300));
+    EXPECT_FALSE(probe->supportsDropShadow(513));
     for (auto [w, h] : {std::pair{1, 1}, {3, 5}, {31, 19}, {257, 257}})
-        for (double radius : {0.0, 2.0, 9.0, 66.0, 140.0})
+        for (double radius : {0.0, 2.0, 9.0, 66.0, 140.0, 512.0})
             for (auto [x, y] : {std::pair{0.0, 0.0}, {2.3, -1.7}, {-400.0, 300.0}})
                 for (Color color : {Color{0, 0, 0, 1}, Color{.7f, .3f, .8f, .6f}}) {
                     SCOPED_TRACE(::testing::Message() << w << 'x' << h << " blur " << radius << " offset " << x << ',' << y);

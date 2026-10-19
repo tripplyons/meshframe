@@ -388,6 +388,14 @@ kernel void blur_rows_wide(device const uchar4* src [[buffer(0)]], device uchar4
     blurRows<512>(src, dst, p, tid, lane, simd, group, totals, prefix);
 }
 
+kernel void blur_rows_large(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
+                           constant uint4& p [[buffer(2)]], uint tid [[thread_index_in_threadgroup]],
+                           uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
+                           uint2 group [[threadgroup_position_in_grid]]) {
+    threadgroup uint4 totals[32], prefix[1024];
+    blurRows<1024>(src, dst, p, tid, lane, simd, group, totals, prefix);
+}
+
 kernel void transpose_image(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
                             constant uint2& size [[buffer(2)]], uint2 tid [[thread_position_in_threadgroup]],
                             uint2 group [[threadgroup_position_in_grid]]) {
@@ -527,9 +535,11 @@ kernel void shadow_composite(device const uchar4* src [[buffer(0)]], device cons
 struct Device {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
+    id<MTLLibrary> coreLibrary;
     id<MTLComputePipelineState> fill, draw, solid, rect, transition, blur, blurRows, blurRowsWide, transpose, effect;
     std::string error;
-    std::once_flag rectInit, shadowInit;
+    std::once_flag rectInit, shadowInit, largeBlurInit;
+    id<MTLComputePipelineState> blurRowsLarge;
     id<MTLComputePipelineState> shadowMask, shadowComposite;
 
     Device() {
@@ -548,6 +558,7 @@ struct Device {
                 error = err ? err.localizedDescription.UTF8String : "cannot create Metal queue";
                 return;
             }
+            coreLibrary = library;
             auto pipeline = [&](NSString* name) -> id<MTLComputePipelineState> {
                 id<MTLFunction> fn = [library newFunctionWithName:name];
                 return fn ? [device newComputePipelineStateWithFunction:fn error:&err] : nil;
@@ -566,6 +577,17 @@ struct Device {
         }
     }
     bool available() const { return fill && draw && solid && transition && blur && blurRows && transpose && effect; }
+
+    id<MTLComputePipelineState> largeBlurPipeline() {
+        std::call_once(largeBlurInit, [&] {
+            @autoreleasepool {
+                NSError* error = nil;
+                id<MTLFunction> function = [coreLibrary newFunctionWithName:@"blur_rows_large"];
+                blurRowsLarge = function ? [device newComputePipelineStateWithFunction:function error:&error] : nil;
+            }
+        });
+        return blurRowsLarge;
+    }
 
     id<MTLComputePipelineState> rectanglePipeline() {
         std::call_once(rectInit, [&] {
@@ -715,9 +737,9 @@ class MetalFrame final : public GpuFrame {
     }
 
     id<MTLComputePipelineState> blurPipeline(int radius) const {
-        if (radius < 4 || radius > 128) return nil;
-        const size_t tile = radius <= 32 ? 128 : 512;
-        id<MTLComputePipelineState> pipeline = radius <= 32 ? device_.blurRows : device_.blurRowsWide;
+        if (radius < 4 || radius > 256) return nil;
+        const size_t tile = radius <= 32 ? 128 : radius <= 128 ? 512 : 1024;
+        id<MTLComputePipelineState> pipeline = radius <= 32 ? device_.blurRows : radius <= 128 ? device_.blurRowsWide : device_.largeBlurPipeline();
         const size_t lanes = pipeline.threadExecutionWidth;
         return lanes >= 32 && tile % lanes == 0 && pipeline.maxTotalThreadsPerThreadgroup >= tile ? pipeline : nil;
     }
@@ -766,7 +788,7 @@ class MetalFrame final : public GpuFrame {
         if (!valid_) return;
         id<MTLBuffer> in = surface.buffer;
         id<MTLComputePipelineState> pipeline = blurPipeline(r);
-        const size_t tile = r <= 32 ? 128 : 512;
+        const size_t tile = r <= 32 ? 128 : r <= 128 ? 512 : 1024;
         const size_t lanes = pipeline.threadExecutionWidth;
         const bool prefixRows = pipeline != nil;
         // Transpose larger images so column prefixes also read contiguous
@@ -1039,7 +1061,7 @@ class MetalFrame final : public GpuFrame {
     }
 
     bool supportsBlur(double radius) const override {
-        if (!std::isfinite(radius) || radius > 256) return false;
+        if (!std::isfinite(radius) || radius > 512) return false;
         return radius <= 64 || blurPipeline(int(std::lround(radius / 2))) != nil;
     }
 

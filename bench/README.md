@@ -47,11 +47,12 @@ bench/projects/make-projects.sh     # only when the projects need to change
 
 The automatic backend uses Metal on macOS for frames of at least 262,144
 pixels and keeps smaller previews on the CPU. Metal composites a whole frame
-in one command buffer, including transition surfaces. Media and generator
-layers also use GPU blur, drop shadows, color effects, vignette, crop, and mask. Large blur
-radii up to 256 source pixels use wider prefix tiles when the device supports
-them. Unsupported radii, threshold cutoffs, and cached text/path effects keep
-their CPU paths.
+in one command buffer, including transition surfaces. Media, generator, text, and
+path layers use GPU blur, drop shadows, color effects, vignette, crop, and mask.
+Completed text/path effect results remain cached between frames. Large blur
+radii up to 512 source pixels use wider prefix tiles when the device supports
+them; radii above 256 require 1,024-thread tiles. Unsupported radii and
+threshold cutoffs keep their CPU paths.
 Consecutive color, crop, and mask effects share a Metal dispatch while retaining
 the byte rounding between effects. Blur and shadow passes separate these batches.
 Generator lists containing clears and rectangles use Metal rasterization when
