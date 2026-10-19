@@ -360,15 +360,10 @@ kernel void transpose_image(device const uchar4* src [[buffer(0)]], device uchar
             dst[(output.y + j) * size.y + output.x] = tile[tid.x][tid.y + j];
 }
 
-kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
-                         constant EffectParams& p [[buffer(2)]], device packed_uint3* counts [[buffer(3)]],
-                         uint2 xy [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
-                         uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]],
-                         uint2 group [[threadgroup_position_in_grid]], uint2 groups [[threadgroups_per_grid]]) {
-    threadgroup uint3 partial[8];
-    uint index = xy.y * p.sizes.x + xy.x;
-    uchar4 raw = src[index], result = raw;
-    uint mapped = 0, masked = 0, type = p.sizes.z;
+__attribute__((always_inline)) inline uchar4 effectPixel(uchar4 raw, uint2 xy, constant EffectParams& p,
+                                                         thread uint& mapped, thread uint& masked) {
+    uchar4 result = raw;
+    uint type = p.sizes.z;
     float2 pos = float2(xy) + 0.5f;
     if (type >= 7) {
         float k;
@@ -390,7 +385,7 @@ kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* 
             if (p.p1.z != 0) k = 1 - k;
         }
         if (k < 1) result = uchar4(clamp(float4(raw) * k + 0.5f, 0.0f, 255.0f));
-        masked = 1;
+        ++masked;
     } else if (raw.a != 0) {
         float a = float(raw.a) / 255.0f;
         float3 c = float3(raw.rgb) / 255.0f / a;
@@ -411,12 +406,27 @@ kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* 
         }
         if (changed || a != 1) {
             result = pack(float4(clamp(c, 0.0f, 1.0f) * a, a));
-            mapped = 1;
+            ++mapped;
         }
     }
+    return result;
+}
+
+kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
+                         constant EffectParams* params [[buffer(2)]], constant uint& count [[buffer(3)]],
+                         device packed_uint3* counts [[buffer(4)]], uint2 xy [[thread_position_in_grid]],
+                         uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
+                         uint simds [[simdgroups_per_threadgroup]], uint2 group [[threadgroup_position_in_grid]],
+                         uint2 groups [[threadgroups_per_grid]]) {
+    threadgroup uint3 partial[8];
+    uint index = xy.y * params[0].sizes.x + xy.x;
+    uchar4 result = src[index];
+    uint mapped = 0, masked = 0;
+    for (uint i = 0; i < count; ++i) result = effectPixel(result, xy, params[i], mapped, masked);
     dst[index] = result;
     countWork(counts, uint3(mapped, masked, 0), lane, simd, simds, partial, group, groups);
 }
+
 )METAL";
 
 constexpr const char* kRectShader = R"METAL(
@@ -633,13 +643,35 @@ class MetalFrame final : public GpuFrame {
         work::addCopy(uint64_t(w) * h);
     }
 
-    void effect(ImagePtr image, const GpuEffect& e, double unit, PixelBox content) {
+    void flushPointEffects(ImagePtr image, std::vector<EffectParams>& pending) {
+        if (pending.empty() || !valid_) return;
+        Surface& surface = surfaces_.at(image.get());
+        id<MTLBuffer> in = surface.buffer;
+        id<MTLBuffer> out = surface.privatePixels ? in : privateBuffer(image->bytes());
+        id<MTLBuffer> stats = counters(device_.effect, image->w, image->h, true);
+        if (!valid_) return;
+        uint32_t count = uint32_t(pending.size());
+        id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
+        [enc setBuffer:in offset:0 atIndex:0];
+        [enc setBuffer:out offset:0 atIndex:1];
+        [enc setBytes:pending.data() length:pending.size() * sizeof(EffectParams) atIndex:2];
+        [enc setBytes:&count length:sizeof count atIndex:3];
+        [enc setBuffer:stats offset:0 atIndex:4];
+        dispatch(enc, device_.effect, image->w, image->h);
+        surface.buffer = out;
+        surface.privatePixels = true;
+        pending.clear();
+    }
+
+    void effect(ImagePtr image, const GpuEffect& e, double unit, PixelBox content, std::vector<EffectParams>& pending) {
         Surface& surface = surfaces_.at(image.get());
         auto n = [&](std::string_view name, double fallback) { return asNumber(e.params(name), fallback); };
         int w = image->w, h = image->h;
         if (e.type == "blur") {
             int r = int(std::lround(std::max(0.0, n("radius", 4) * unit) / 2));
             if (r < 1) return;
+            flushPointEffects(image, pending);
+            if (!valid_) return;
             id<MTLBuffer> a = privateBuffer(image->bytes());
             id<MTLBuffer> b = surface.privatePixels ? surface.buffer : privateBuffer(image->bytes());
             if (!valid_) return;
@@ -753,18 +785,10 @@ class MetalFrame final : public GpuFrame {
             p.p1[1] = asString(e.params("shape")) == "ellipse";
             p.p1[2] = asString(e.params("keep")) == "outside";
         } else return;
-        id<MTLBuffer> in = surface.buffer;
-        id<MTLBuffer> out = surface.privatePixels ? in : privateBuffer(image->bytes());
-        id<MTLBuffer> stats = counters(device_.effect, w, h, true);
-        if (!valid_) return;
-        id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
-        [enc setBuffer:in offset:0 atIndex:0];
-        [enc setBuffer:out offset:0 atIndex:1];
-        [enc setBytes:&p length:sizeof p atIndex:2];
-        [enc setBuffer:stats offset:0 atIndex:3];
-        dispatch(enc, device_.effect, w, h);
-        surface.buffer = out;
-        surface.privatePixels = true;
+        pending.push_back(p);
+        // setBytes accepts at most 4 KiB. Keep each uniform batch within that
+        // limit and bound per-thread counter totals independently of clip size.
+        if (pending.size() == 64) flushPointEffects(image, pending);
     }
 
     void draw(const std::shared_ptr<Image>& dst, ImagePtr src, int w, int h, Color color, const Placement& at,
@@ -920,10 +944,14 @@ class MetalFrame final : public GpuFrame {
             buffer(image);
             if (!valid_ || surfaces_.at(image.get()).effectsApplied) return;
             if (content.w <= 0 || content.h <= 0) content = {0, 0, image->w, image->h};
+            std::vector<EffectParams> pending;
+            pending.reserve(std::min<size_t>(64, effects.size()));
             for (const auto& e : effects) {
-                effect(image, e, unit, content);
+                effect(image, e, unit, content, pending);
                 if (!valid_) return;
             }
+            flushPointEffects(image, pending);
+            if (!valid_) return;
             surfaces_.at(image.get()).effectsApplied = true;
         }
     }

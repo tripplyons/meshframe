@@ -330,3 +330,52 @@ TEST_F(GpuRendering, GeneratorRasterAndUnsupportedEffectsKeepCpuFallbackConsiste
                 expectNear(*actual, *expected, 2);
             }
 }
+
+TEST_F(GpuRendering, EffectBatchesPreserveIntermediateRoundingAndBlurBoundaries) {
+    ParamFn params = [](std::string_view name) -> Value {
+        if (name == "brightness") return .013;
+        if (name == "contrast") return 1.03;
+        if (name == "amount") return .83;
+        if (name == "mix") return .17;
+        if (name == "softness") return .7;
+        if (name == "radius") return 9.0;
+        if (name == "color") return Color{.7f, .3f, .8f, .6f};
+        if (name == "left") return .013;
+        if (name == "right") return .017;
+        if (name == "top") return .023;
+        if (name == "bottom") return .011;
+        if (name == "width") return 19.0;
+        if (name == "height") return 11.0;
+        if (name == "x") return 2.3;
+        if (name == "y") return -1.7;
+        if (name == "feather") return 3.2;
+        if (name == "shape") return std::string("ellipse");
+        if (name == "keep") return std::string("outside");
+        return {};
+    };
+    for (auto [w, h] : {std::pair{17, 9}, {67, 33}, {257, 257}})
+        for (bool longChain : {false, true}) {
+            std::vector<GpuEffect> effects;
+            const std::array<const char*, 8> types{
+                "brightness_contrast", "saturation", "invert", "tint", "vignette", "crop", "mask", "blur"};
+            for (int i = 0; i < (longChain ? 70 : 13); ++i)
+                effects.push_back({longChain ? types[i % 5] : types[i % types.size()], params});
+            auto source = pattern(w, h), expected = std::make_shared<Image>(*source);
+            Image original = *source;
+            const PixelBox content{2, 1, w - 4, h - 3};
+            // Finish each single effect through the public GPU interface. This
+            // reference materializes exactly the byte boundary every old pass used.
+            for (const auto& effect : effects) {
+                auto gpu = createGpuFrame();
+                gpu->applyEffects(expected, {effect}, .7, content);
+                ASSERT_TRUE(gpu->finish(expected));
+            }
+            auto actual = std::make_shared<Image>(w, h);
+            auto gpu = createGpuFrame();
+            gpu->applyEffects(source, effects, .7, content);
+            gpu->drawLayer(actual, source, Placement{w / 2.0, h / 2.0}, 1, Blend::Normal);
+            ASSERT_TRUE(gpu->finish(actual));
+            expectNear(*actual, *expected, 1);
+            EXPECT_EQ(source->px, original.px);
+        }
+}
