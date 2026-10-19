@@ -32,6 +32,11 @@ int main(int argc, char** argv) {
     synth.props["synth"].constant = std::string("tone");
     std::vector<float> audio(4096 * 2);
     Recovery recovery("build-ar/workflow-round4/recovery-bench");
+    VideoDecoder video;
+    if (mode.starts_with("decode")) {
+        std::string error;
+        if (!video.open(mode.find("long") != std::string::npos ? "build-ar/workflow-round4/long-gop.mp4" : "bench/media/clip_b.mp4", 1920, 1080, &error)) return 1;
+    }
     uint64_t checksum = 0;
     auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < count; ++i) {
@@ -40,6 +45,12 @@ int main(int argc, char** argv) {
             double t = i / 30.0;
             s.renderFrame(t, 960, 540);
             auto frame = mode == "preview-reuse" ? s.analysisFrame(t, 320, 180) : s.renderFrame(t, 320, 180);
+            checksum += frame->px[100];
+        }
+        else if (mode.starts_with("decode")) {
+            double t = mode.find("long") != std::string::npos ? (i % 5) * 2.5 :
+                mode.find("seek") == std::string::npos ? (i % 90) / 30.0 : ((i * 37) % 90) / 30.0;
+            auto frame = video.frameAt(t); if (!frame) return 1;
             checksum += frame->px[100];
         }
         else if (mode == "recovery") { recovery.update(s, i * 11.0); }

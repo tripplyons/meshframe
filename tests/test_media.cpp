@@ -1,6 +1,7 @@
 #include "fixtures.hpp"
 #include "media/decoder.hpp"
 #include "media/media_cache.hpp"
+#include "core/work_counter.hpp"
 
 #include <gtest/gtest.h>
 
@@ -217,4 +218,29 @@ TEST(Media, PeakPyramidMatchesDirectRangesIncludingUnalignedTails) {
     buffer.peaks.clear();
     buffer.buildPeakPyramid();
     EXPECT_EQ(buffer.peakRange(0, 100), (std::pair{0.0f, 0.0f}));
+}
+
+TEST(Media, SparseForwardReadsDoNotReplayLongGops) {
+    REQUIRE_FFMPEG();
+    auto path = fixtures::make("long-gop.mp4",
+        "-f lavfi -i testsrc2=size=64x48:rate=10:duration=5 -c:v libx264 -g 100 -keyint_min 100 -sc_threshold 0 -pix_fmt yuv420p");
+    ASSERT_FALSE(path.empty());
+    VideoDecoder decoder;
+    std::string error;
+    ASSERT_TRUE(decoder.open(path, 64, 48, &error));
+    resetWorkCounts();
+    std::vector<ImagePtr> frames;
+    for (double t : {.05, 2.55, 4.85}) {
+        frames.push_back(decoder.frameAt(t));
+        ASSERT_TRUE(frames.back());
+    }
+    EXPECT_LT(workCounts().decodeFrames, 60u);
+    int i = 0;
+    for (double t : {.05, 2.55, 4.85}) {
+        VideoDecoder reference;
+        ASSERT_TRUE(reference.open(path, 64, 48, &error));
+        auto frame = reference.frameAt(t);
+        ASSERT_TRUE(frame);
+        EXPECT_EQ(frames[i++]->px, frame->px);
+    }
 }

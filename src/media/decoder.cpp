@@ -338,7 +338,20 @@ ImagePtr VideoDecoder::frameAt(double t) {
         return curImage_;
     }
     // Decode forward when the target is close ahead; otherwise seek.
-    if (!haveCur_ || t < curPts_ || t > curPts_ + 2.0) seek(t);
+    bool forwardSeek = t > curPts_ + 2.0;
+    if (haveCur_ && forwardSeek) {
+        // A known intervening keyframe lets us skip directly to the target's
+        // GOP. Without one, keep decoding forward rather than replaying the
+        // same GOP from its beginning (important for long-GOP recordings).
+        AVStream* stream = fmt_->streams[stream_];
+        int index = av_index_search_timestamp(stream,
+            int64_t((t + startTime_) / timeBase_), AVSEEK_FLAG_BACKWARD);
+        if (index >= 0) {
+            const AVIndexEntry* entry = avformat_index_get_entry(stream, index);
+            if (entry) forwardSeek = entry->timestamp * timeBase_ - startTime_ > curPts_ + frameDur_;
+        }
+    }
+    if (!haveCur_ || t < curPts_ || forwardSeek) seek(t);
     bool advanced = false;
     for (;;) {
         if (!haveNext_) {
