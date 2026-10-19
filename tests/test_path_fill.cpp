@@ -84,3 +84,18 @@ TEST(PathRender, ActiveFillEdgesPreserveCoverageWindingAndClipping) {
                     EXPECT_EQ(actual.px, expected.px);
                 }
 }
+
+TEST(PathRender, OpaquePaintPreservesEveryChannelValueAndTruncation) {
+    auto path = shapePath("rectangle", 11, 9);
+    for (int value = 0; value < 256; ++value) {
+        SCOPED_TRACE(value);
+        Color color{value / 255.0f, (255 - value) / 255.0f, uint8_t(value * 73) / 255.0f, 1};
+        Image actual(11, 9), expected(11, 9);
+        fill(actual, Color{.1f, .2f, .3f, .4f});
+        const double channels[4] = {color.r, color.g, color.b, 1};
+        for (size_t i = 0; i < expected.px.size(); i += 4)
+            for (int c = 0; c < 4; ++c) expected.px[i + c] = uint8_t(std::clamp(channels[c] * 255, 0., 255.));
+        drawPath(actual, path, 1, color, Color{}, 0, 0, 1, "nonzero");
+        EXPECT_EQ(actual.px, expected.px);
+    }
+}

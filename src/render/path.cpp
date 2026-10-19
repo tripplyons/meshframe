@@ -278,13 +278,27 @@ std::string pathData(const VectorPath& p) {
     return s.str();
 }
 namespace {
-void blend(uint8_t* o, Color c, double coverage) {
-    double a = std::clamp(double(c.a) * coverage, 0., 1.), inv = 1 - a;
-    o[0] = uint8_t(std::clamp(c.r * a * 255 + o[0] * inv, 0., 255.));
-    o[1] = uint8_t(std::clamp(c.g * a * 255 + o[1] * inv, 0., 255.));
-    o[2] = uint8_t(std::clamp(c.b * a * 255 + o[2] * inv, 0., 255.));
-    o[3] = uint8_t(std::clamp(a * 255 + o[3] * inv, 0., 255.));
-}
+struct PathPaint {
+    Color color;
+    std::array<uint8_t, 4> opaque;
+
+    explicit PathPaint(Color c) : color(c) {
+        const double channels[4] = {c.r, c.g, c.b, 1};
+        for (int i = 0; i < 4; ++i) opaque[i] = uint8_t(std::clamp(channels[i] * 255, 0., 255.));
+    }
+
+    void blend(uint8_t* out, double coverage) const {
+        if (color.a == 1 && coverage == 1) {
+            std::copy_n(opaque.data(), 4, out);
+            return;
+        }
+        double a = std::clamp(double(color.a) * coverage, 0., 1.), inv = 1 - a;
+        out[0] = uint8_t(std::clamp(color.r * a * 255 + out[0] * inv, 0., 255.));
+        out[1] = uint8_t(std::clamp(color.g * a * 255 + out[1] * inv, 0., 255.));
+        out[2] = uint8_t(std::clamp(color.b * a * 255 + out[2] * inv, 0., 255.));
+        out[3] = uint8_t(std::clamp(a * 255 + out[3] * inv, 0., 255.));
+    }
+};
 }  // namespace
 void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color stroke, double width, double trimStart,
               double trimEnd, std::string_view rule, std::string_view linecap, std::string_view linejoin,
@@ -305,6 +319,7 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
     trimEnd = std::clamp(trimEnd, 0., 1.);
     // During a stroke reveal, defer the fill until the full contour is visible.
     if (fill.a > 0 && trimStart == 0 && trimEnd == 1) {
+        const PathPaint paint(fill);
         std::vector<double> coverage(dst.w);
         std::vector<std::pair<double, int>> hits;
         struct FillEdge {
@@ -364,7 +379,7 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
             }
             work::addMap(uint64_t(dst.w));
             for (int x = 0; x < dst.w; ++x)
-                if (coverage[x] > 0) blend(dst.at(x, y), fill, coverage[x]);
+                if (coverage[x] > 0) paint.blend(dst.at(x, y), coverage[x]);
         }
         work::addEdge(edgeSteps);
     }
@@ -509,9 +524,10 @@ void drawPath(Image& dst, const VectorPath& path, double unit, Color fill, Color
             cursor += l;
         }
     }
+    const PathPaint paint(stroke);
     work::addMap(mask.size());
     for (size_t i = 0; i < mask.size(); ++i)
-        if (mask[i] > 0) blend(dst.px.data() + i * 4, stroke, mask[i]);
+        if (mask[i] > 0) paint.blend(dst.px.data() + i * 4, mask[i]);
 }
 namespace {
 using Matrix = std::array<double, 6>;
