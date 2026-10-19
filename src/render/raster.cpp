@@ -32,8 +32,8 @@ public:
         int ystart = std::max(0, int(p0.y));
         if (p0.y < 0) x -= p0.y * dxdy;
         int yend = std::min(h_, int(std::ceil(p1.y)));
+        uint64_t edges = uint64_t(std::max(0, yend - ystart));
         for (int y = ystart; y < yend; ++y) {
-            work::addEdge(1);
             float* row = acc_.data() + size_t(y) * (w_ + 2);
             float dy = std::min(float(y + 1), p1.y) - std::max(float(y), p0.y);
             float xnext = x + dxdy * dy;
@@ -60,7 +60,7 @@ public:
                 } else {
                     float a1 = s * (1.5f - x0f);
                     row[xai + 1] += d * (a1 - a0);
-                    work::addEdge(uint64_t(std::max(0, xbi - 1 - (xai + 2))));
+                    edges += uint64_t(std::max(0, xbi - 1 - (xai + 2)));
                     for (int xi = xai + 2; xi < xbi - 1; ++xi) row[xi] += d * s;
                     float a2 = a1 + float(xbi - xai - 3) * s;
                     row[xbi - 1] += d * (1 - a2 - am);
@@ -69,16 +69,17 @@ public:
             }
             x = xnext;
         }
+        work::addEdge(edges);
     }
 
     void fill(Image& dst, Color c) const {
         float pr = c.r * c.a, pg = c.g * c.a, pb = c.b * c.a;
+        work::addRaster(uint64_t(w_) * h_);
         for (int y = 0; y < h_; ++y) {
             const float* row = acc_.data() + size_t(y) * (w_ + 2);
             uint8_t* out = dst.at(x0_, y0_ + y);
             float acc = 0;
             for (int x = 0; x < w_; ++x, out += 4) {
-                work::addRaster(1);
                 acc += row[x];
                 float cov = std::min(1.0f, std::abs(acc));
                 if (cov <= 0.002f) continue;
