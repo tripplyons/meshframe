@@ -479,3 +479,18 @@ TEST(Render, KnownOpaqueSourceMatchesAlphaInspectionAcrossTransformsAndBlends) {
                 EXPECT_EQ(actual.px, expected.px);
             }
 }
+
+TEST(Render, OverwriteStoragePreservesCopyAndZeroInitializationRules) {
+    Image image = Image::forOverwrite(19, 11);
+    for (size_t i = 0; i < image.px.size(); ++i) image.px[i] = uint8_t(i * 73);
+    const Image copy = image;
+    EXPECT_EQ(copy.px, image.px);
+    EXPECT_NE(copy.px.data(), image.px.data());
+    size_t oldSize = image.px.size();
+    image.px.resize(oldSize + 37);
+    EXPECT_TRUE(std::all_of(image.px.begin() + oldSize, image.px.end(), [](uint8_t byte) { return byte == 0; }));
+    image.resize(23, 17);
+    EXPECT_TRUE(std::all_of(image.px.begin(), image.px.end(), [](uint8_t byte) { return byte == 0; }));
+    Image ordinary(19, 11);
+    EXPECT_TRUE(std::all_of(ordinary.px.begin(), ordinary.px.end(), [](uint8_t byte) { return byte == 0; }));
+}

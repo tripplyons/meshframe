@@ -139,7 +139,7 @@ void blur(Image& img, double radius) {
     // Three box passes approximate a gaussian with sigma near radius / 2.
     int r = int(std::lround(radius / 2));
     if (r < 1) return;
-    Image tmp(img.w, img.h);
+    Image tmp = Image::forOverwrite(img.w, img.h);
     for (int i = 0; i < 3; ++i) {
         boxBlurRows(img, tmp, r);
         std::swap(img, tmp);
@@ -529,7 +529,7 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
     } else if (type == "drop_shadow") {
         Color c = asColor(param("color"), Color::gray(0));
         float a = float(std::clamp(numParam(param, "opacity", 0.6), 0.0, 1.0)) * c.a;
-        Image shadow(img.w, img.h);
+        Image shadow = Image::forOverwrite(img.w, img.h);
         work::addCopy(img.px.size() / 4);
         for (size_t i = 0; i < img.px.size(); i += 4) {
             float k = img.px[i + 3] / 255.0f * a;

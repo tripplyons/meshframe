@@ -248,7 +248,7 @@ Image outlineOf(const Image& src, float width, Color color) {
         transform(line, w);
         std::copy(line.begin(), line.end(), d.begin() + size_t(y) * w);
     }
-    Image out(w, h);
+    Image out = Image::forOverwrite(w, h);
     work::addDistance(d.size());
     for (size_t i = 0; i < d.size(); ++i) {
         float a = std::clamp(width + 0.5f - std::sqrt(d[i]), 0.0f, 1.0f);

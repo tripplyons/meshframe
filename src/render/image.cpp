@@ -32,7 +32,24 @@ size_t pixelAllocationSize(size_t bytes) {
 void* allocatePixels(size_t bytes) { return ::operator new(bytes); }
 void freePixels(void* p, size_t) noexcept { ::operator delete(p); }
 #endif
+
+PixelBytes overwritePixels(size_t bytes) {
+    PixelBytes storage(bytes, PixelAllocator<uint8_t>{false});
+    PixelBytes result;
+    // Allocators are interchangeable. Swap only the storage, keeping result's
+    // default initialization policy for any later vector growth.
+    result.swap(storage);
+    return result;
+}
 }  // namespace detail
+
+Image Image::forOverwrite(int width, int height) {
+    Image result;
+    result.w = width;
+    result.h = height;
+    result.px = detail::overwritePixels(size_t(width) * height * 4);
+    return result;
+}
 
 bool savePng(const Image& img, const char* path) {
     // Unpremultiply into a straight-alpha surface for the file.

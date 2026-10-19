@@ -487,3 +487,23 @@ TEST_F(GpuRendering, RecycledBuffersKeepConcurrentAndAbandonedFramesIndependent)
         });
     for (auto& worker : workers) worker.join();
 }
+
+TEST_F(GpuRendering, EmptyFramesOverwriteRecycledStorageAtOddDimensions) {
+    Project project = Project::makeDefault();
+    project.clips.clear();
+    project.script.clear();
+    MediaCache cache;
+    FrameRenderer cpu(cache, RenderBackend::Cpu), metal(cache, RenderBackend::Metal);
+    Evaluator evaluator;
+    for (auto [w, h] : {std::pair{37, 29}, {65, 33}, {327, 241}})
+        for (Color background : {Color{.9f, .1f, .3f, 1}, Color{.2f, .4f, .7f, .3f}, Color{0, 0, 0, 0}}) {
+            project.settings.width = w;
+            project.settings.height = h;
+            project.settings.background = background;
+            evaluator.setProject(project);
+            auto expected = cpu.render(evaluator, 0, w, h);
+            auto actual = metal.render(evaluator, 0, w, h);
+            ASSERT_TRUE(metal.usedGpuLastFrame());
+            EXPECT_EQ(actual->px, expected->px);
+        }
+}

@@ -277,7 +277,8 @@ FrameRenderer::Layer FrameRenderer::content(Evaluator& ev, const Clip& c, double
                 break;
             }
             ev.clearRuntimeError(key);
-            layer.image = std::make_shared<Image>(w, h);
+            bool clearsCanvas = !dl.cmds.empty() && dl.cmds.front().type == DrawCmd::Type::Clear;
+            layer.image = std::make_shared<Image>(clearsCanvas ? Image::forOverwrite(w, h) : Image(w, h));
             layer.gpuPixels = rasterGpu && gpuGeneratorWorthwhile(dl, float(unit), w, h) &&
                               rasterGpu->rasterize(layer.image, dl, float(unit));
             if (!layer.gpuPixels) drawList(*layer.image, dl, float(unit));
@@ -400,7 +401,7 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
         Color solidColor = layer.color;
         if (wantsPixels && !layer.image) {
             // A solid only needs its pixels when an effect will read them.
-            layer.image = std::make_shared<Image>(int(layer.displayW), int(layer.displayH));
+            layer.image = std::make_shared<Image>(Image::forOverwrite(int(layer.displayW), int(layer.displayH)));
             fill(*layer.image, solidColor);
         }
         if (!layer.image) {
@@ -550,7 +551,8 @@ std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, d
     int w = std::max(2, int(std::lround(st.width * scale))), h = std::max(2, int(std::lround(st.height * scale)));
     auto gpu = backend_ != RenderBackend::Cpu && (backend_ == RenderBackend::Metal || int64_t(w) * h >= 262144)
                    ? createGpuFrame() : nullptr;
-    auto canvas = std::make_shared<Image>(w + 2 * padX, h + 2 * padY);
+    auto canvas = std::make_shared<Image>(gpu ? Image::forOverwrite(w + 2 * padX, h + 2 * padY)
+                                            : Image(w + 2 * padX, h + 2 * padY));
     if (gpu) gpu->fill(canvas, Color{0, 0, 0, 0});
     drawClip(ev, canvas, c, t, double(w) / st.width, false, gpu.get(), padX, padY);
     usedGpu_ = gpu && gpu->finish(canvas);
@@ -576,9 +578,9 @@ std::shared_ptr<Image> FrameRenderer::renderFrame(Evaluator& ev, double t, int w
     ev.setTime(t);
     const Project& p = ev.project();
     double unit = double(w) / p.settings.width;
-    auto canvas = std::make_shared<Image>(w, h);
-    // The canvas starts zeroed; drawClip lays the background down only if the
-    // first layer cannot cover the whole frame on its own.
+    auto canvas = std::make_shared<Image>(gpu ? Image::forOverwrite(w, h) : Image(w, h));
+    // CPU draws defer the background until the first layer's coverage is known.
+    // Metal initializes every canvas pixel before compositing.
     background_ = p.settings.background;
     fillBackground_ = !gpu;
     if (gpu) gpu->fill(canvas, background_);
@@ -607,8 +609,9 @@ std::shared_ptr<Image> FrameRenderer::renderFrame(Evaluator& ev, double t, int w
             const Clip* a = p.findClip(active->clipA);
             const Clip* b = p.findClip(active->clipB);
             if (!a || !b) continue;
-            auto bufA = std::make_shared<Image>(w, h), bufB = std::make_shared<Image>(w, h);
-            auto mixed = std::make_shared<Image>(w, h);
+            auto bufA = std::make_shared<Image>(gpu ? Image::forOverwrite(w, h) : Image(w, h));
+            auto bufB = std::make_shared<Image>(gpu ? Image::forOverwrite(w, h) : Image(w, h));
+            auto mixed = std::make_shared<Image>(gpu ? Image::forOverwrite(w, h) : Image());
             if (gpu) { gpu->fill(bufA, Color{0, 0, 0, 0}); gpu->fill(bufB, Color{0, 0, 0, 0}); }
             drawClip(ev, bufA, *a, t, unit, false, gpu);
             drawClip(ev, bufB, *b, t, unit, false, gpu);

@@ -342,10 +342,10 @@ ImagePtr VideoDecoder::convert(AVFrame* f) {
                                  1 << 16, 1 << 16);
     }
     work::addScaled(uint64_t(outW_) * uint64_t(outH_));
-    auto img = std::make_shared<Image>(outW_, outH_);
+    auto img = std::make_shared<Image>(Image::forOverwrite(outW_, outH_));
     uint8_t* dst[4] = {img->px.data(), nullptr, nullptr, nullptr};
     int stride[4] = {outW_ * 4, 0, 0, 0};
-    sws_scale(sws_, f->data, f->linesize, 0, f->height, dst, stride);
+    if (sws_scale(sws_, f->data, f->linesize, 0, f->height, dst, stride) != outH_) return nullptr;
     // Sources with alpha arrive straight; the compositor wants premultiplied.
     if (fd && (fd->flags & AV_PIX_FMT_FLAG_ALPHA)) {
         for (size_t i = 0; i < img->px.size(); i += 4) {
