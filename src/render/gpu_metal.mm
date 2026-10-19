@@ -827,10 +827,6 @@ class MetalFrame final : public GpuFrame {
     }
 
     void dropShadow(Surface& surface, int w, int h, const ParamFn& params, double unit) {
-        if (!device_.shadowPipelinesAvailable()) {
-            valid_ = false;
-            return;
-        }
         auto n = [&](std::string_view name, double fallback) { return asNumber(params(name), fallback); };
         Color color = asColor(params("color"), Color::gray(0));
         ShadowParams p{};
@@ -842,6 +838,12 @@ class MetalFrame final : public GpuFrame {
         p.color[1] = color.g;
         p.color[2] = color.b;
         p.props[0] = float(std::clamp(n("opacity", .6), 0.0, 1.0)) * color.a;
+        double blurRadius = n("blur", 8) * unit;
+        if (p.props[0] == 0) return;
+        if (!device_.shadowPipelinesAvailable()) {
+            valid_ = false;
+            return;
+        }
         size_t bytes = size_t(w) * h * 4;
         id<MTLBuffer> source = surface.buffer, mask = privateBuffer(bytes);
         if (!valid_) return;
@@ -852,7 +854,7 @@ class MetalFrame final : public GpuFrame {
         dispatch(enc, device_.shadowMask, w, h);
         work::addCopy(uint64_t(w) * h);
         Surface shadow{{}, mask, true};
-        int radius = int(std::lround(std::max(0.0, n("blur", 8) * unit) / 2));
+        int radius = int(std::lround(std::max(0.0, blurRadius) / 2));
         blurSurface(shadow, w, h, radius);
         id<MTLBuffer> out = surface.privatePixels ? source : privateBuffer(bytes);
         if (!valid_) return;
@@ -935,6 +937,12 @@ class MetalFrame final : public GpuFrame {
             p.p1[1] = asString(e.params("shape")) == "ellipse";
             p.p1[2] = asString(e.params("keep")) == "outside";
         } else return;
+        // Exact identity controls preserve valid premultiplied bytes, including
+        // partially transparent pixels that otherwise take a color round trip.
+        bool identity = (p.sizes[2] == 1 && p.p0[0] == 0 && p.p0[1] == 1) ||
+                        (p.sizes[2] == 2 && p.p0[0] == 1) ||
+                        (p.sizes[2] >= 3 && p.sizes[2] <= 5 && p.p0[0] == 0);
+        if (identity) return;
         pending.push_back(p);
         // setBytes accepts at most 4 KiB. Keep each uniform batch within that
         // limit and bound per-thread counter totals independently of clip size.

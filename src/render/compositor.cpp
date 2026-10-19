@@ -476,37 +476,42 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
     if (type == "brightness_contrast") {
         float bright = float(numParam(param, "brightness", 0)), contrast = float(numParam(param, "contrast", 1));
         bool acts = bright != 0 || contrast != 1;
+        if (!acts) return;
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
             for (float* c : {&r, &g, &b}) *c = (*c - 0.5f) * contrast + 0.5f + bright;
-            return acts;
+            return true;
         });
     } else if (type == "saturation") {
         float amount = float(numParam(param, "amount", 1));
+        if (amount == 1) return;
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
             float l = luma(r, g, b);
             for (float* c : {&r, &g, &b}) *c = l + (*c - l) * amount;
-            return amount != 1;
+            return true;
         });
     } else if (type == "blur") {
         blur(img, numParam(param, "radius", 4) * unit);
     } else if (type == "invert") {
         float mix = float(numParam(param, "mix", 1));
+        if (mix == 0) return;
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
             for (float* c : {&r, &g, &b}) *c += (1 - 2 * *c) * mix;
-            return mix != 0;
+            return true;
         });
     } else if (type == "tint") {
         Color tint = asColor(param("color"), Color{1, 0.8f, 0.6f, 1});
         float amount = float(numParam(param, "amount", 0.5));
+        if (amount == 0) return;
         mapStraight(img, [&](float& r, float& g, float& b, int, int) {
             float l = luma(r, g, b);
             r += (l * tint.r - r) * amount;
             g += (l * tint.g - g) * amount;
             b += (l * tint.b - b) * amount;
-            return amount != 0;
+            return true;
         });
     } else if (type == "vignette") {
         float amount = float(numParam(param, "amount", 0.5)), soft = float(numParam(param, "softness", 0.5));
+        if (amount == 0) return;
         float cx = content.x + content.w / 2.0f, cy = content.y + content.h / 2.0f;
         float maxd = std::hypot(content.w / 2.0f, content.h / 2.0f);
         float inner = 1 - std::clamp(soft, 0.01f, 1.0f);
@@ -529,6 +534,10 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
     } else if (type == "drop_shadow") {
         Color c = asColor(param("color"), Color::gray(0));
         float a = float(std::clamp(numParam(param, "opacity", 0.6), 0.0, 1.0)) * c.a;
+        double radius = numParam(param, "blur", 8) * unit;
+        int dx = int(std::lround(numParam(param, "x", 6) * unit));
+        int dy = int(std::lround(numParam(param, "y", 6) * unit));
+        if (a == 0) return;
         Image shadow = Image::forOverwrite(img.w, img.h);
         work::addCopy(img.px.size() / 4);
         for (size_t i = 0; i < img.px.size(); i += 4) {
@@ -536,9 +545,9 @@ void applyEffect(Image& img, std::string_view type, const ParamFn& param, double
             shadow.px[i] = u8(c.r * k * 255), shadow.px[i + 1] = u8(c.g * k * 255), shadow.px[i + 2] = u8(c.b * k * 255);
             shadow.px[i + 3] = u8(k * 255);
         }
-        blur(shadow, numParam(param, "blur", 8) * unit);
+        blur(shadow, radius);
         Image out(img.w, img.h);
-        shiftInto(out, shadow, int(std::lround(numParam(param, "x", 6) * unit)), int(std::lround(numParam(param, "y", 6) * unit)));
+        shiftInto(out, shadow, dx, dy);
         shiftInto(out, img, 0, 0);
         img = std::move(out);
     } else if (type == "crop") {

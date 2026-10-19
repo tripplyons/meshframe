@@ -494,3 +494,31 @@ TEST(Render, OverwriteStoragePreservesCopyAndZeroInitializationRules) {
     Image ordinary(19, 11);
     EXPECT_TRUE(std::all_of(ordinary.px.begin(), ordinary.px.end(), [](uint8_t byte) { return byte == 0; }));
 }
+
+TEST(Render, IdentityEffectsPreservePremultipliedBytesAtEveryAlpha) {
+    Image original(256, 256);
+    for (int alpha = 0; alpha < 256; ++alpha)
+        for (int value = 0; value < 256; ++value) {
+            auto* pixel = original.at(value, alpha);
+            pixel[0] = uint8_t(std::min(value, alpha));
+            pixel[1] = uint8_t(std::min((value * 73) % 256, alpha));
+            pixel[2] = uint8_t(std::min(255 - value, alpha));
+            pixel[3] = uint8_t(alpha);
+        }
+    for (std::string_view type : {"brightness_contrast", "saturation", "invert", "tint", "vignette", "drop_shadow", "blur"}) {
+        SCOPED_TRACE(type);
+        ParamFn params = [=](std::string_view name) -> Value {
+            if (name == "brightness" || name == "mix" || name == "opacity" || name == "radius") return 0.0;
+            if (name == "contrast") return 1.0;
+            if (name == "amount") return type == "saturation" ? 1.0 : 0.0;
+            if (name == "color") return Color{.7f, .3f, .8f, .6f};
+            if (name == "blur") return 17.0;
+            if (name == "x") return -6.5;
+            if (name == "y") return 8.25;
+            return {};
+        };
+        Image actual = original;
+        applyEffect(actual, type, params, .7);
+        EXPECT_EQ(actual.px, original.px);
+    }
+}

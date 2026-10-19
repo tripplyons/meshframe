@@ -507,3 +507,25 @@ TEST_F(GpuRendering, EmptyFramesOverwriteRecycledStorageAtOddDimensions) {
             EXPECT_EQ(actual->px, expected->px);
         }
 }
+
+TEST_F(GpuRendering, IdentityEffectChainsPreserveTransparentSourceBytes) {
+    auto image = pattern(257, 129);
+    const Image original = *image;
+    std::vector<GpuEffect> effects;
+    for (std::string type : {"brightness_contrast", "saturation", "invert", "tint", "vignette", "drop_shadow", "blur"}) {
+        effects.push_back({type, [type](std::string_view name) -> Value {
+            if (name == "brightness" || name == "mix" || name == "opacity" || name == "radius") return 0.0;
+            if (name == "contrast") return 1.0;
+            if (name == "amount") return type == "saturation" ? 1.0 : 0.0;
+            if (name == "color") return Color{.7f, .3f, .8f, .6f};
+            if (name == "blur") return 17.0;
+            if (name == "x") return -6.5;
+            if (name == "y") return 8.25;
+            return {};
+        }});
+    }
+    auto gpu = createGpuFrame();
+    gpu->applyEffects(image, effects, .7, {});
+    ASSERT_TRUE(gpu->finish(image));
+    EXPECT_EQ(image->px, original.px);
+}
