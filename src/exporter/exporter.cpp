@@ -16,6 +16,8 @@ extern "C" {
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <condition_variable>
+#include <deque>
 
 namespace mf {
 
@@ -249,25 +251,75 @@ bool writeMp4(Evaluator& ev, MediaCache& cache, AudioMixer& mixer, Range r, cons
     int64_t audioDone = 0;
     int afs = out.audioFrameSize();
     std::vector<float> abuf(size_t(afs) * 2);
+    struct Frame {
+        ImagePtr image;
+        int64_t index;
+        std::vector<float> audio;
+    };
+    // Keep evaluation and media access on the caller's thread. Only the writer
+    // moves to a worker, overlapping conversion/encoding with the next render.
+    std::mutex mutex;
+    std::condition_variable_any ready;
+    std::deque<Frame> queue;
+    bool productionDone = false;
+    std::string encodeError;
+    std::jthread writer([&](std::stop_token stop) {
+        auto fail = [&](std::string error) {
+            std::lock_guard lock(mutex);
+            encodeError = std::move(error);
+            ready.notify_all();
+        };
+        for (;;) {
+            Frame frame;
+            {
+                std::unique_lock lock(mutex);
+                if (!ready.wait(lock, stop, [&] { return !queue.empty() || productionDone; })) return;
+                if (queue.empty()) break;
+                frame = std::move(queue.front());
+                queue.pop_front();
+                ready.notify_all();
+            }
+            std::string error;
+            if (!out.video(*frame.image, frame.index, &error)) { fail(std::move(error)); return; }
+            for (size_t offset = 0; offset < frame.audio.size();) {
+                int length = int(std::min(size_t(afs), (frame.audio.size() - offset) / 2));
+                if (!out.audio(frame.audio.data() + offset, length, &error)) { fail(std::move(error)); return; }
+                offset += size_t(length) * 2;
+            }
+            if (prog) prog->fraction = double(frame.index + 1) / frames;
+        }
+        std::string error;
+        if (!out.finish(&error)) fail(std::move(error));
+    });
     for (int64_t n = 0; n < frames; ++n) {
         if (prog && prog->cancel) {
             *err = "export canceled";
             return false;
         }
-        auto img = renderer.render(ev, r.start + n / fps, w, h);
-        if (!out.video(*img, n, err)) return false;
+        Frame frame{renderer.render(ev, r.start + n / fps, w, h), n, {}};
         // Keep audio up to the end of this video frame.
         int64_t audioTarget = std::min(audioTotal, int64_t(std::llround(double(n + 1) / fps * sr)));
         while (audioDone < audioTarget) {
             int len = int(std::min<int64_t>(afs, audioTotal - audioDone));
             std::fill(abuf.begin(), abuf.end(), 0.0f);
             mixer.render(ev, r.start + double(audioDone) / sr, len, abuf.data(), true);
-            if (!out.audio(abuf.data(), len, err)) return false;
+            frame.audio.insert(frame.audio.end(), abuf.begin(), abuf.begin() + size_t(len) * 2);
             audioDone += len;
         }
-        if (prog) prog->fraction = double(n + 1) / frames;
+        std::unique_lock lock(mutex);
+        ready.wait(lock, [&] { return queue.empty() || !encodeError.empty(); });
+        if (!encodeError.empty()) { *err = encodeError; return false; }
+        queue.push_back(std::move(frame));
+        ready.notify_all();
     }
-    return out.finish(err);
+    {
+        std::lock_guard lock(mutex);
+        productionDone = true;
+        ready.notify_all();
+    }
+    writer.join();
+    if (!encodeError.empty()) { *err = encodeError; return false; }
+    return true;
 }
 
 }  // namespace

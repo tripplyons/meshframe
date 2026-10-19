@@ -7,6 +7,7 @@
 
 #include <filesystem>
 #include <numbers>
+#include <chrono>
 
 using namespace mf;
 
@@ -118,4 +119,24 @@ TEST(Export, BackgroundJobReportsProgressAndResult) {
     EXPECT_TRUE(job.error().empty()) << job.error();
     EXPECT_DOUBLE_EQ(job.progress(), 1.0);
     EXPECT_TRUE(std::filesystem::exists(o.path));
+}
+
+TEST(Export, CancelWhileEncodingJoinsTheWriterAndRemovesOutput) {
+    Project p = exportProjectFixture();
+    p.settings.width = 1920;
+    p.settings.height = 1080;
+    for (auto& clip : p.clips) clip.duration = 30;
+    ExportOptions options;
+    options.path = outPath("cancel-active.mp4");
+    ExportJob job;
+    std::string error;
+    ASSERT_TRUE(job.start(p, options, &error)) << error;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (job.running() && job.progress() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    job.cancel();
+    job.wait();
+    EXPECT_FALSE(job.running());
+    EXPECT_EQ(job.error(), "export canceled");
+    EXPECT_FALSE(std::filesystem::exists(options.path));
 }
