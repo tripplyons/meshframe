@@ -446,8 +446,11 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
         PixelBox content{margin, margin, layer.image->w, layer.image->h};
         layer.effectContent = content;
         if (margin > 0) {
-            auto padded = std::make_shared<Image>(layer.image->w + 2 * margin, layer.image->h + 2 * margin);
+            const int paddedW = layer.image->w + 2 * margin, paddedH = layer.image->h + 2 * margin;
+            auto padded = std::make_shared<Image>(layer.gpuPixels ? Image::forOverwrite(paddedW, paddedH)
+                                                                : Image(paddedW, paddedH));
             if (layer.gpuPixels) {
+                gpu->fill(padded, Color::gray(0, 0));
                 // The source's bytes await GPU execution. Copy them into
                 // the zeroed halo on the GPU before the effect reads them.
                 gpu->drawLayer(padded, layer.image, Placement{padded->w / 2.0, padded->h / 2.0}, 1, Blend::Normal);
