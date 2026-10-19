@@ -243,3 +243,26 @@ TEST(Gpu, RendererSelectsCpuForSmallPreviewsAndCanForceMetal) {
     EXPECT_EQ(metal.usedGpuLastFrame(), gpuAvailable());
     expectNear(*actual, *expected);
 }
+
+TEST_F(GpuRendering, AlignedSolidsMatchRasterizedColorsAcrossClippingAndBlends) {
+    const Color background{.2f, .4f, .6f, .7f};
+    for (Color color : {Color{.8f, .3f, .6f, 0}, Color{.8f, .3f, .6f, 1.0f / 255},
+                       Color{.8f, .3f, .6f, .7f}, Color{.8f, .3f, .6f, 1}}) {
+        auto source = std::make_shared<Image>(19, 7);
+        fill(*source, color);
+        for (const Placement at : {Placement{8.5, 5.5}, Placement{-2.5, -1.5}, Placement{37.5, 28.5}})
+            for (float opacity : {.4f, 1.0f})
+                for (Blend mode : {Blend::Normal, Blend::Add, Blend::Multiply, Blend::Screen}) {
+                    auto expected = std::make_shared<Image>(32, 24), actual = std::make_shared<Image>(32, 24);
+                    auto reference = createGpuFrame();
+                    reference->fill(expected, background);
+                    reference->drawLayer(expected, source, at, opacity, mode);
+                    ASSERT_TRUE(reference->finish(expected));
+                    auto gpu = createGpuFrame();
+                    gpu->fill(actual, background);
+                    gpu->drawSolid(actual, source->w, source->h, color, at, opacity, mode);
+                    ASSERT_TRUE(gpu->finish(actual));
+                    EXPECT_EQ(actual->px, expected->px);
+                }
+    }
+}

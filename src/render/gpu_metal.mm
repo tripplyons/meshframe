@@ -186,6 +186,16 @@ kernel void fill_image(device uchar4* out [[buffer(0)]], constant uint4& sizes [
     out[xy.y * sizes.x + xy.x] = color;
 }
 
+// An aligned solid covers every pixel in its clipped bounds. Its work counts
+// are known on the CPU, so no threadgroup reduction or counter buffer is needed.
+kernel void solid_region(device uchar4* dst [[buffer(0)]], constant DrawParams& p [[buffer(1)]],
+                         uint2 xy [[thread_position_in_grid]]) {
+    uint index = (p.bounds.y + xy.y) * p.sizes.x + p.bounds.x + xy.x;
+    uchar4 raw = pack(p.color);
+    if (raw.a == 255 && p.props.x == 1 && p.props.y == 0) dst[index] = raw;
+    else dst[index] = pack(blend(unpack(raw) * p.props.x, unpack(dst[index]), uint(p.props.y)));
+}
+
 kernel void draw_layer(device const uchar4* src [[buffer(0)]], device uchar4* dst [[buffer(1)]],
                        constant DrawParams& p [[buffer(2)]], device packed_uint3* counts [[buffer(3)]],
                        uint2 xy [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
@@ -411,7 +421,7 @@ kernel void effect_image(device const uchar4* src [[buffer(0)]], device uchar4* 
 struct Device {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
-    id<MTLComputePipelineState> fill, draw, transition, blur, blurRows, blurRowsWide, transpose, effect;
+    id<MTLComputePipelineState> fill, draw, solid, transition, blur, blurRows, blurRowsWide, transpose, effect;
     std::string error;
 
     Device() {
@@ -436,17 +446,18 @@ struct Device {
             };
             fill = pipeline(@"fill_image");
             draw = pipeline(@"draw_layer");
+            solid = pipeline(@"solid_region");
             transition = pipeline(@"transition_image");
             blur = pipeline(@"blur_image");
             blurRows = pipeline(@"blur_rows");
             blurRowsWide = pipeline(@"blur_rows_wide");
             transpose = pipeline(@"transpose_image");
             effect = pipeline(@"effect_image");
-            if (!fill || !draw || !transition || !blur || !blurRows || !transpose || !effect)
+            if (!fill || !draw || !solid || !transition || !blur || !blurRows || !transpose || !effect)
                 error = err ? err.localizedDescription.UTF8String : "cannot create Metal pipeline";
         }
     }
-    bool available() const { return fill && draw && transition && blur && blurRows && transpose && effect; }
+    bool available() const { return fill && draw && solid && transition && blur && blurRows && transpose && effect; }
 };
 
 Device& sharedDevice() {
@@ -755,6 +766,19 @@ class MetalFrame final : public GpuFrame {
             p.props[3] = !src;
             auto rgba = colorBytes(color);
             for (int c = 0; c < 4; ++c) p.color[c] = rgba[c] / 255.0f;
+            if (!src && aligned) {
+                if (!rgba[3]) return;
+                id<MTLBuffer> out = buffer(dst);
+                if (!valid_) return;
+                id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
+                [enc setBuffer:out offset:0 atIndex:0];
+                [enc setBytes:&p length:sizeof p atIndex:1];
+                dispatch(enc, device_.solid, x1 - x0, y1 - y0);
+                uint64_t pixels = uint64_t(x1 - x0) * (y1 - y0);
+                if (rgba[3] == 255 && opacity == 1 && blend == Blend::Normal) work::addCopy(pixels);
+                else work::addBlend(pixels);
+                return;
+            }
             id<MTLBuffer> out = buffer(dst), in = src ? buffer(std::move(src)) : out;
             id<MTLBuffer> stats = counters(device_.draw, x1 - x0, y1 - y0);
             if (!valid_) return;
