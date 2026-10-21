@@ -301,7 +301,9 @@ Notes:
   `'[{"t":0,"v":0},{"t":1,"v":1,"interp":"linear"}]'`.
 - `export` writes MP4 (H.264 and AAC) or, for a `.wav` path, audio only. It
   runs in the background. Use `wait=true` to reply when it finishes, or poll
-  `export.status`. `crf` is 0 to 51, and lower means higher quality.
+  `export.status`. `crf` is 0 to 51, and lower means higher quality. On macOS
+  it sets VideoToolbox's constant quality, so the default of 18 gives files
+  about 1.5 times as large as x264 would at the same quality.
 - `select` changes what the GUI's inspector, curves, and effects views show.
 - Each change raises the `revision` in `status`. `diff SINCE` lists the
   objects added, removed, and changed since that revision, with the old and

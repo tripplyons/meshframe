@@ -17,7 +17,7 @@ struct ExportOptions {
     int height = 0;
     double start = 0;
     double end = -1;       // negative uses the project duration
-    int crf = 18;          // x264 quality
+    int crf = 18;          // x264 CRF; VideoToolbox maps it to quality 116 - 2 * crf
     int audioBitrate = 192000;
 };
 

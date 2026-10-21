@@ -105,33 +105,20 @@ public:
         if (rc < 0 || !oc_) return fail(err, "cannot create mp4 container", rc);
         pkt_ = av_packet_alloc();
 
-        const AVCodec* vc = avcodec_find_encoder_by_name("libx264");
-        if (!vc) vc = avcodec_find_encoder_by_name("h264_videotoolbox");
-        if (!vc) vc = avcodec_find_encoder(AV_CODEC_ID_H264);
-        if (!vc) vc = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
-        if (!vc) return fail(err, "no H.264 or MPEG-4 encoder available", 0);
-        vst_ = avformat_new_stream(oc_, nullptr);
-        venc_ = avcodec_alloc_context3(vc);
-        venc_->width = w;
-        venc_->height = h;
         AVRational rate = av_d2q(fps, 100000);
-        venc_->time_base = av_inv_q(rate);
-        venc_->framerate = rate;
-        venc_->pix_fmt = AV_PIX_FMT_YUV420P;
-        venc_->gop_size = std::max(1, int(fps * 2));
-        venc_->max_b_frames = 2;
-        venc_->color_range = AVCOL_RANGE_MPEG;
-        venc_->colorspace = AVCOL_SPC_BT709;
-        venc_->color_primaries = AVCOL_PRI_BT709;
-        venc_->color_trc = AVCOL_TRC_BT709;
-        if (std::string_view(vc->name) == "libx264") {
-            av_opt_set(venc_->priv_data, "preset", "medium", 0);
-            av_opt_set_int(venc_->priv_data, "crf", o.crf, 0);
-        } else {
-            venc_->bit_rate = int64_t(w) * h * fps * 0.15;
-        }
-        if (oc_->oformat->flags & AVFMT_GLOBALHEADER) venc_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        if ((rc = avcodec_open2(venc_, vc, nullptr)) < 0) return fail(err, "cannot open video encoder", rc);
+        // VideoToolbox encodes on the media engine at about twice x264's speed
+        // here, so try it first and fall back to software.
+        const AVCodec* candidates[] = {avcodec_find_encoder_by_name("h264_videotoolbox"),
+                                       avcodec_find_encoder_by_name("libx264"),
+                                       avcodec_find_encoder(AV_CODEC_ID_H264), avcodec_find_encoder(AV_CODEC_ID_MPEG4)};
+        const AVCodec* vc = nullptr;
+        for (const AVCodec* c : candidates)
+            if (c && openVideoEncoder(c, w, h, rate, o.crf)) {
+                vc = c;
+                break;
+            }
+        if (!vc) return fail(err, "cannot open an H.264 or MPEG-4 encoder", 0);
+        vst_ = avformat_new_stream(oc_, nullptr);
         avcodec_parameters_from_context(vst_->codecpar, venc_);
         vst_->time_base = venc_->time_base;
         vst_->avg_frame_rate = rate;
@@ -222,6 +209,40 @@ public:
     }
 
 private:
+    // Leaves venc_ open on success and freed on failure.
+    bool openVideoEncoder(const AVCodec* vc, int w, int h, AVRational rate, int crf) {
+        venc_ = avcodec_alloc_context3(vc);
+        venc_->width = w;
+        venc_->height = h;
+        venc_->time_base = av_inv_q(rate);
+        venc_->framerate = rate;
+        venc_->pix_fmt = AV_PIX_FMT_YUV420P;
+        venc_->gop_size = std::max(1, int(av_q2d(rate) * 2));
+        venc_->color_range = AVCOL_RANGE_MPEG;
+        venc_->colorspace = AVCOL_SPC_BT709;
+        venc_->color_primaries = AVCOL_PRI_BT709;
+        venc_->color_trc = AVCOL_TRC_BT709;
+        std::string_view name = vc->name;
+        if (name == "libx264") {
+            venc_->max_b_frames = 2;
+            av_opt_set(venc_->priv_data, "preset", "medium", 0);
+            av_opt_set_int(venc_->priv_data, "crf", crf, 0);
+        } else if (name == "h264_videotoolbox") {
+            // Its B-frames give packets that the mp4 muxer rejects (pts < dts).
+            // Constant quality q = 116 - 2 * crf matches x264's PSNR at CRF 18.
+            venc_->max_b_frames = 0;
+            venc_->flags |= AV_CODEC_FLAG_QSCALE;
+            venc_->global_quality = std::clamp(116 - 2 * crf, 1, 100) * FF_QP2LAMBDA;
+        } else {
+            venc_->max_b_frames = 2;
+            venc_->bit_rate = int64_t(w) * h * av_q2d(rate) * 0.15;
+        }
+        if (oc_->oformat->flags & AVFMT_GLOBALHEADER) venc_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        if (avcodec_open2(venc_, vc, nullptr) >= 0) return true;
+        avcodec_free_context(&venc_);
+        return false;
+    }
+
     bool fail(std::string* err, const std::string& what, int rc) {
         *err = rc ? fmt::format("{}: {}", what, avError(rc)) : what;
         return false;

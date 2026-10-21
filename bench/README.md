@@ -118,8 +118,11 @@ project, range, dimensions, and CRF. Export overlaps encoding with rendering
 using one queued frame; evaluation and media access stay on their original
 thread. It also begins each frame before finishing the previous one, so the CPU
 prepares a frame while the GPU draws the one before it. Color conversion before
-encoding and after decoding uses swscale's threads. The x264 preset and CRF are
-unchanged. Compare decoded video and audio
+encoding and after decoding uses swscale's threads. On macOS, H.264 encoding
+uses VideoToolbox in constant-quality mode, with q = 116 - 2 * CRF. At CRF 18
+that matches x264 `medium` in PSNR (52.9 against 52.6 dB on a 60 s screen
+recording) and halves the export time, with files about 1.5 times larger.
+libx264 is the fallback when VideoToolbox cannot open. Compare decoded video and audio
 as well as elapsed time, and test cancellation while encoding is active.
 
 Compare medians from alternating before/after runs. Feature results describe
@@ -194,4 +197,4 @@ These are targeted workloads, not whole-editor multipliers. VideoToolbox decode
 with CPU frame download was also tested and rejected: the 90-frame workload
 was about ten times slower than software decode on this machine. Four-thread
 software decoding also regressed; automatic FFmpeg thread selection remains.
-The export encoder, x264 preset, and CRF remain unchanged.
+This decode change left the export encoder unchanged.
