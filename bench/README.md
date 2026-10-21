@@ -21,7 +21,9 @@ scripts check with `git diff`.
 - `make-media.sh` generates three test videos in `bench/media` with ffmpeg:
   1280x720 detail-heavy motion, 1920x1080 smooth gradients, and 640x360 color
   bars with a frame counter. The files are ignored by git, because encoder
-  output is not reproducible byte for byte.
+  output is not reproducible byte for byte. The clips are lossless and skip
+  color conversion, so they decode to the same frames with any x264 or ffmpeg
+  version. The script regenerates them when it changes.
 - `projects/make-projects.sh` builds the projects through `meshframe-cli`.
   - `layers.mfproj`: stacked video layers with cover-fit scaling, blend modes,
     per-pixel effects (saturation, blur, vignette, ellipse mask, brightness),

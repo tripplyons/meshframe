@@ -5,3 +5,4 @@
 *.wav
 !tests/fixtures/**
 /demo-out/
+/bench/media/recipe
