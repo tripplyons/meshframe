@@ -73,6 +73,27 @@ TEST(Export, Mp4HasExpectedStreamsDurationAndPixels) {
     EXPECT_NEAR(peak, 0.25, 0.03);
 }
 
+// VideoToolbox stops at 4096 pixels wide, so wider exports fall back to x264.
+TEST(Export, Mp4WiderThanTheHardwareEncoderFallsBack) {
+    Project p = exportProjectFixture();
+    ExportOptions o;
+    o.path = outPath("export-wide.mp4");
+    o.width = 4608;
+    o.height = 32;
+    o.end = 0.2;
+    std::string err;
+    ASSERT_TRUE(exportProject(p, o, nullptr, &err)) << err;
+
+    VideoDecoder dec;
+    ASSERT_TRUE(dec.open(o.path, 4608, 32, &err)) << err;
+    auto frame = dec.frameAt(0.1);
+    ASSERT_TRUE(frame);
+    const uint8_t* px = frame->at(4500, 16);
+    EXPECT_NEAR(px[0], 255, 8);
+    EXPECT_NEAR(px[1], 0, 8);
+    EXPECT_NEAR(px[2], 0, 8);
+}
+
 TEST(Export, WavHasExactLengthAndSamples) {
     Project p = exportProjectFixture();
     ExportOptions o;
