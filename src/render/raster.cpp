@@ -22,6 +22,57 @@ public:
     void line(Vec2 p0, Vec2 p1) {
         p0 = local(p0);
         p1 = local(p1);
+        // Split where the segment crosses the box's left or right side. Each
+        // part then lies on one side, and clamping moves only outside parts
+        // onto the border, where they still count for pixels to their right.
+        float splits[2];
+        int count = 0;
+        for (float side : {0.0f, float(w_)}) {
+            if ((p0.x < side) == (p1.x < side)) continue;
+            float t = (side - p0.x) / (p1.x - p0.x);
+            if (t > 0 && t < 1) splits[count++] = t;
+        }
+        if (count == 2 && splits[0] > splits[1]) std::swap(splits[0], splits[1]);
+        Vec2 from = p0;
+        for (int i = 0; i < count; ++i) {
+            float t = splits[i];
+            Vec2 to{p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t};
+            to.x = std::abs(to.x) < std::abs(to.x - float(w_)) ? 0.0f : float(w_);
+            segment(from, to);
+            from = to;
+        }
+        segment(from, p1);
+    }
+
+    void fill(Image& dst, Color c) const {
+        float pr = c.r * c.a, pg = c.g * c.a, pb = c.b * c.a;
+        work::addRaster(uint64_t(w_) * h_);
+        auto rows = [&](size_t begin, size_t end) {
+            for (size_t y = begin; y < end; ++y) {
+                const float* row = acc_.data() + size_t(y) * (w_ + 2);
+                uint8_t* out = dst.at(x0_, y0_ + int(y));
+                float acc = 0;
+                for (int x = 0; x < w_; ++x, out += 4) {
+                    acc += row[x];
+                    float cov = std::min(1.0f, std::abs(acc));
+                    if (cov <= 0.002f) continue;
+                    float sa = c.a * cov, inv = 1 - sa;
+                    out[0] = uint8_t(std::min(255.0f, pr * cov * 255 + out[0] * inv + 0.5f));
+                    out[1] = uint8_t(std::min(255.0f, pg * cov * 255 + out[1] * inv + 0.5f));
+                    out[2] = uint8_t(std::min(255.0f, pb * cov * 255 + out[2] * inv + 0.5f));
+                    out[3] = uint8_t(std::min(255.0f, sa * 255 + out[3] * inv + 0.5f));
+                }
+            }
+        };
+        if (uint64_t(w_) * h_ >= 65536)
+            ThreadPool::shared().parallelFor(0, size_t(h_), rows, 32);
+        else rows(0, size_t(h_));
+    }
+
+private:
+    // Accumulates one segment in box coordinates. Parts left or right of the
+    // box are clamped onto its sides.
+    void segment(Vec2 p0, Vec2 p1) {
         if (std::abs(p0.y - p1.y) <= 1e-6f) return;
         float dir = 1;
         if (p0.y > p1.y) {
@@ -73,32 +124,6 @@ public:
         work::addEdge(edges);
     }
 
-    void fill(Image& dst, Color c) const {
-        float pr = c.r * c.a, pg = c.g * c.a, pb = c.b * c.a;
-        work::addRaster(uint64_t(w_) * h_);
-        auto rows = [&](size_t begin, size_t end) {
-            for (size_t y = begin; y < end; ++y) {
-                const float* row = acc_.data() + size_t(y) * (w_ + 2);
-                uint8_t* out = dst.at(x0_, y0_ + int(y));
-                float acc = 0;
-                for (int x = 0; x < w_; ++x, out += 4) {
-                    acc += row[x];
-                    float cov = std::min(1.0f, std::abs(acc));
-                    if (cov <= 0.002f) continue;
-                    float sa = c.a * cov, inv = 1 - sa;
-                    out[0] = uint8_t(std::min(255.0f, pr * cov * 255 + out[0] * inv + 0.5f));
-                    out[1] = uint8_t(std::min(255.0f, pg * cov * 255 + out[1] * inv + 0.5f));
-                    out[2] = uint8_t(std::min(255.0f, pb * cov * 255 + out[2] * inv + 0.5f));
-                    out[3] = uint8_t(std::min(255.0f, sa * 255 + out[3] * inv + 0.5f));
-                }
-            }
-        };
-        if (uint64_t(w_) * h_ >= 65536)
-            ThreadPool::shared().parallelFor(0, size_t(h_), rows, 32);
-        else rows(0, size_t(h_));
-    }
-
-private:
     Vec2 local(Vec2 p) const { return {p.x - x0_, p.y - y0_}; }
     int x0_, y0_, w_, h_;
     std::vector<float> acc_;

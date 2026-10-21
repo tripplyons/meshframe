@@ -78,6 +78,22 @@ TEST(Render, PolygonCoverageIsExactOnPixelEdges) {
     EXPECT_EQ(px(img, 4, 1).a, 0);
 }
 
+TEST(Render, PolygonCoverageAtImageSidesMatchesAWiderImage) {
+    // Slanted edges leave the image on both sides; the visible columns must
+    // match the same columns of an image wide enough to hold the polygon.
+    Vec2 narrow[5] = {{-9.3f, 2.2f}, {14.6f, -3.1f}, {31.7f, 9.4f}, {12.2f, 23.6f}, {-6.1f, 17.8f}};
+    Vec2 wide[5];
+    for (int i = 0; i < 5; ++i) wide[i] = {narrow[i].x + 20, narrow[i].y};
+    Image actual(24, 20), expected(64, 20);
+    fillPolygon(actual, narrow, white);
+    fillPolygon(expected, wide, white);
+    int worst = 0;
+    for (int y = 0; y < actual.h; ++y)
+        for (int x = 0; x < actual.w; ++x)
+            worst = std::max(worst, std::abs(int(px(actual, x, y).a) - px(expected, x + 20, y).a));
+    EXPECT_LE(worst, 1);
+}
+
 TEST(Render, OutlinesMatchNearestCoveredPixelAtOddDimensions) {
     for (auto [w, h] : {std::pair{13, 7}, std::pair{5, 19}, std::pair{1, 1}}) {
         Image mask(w, h);
