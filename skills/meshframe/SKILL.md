@@ -268,7 +268,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Files | `new`, `open PATH`, `save [PATH]`, `status`, `show [WHAT]`, `schema [SECTION]`, `quit` |
 | Project | `settings [width] [height] [fps] [sampleRate] [background]` |
 | Tracks | `track.add KIND [NAME]`, `track.set TRACK [name] [muted] [hidden] [locked]`, `track.move TRACK INDEX`, `track.remove TRACK` |
-| Media | `media.import PATH`, `media.list`, `media.inspect MEDIA [sheet] [count] [threshold]`, `media.transcribe MEDIA [model] [language] [force]`, `transcript.get MEDIA [start] [end] [words]`, `transcript.find TEXT [media]`, `media.remove MEDIA` |
+| Media | `media.import PATH`, `media.list`, `media.inspect MEDIA [sheet] [count] [threshold]`, `media.transcribe MEDIA [model] [language] [force]`, `transcript.get MEDIA [start] [end] [words]`, `transcript.find TEXT [media]`, `captions PATH [replace] [lineLength]`, `media.remove MEDIA` |
 | Clips | `clip.bounds CLIP [TIME]`, `text.measure TEXT [size] [font]`, `clip.add KIND TRACK START DURATION [NAME] [PROPS] [insert]`, `clip.media MEDIA [START] [TRACK] [AUDIOTRACK] [insert]`, `clip.get CLIP [TIME]`, `clip.move CLIP START [TRACK]`, `clip.trim CLIP START DURATION [ripple]`, `clip.split CLIP TIME`, `clip.speed`, `clip.rename`, `clip.unlink`, `clip.remove CLIP [ripple]`, `close-gaps [start] [end]` |
 | Paths | `path.import PATH TRACK START DURATION [NAME]` |
 | Properties | `prop.set TARGET NAME VALUE`, `prop.key TARGET NAME TIME VALUE [EASE]`, `prop.unkey TARGET NAME TIME`, `prop.expr TARGET NAME EXPR`, `prop.get TARGET NAME [TIME]` |
@@ -429,13 +429,19 @@ Look at media before you place it:
 - `media.transcribe MEDIA` turns speech into text with word timings and
   stores it in the project, so later calls are instant (`force=true` redoes
   it). It needs `whisper-cli` (`brew install whisper-cpp`) and a model file:
-  `model=PATH`, `$MESHFRAME_WHISPER_MODEL`, or
-  `~/.cache/meshframe/whisper/ggml-base.en.bin`. If either is missing, the
+  `model=PATH`, `$MESHFRAME_WHISPER_MODEL`, or a large-v3-turbo model or
+  else `ggml-base.en.bin` in `~/.cache/meshframe/whisper`. If either is missing, the
   error says how to get it; ask the user before installing or downloading.
   Transcription can take a while for long files, so over the socket pass
   `--timeout 0` (or a long timeout) to the CLI.
 - `transcript.get MEDIA [start] [end] [words=true]` shows the transcript
   between source times.
+- `captions PATH [replace] [lineLength]` writes captions for the speech on
+  the timeline: SRT, or WebVTT for a `.vtt` path. It uses the transcripts of
+  media clips on unmuted audio tracks, at the times the clips play them, so
+  transcribe the media first. Captions follow sentences and pauses, with up
+  to two lines of `lineLength` characters (default 42). Pass names whisper
+  mishears as `replace='{"VLLM": "vLLM"}'`, then read the file for others.
 - `transcript.find TEXT [media]` finds spoken words, ignoring case and
   punctuation. Each match gives source `start` and `end` and, under
   `timeline`, every clip that plays it with its timeline times (`partial`

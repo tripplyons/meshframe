@@ -678,17 +678,24 @@ TEST(Transcript, ParsesWhisperTokensIntoWords) {
             {"text": "frame", "offsets": {"from": 1500, "to": 1800}},
             {"text": ",", "offsets": {"from": 1800, "to": 1800}},
             {"text": " friends", "offsets": {"from": 1800, "to": 2400}},
-            {"text": ".", "offsets": {"from": 2400, "to": 2500}}]}]})");
+            {"text": ".", "offsets": {"from": 2400, "to": 2500}}]},
+        {"offsets": {"from": 3000, "to": 3500}, "text": " Didn't stop.", "tokens": [
+            {"text": "Didn", "offsets": {"from": 3000, "to": 3000}},
+            {"text": "'t", "offsets": {"from": 3000, "to": 3200}},
+            {"text": " stop.", "offsets": {"from": 3200, "to": 3500}}]}]})");
     Transcript t = parseWhisperJson(j, "m.bin");
     EXPECT_EQ(t.model, "m.bin");
-    ASSERT_EQ(t.segments.size(), 1u) << "bracketed non-speech is dropped";
+    ASSERT_EQ(t.segments.size(), 2u) << "bracketed non-speech is dropped";
     EXPECT_EQ(t.segments[0].text, "Hello meshframe, friends.");
     EXPECT_DOUBLE_EQ(t.segments[0].start, 1.0);
-    ASSERT_EQ(t.words.size(), 3u);
+    ASSERT_EQ(t.words.size(), 5u);
     EXPECT_EQ(t.words[1].text, "meshframe,");
     EXPECT_DOUBLE_EQ(t.words[1].start, 1.3);
     EXPECT_DOUBLE_EQ(t.words[1].end, 1.8);
     EXPECT_EQ(t.words[2].text, "friends.");
+    // A word that ends where its segment starts still takes the next piece.
+    EXPECT_EQ(t.words[3].text, "Didn't");
+    EXPECT_DOUBLE_EQ(t.words[3].end, 3.2);
 }
 
 TEST(Commands, ClipSpeedKeepsLinkedMediaInSync) {
@@ -778,6 +785,40 @@ TEST(Commands, TranscriptFindMapsSourceToTimeline) {
     ok(lc, {"open", "transcript.mfproj"});
     EXPECT_EQ(ok(lc, {"transcript.find", "boring part"}).size(), 1u);
     EXPECT_FALSE(ok(lc, {"media.list"})[0].contains("transcript")) << "media.list stays short";
+}
+
+TEST(Commands, CaptionsFollowTheClipsThatPlayTheSpeech) {
+    Session s;
+    Commands c(s);
+    ok(c, {"media.import", fixtures::videoWithAudio()});
+    Id media = s.project().media[0].id;
+    EXPECT_NE(fails(c, {"captions", "none.srt"}).find("transcribe"), std::string::npos);
+    Transcript t;
+    t.segments = {{"Cut the VLLM part now.", 0, 1}};
+    t.words = {{"Cut", 0.0, 0.1}, {"the", 0.1, 0.2}, {"VLLM", 0.4, 0.6}, {"part", 0.6, 0.8}, {"now.", 0.8, 1.0}};
+    s.apply("transcribe", [&](Project& p) { edit::setTranscript(p, media, std::make_shared<const Transcript>(t)); });
+
+    // The whole file at 10 s, and its second half at 20.5 s.
+    ok(c, {"clip.media", "av.mp4", "10"});
+    json later = ok(c, {"clip.media", "av.mp4", "20"});
+    ok(c, {"clip.trim", std::to_string(later[0].get<Id>()), "20.5", "0.5"});
+
+    auto srt = (fixtures::dir() / "captions.srt").string();
+    json r = ok(c, {"captions", srt, R"(replace={"VLLM":"vLLM"})", "lineLength=12"});
+    EXPECT_EQ(r["captions"], 2);
+    auto read = [](const std::string& path) {
+        std::ifstream f(path);
+        return std::string(std::istreambuf_iterator<char>(f), {});
+    };
+    EXPECT_EQ(read(srt), "1\n00:00:10,000 --> 00:00:11,300\nCut the vLLM\npart now.\n\n"
+                         "2\n00:00:20,500 --> 00:00:21,300\nvLLM\npart now.\n\n");
+
+    auto vtt = (fixtures::dir() / "captions.vtt").string();
+    ok(c, {"captions", vtt});
+    EXPECT_TRUE(read(vtt).starts_with("WEBVTT\n\n00:00:10.000 --> 00:00:11.300\nCut the VLLM part now.\n"));
+
+    ok(c, {"track.set", "A1", "muted=true"});
+    EXPECT_NE(fails(c, {"captions", srt}).find("no speech"), std::string::npos);
 }
 
 TEST(Commands, MediaInspectFindsCutsAndSilence) {

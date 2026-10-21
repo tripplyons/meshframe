@@ -13,7 +13,8 @@ namespace mf {
 
 // whisper-cli on PATH or in the usual Homebrew places; empty when missing.
 std::string findWhisperCli();
-// $MESHFRAME_WHISPER_MODEL, or ~/.cache/meshframe/whisper/ggml-base.en.bin.
+// $MESHFRAME_WHISPER_MODEL, else a large-v3-turbo model in
+// ~/.cache/meshframe/whisper when one is there, else ggml-base.en.bin there.
 std::string defaultWhisperModel();
 
 // Converts whisper-cli --output-json-full output. Words join the tokens

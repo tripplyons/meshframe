@@ -29,15 +29,18 @@ cmake --build build
 
 The build produces `build/meshframe` and `build/meshframe-cli`.
 
-Transcription (`media.transcribe`) is optional. It runs `whisper-cli` from
-whisper.cpp with a model file, by default
-`~/.cache/meshframe/whisper/ggml-base.en.bin`:
+Transcription (`media.transcribe`, and the `captions` made from it) is
+optional. It runs `whisper-cli` from whisper.cpp with a model file from
+`~/.cache/meshframe/whisper`: `ggml-large-v3-turbo.bin` (or its `-q8_0` or
+`-q5_0` version) when present, else `ggml-base.en.bin`. The large model
+spells names and numbers much better, which matters for captions, and takes
+about 3 times as long:
 
 ```sh
 brew install whisper-cpp
 mkdir -p ~/.cache/meshframe/whisper
-curl -L -o ~/.cache/meshframe/whisper/ggml-base.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+curl -L -o ~/.cache/meshframe/whisper/ggml-large-v3-turbo-q5_0.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
 ```
 
 To build a self-contained `meshframe.app` that runs without Homebrew:

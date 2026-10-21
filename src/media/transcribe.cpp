@@ -64,7 +64,12 @@ std::string findWhisperCli() {
 std::string defaultWhisperModel() {
     if (const char* m = std::getenv("MESHFRAME_WHISPER_MODEL"); m && *m) return m;
     const char* home = std::getenv("HOME");
-    return (fs::path(home ? home : "") / ".cache/meshframe/whisper/ggml-base.en.bin").string();
+    fs::path dir = fs::path(home ? home : "") / ".cache/meshframe/whisper";
+    // On a 6-minute talk, large-v3-turbo got names and numbers right that
+    // base.en missed (Makora, vLLM, "Qwen 3.5 122B"), in about 3 times as long.
+    for (const char* name : {"ggml-large-v3-turbo.bin", "ggml-large-v3-turbo-q8_0.bin", "ggml-large-v3-turbo-q5_0.bin"})
+        if (std::error_code ec; fs::exists(dir / name, ec)) return (dir / name).string();
+    return (dir / "ggml-base.en.bin").string();
 }
 
 Transcript parseWhisperJson(const json& j, std::string model) {
@@ -75,14 +80,15 @@ Transcript parseWhisperJson(const json& j, std::string model) {
         if (text.empty() || (text.front() == '[' && text.back() == ']')) continue;
         const json& off = seg.at("offsets");
         t.segments.push_back({text, off.value("from", 0) / 1000.0, off.value("to", 0) / 1000.0});
+        bool segmentStart = true;  // a segment's first token starts a word even without a space
         for (const auto& tok : seg.value("tokens", json::array())) {
             std::string piece = tok.value("text", "");
             if (piece.empty() || piece.starts_with("[_")) continue;
             double from = tok.at("offsets").value("from", 0) / 1000.0, to = tok.at("offsets").value("to", 0) / 1000.0;
-            bool startsWord = piece.front() == ' ' || t.words.empty() || t.words.back().end <= t.segments.back().start;
-            if (startsWord) {
+            if (piece.front() == ' ' || segmentStart) {
                 std::string word = trim(piece);
                 if (!word.empty()) t.words.push_back({word, from, to});
+                segmentStart = segmentStart && word.empty();
             } else {
                 t.words.back().text += piece;
                 t.words.back().end = to;

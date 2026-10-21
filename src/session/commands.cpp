@@ -1,5 +1,6 @@
 #include "session/commands.hpp"
 
+#include "model/captions.hpp"
 #include "model/chapters.hpp"
 #include "model/edit.hpp"
 #include "model/path_edit.hpp"
@@ -838,7 +839,7 @@ void Commands::registerBuiltins() {
              return j;
          }});
     add({"media.transcribe", "Transcribe speech with whisper-cli; stores words with source times in the project",
-         {req("media", "id"), opt("model", "path", "whisper model file (default $MESHFRAME_WHISPER_MODEL or ~/.cache/meshframe/whisper/ggml-base.en.bin)"),
+         {req("media", "id"), opt("model", "path", "whisper model file (default $MESHFRAME_WHISPER_MODEL, else ggml-large-v3-turbo*.bin or ggml-base.en.bin in ~/.cache/meshframe/whisper)"),
           opt("language", "string", "spoken language, or auto (default en for .en models, else auto)"), opt("force", "bool", "transcribe again")},
          [](A a, C c) -> json {
              Session& s = c.session;
@@ -891,6 +892,22 @@ void Commands::registerBuiltins() {
              json j = {{"media", m.id}, {"name", m.name}, {"segments", spans(m.transcript->segments)}};
              if (get<bool>(a, "words", false)) j["words"] = spans(m.transcript->words);
              return j;
+         }});
+    add({"captions", "Write captions (SRT, or WebVTT for .vtt) for the speech on the timeline, from media transcripts",
+         {req("path", "path"), opt("replace", "value", R"(words to respell, such as {"VLLM": "vLLM"})"),
+          opt("lineLength", "int", "most characters on a line, default 42; captions have up to two lines")},
+         [](A a, C c) -> json {
+             CaptionOptions o;
+             o.lineLength = get<int>(a, "lineLength", 42);
+             if (a.contains("replace")) {
+                 if (!a["replace"].is_object()) throw EditError(R"(replace must be an object such as {"VLLM": "vLLM"})");
+                 for (const auto& [from, to] : a["replace"].items()) o.replace[from] = to.get<std::string>();
+             }
+             auto captions = timelineCaptions(c.session.evaluator().project(), o);
+             if (captions.empty()) throw EditError("no speech to caption; transcribe the media on unmuted audio tracks first");
+             std::string path = a["path"];
+             writeTextFile(path, formatCaptions(captions, fs::path(path).extension() == ".vtt"));
+             return {{"path", path}, {"captions", captions.size()}, {"start", captions.front().start}, {"end", captions.back().end}};
          }});
     add({"transcript.find", "Find spoken words in transcripts; returns source times and where they play on the timeline",
          {req("text", "string"), opt("media", "id", "search one media file (default all)")}, [](A a, C c) -> json {
