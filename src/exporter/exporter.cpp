@@ -228,7 +228,8 @@ private:
             av_opt_set(venc_->priv_data, "preset", "medium", 0);
             av_opt_set_int(venc_->priv_data, "crf", crf, 0);
         } else if (name == "h264_videotoolbox") {
-            // Its B-frames give packets that the mp4 muxer rejects (pts < dts).
+            // Its B-frames come out with DTS after PTS, which the mp4 muxer
+            // rejects, and they made files larger, not smaller, in tests.
             // Constant quality q = 116 - 2 * crf matches x264's PSNR at CRF 18.
             venc_->max_b_frames = 0;
             venc_->flags |= AV_CODEC_FLAG_QSCALE;
