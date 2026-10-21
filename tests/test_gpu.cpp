@@ -291,12 +291,38 @@ TEST_F(GpuRendering, GeneratorRectanglesMatchCpuCoverageAndCommandOrder) {
         }
 }
 
+TEST_F(GpuRendering, GeneratorCirclesAndLinesMatchCpuCoverage) {
+    for (float scale : {.5f, 1.0f, 2.0f}) {
+        DrawList list;
+        list.cmds.push_back({DrawCmd::Type::Rect, 3, 4, 50, 30, 0, Color{.1f, .2f, .7f, 1}});
+        // Circles from subpixel to many-sided, partly off the image, and negative.
+        for (const auto& circle : {std::array<float, 3>{30.3f, 24.7f, 21.6f}, {5.5f, 6.25f, .4f}, {12.1f, 40.8f, 3.3f},
+                                   {-4.2f, 10.5f, 9.75f}, {66.6f, 2.2f, 30}, {40, 30, -7.5f}, {35, 25, 460}})
+            for (Color color : {Color{.9f, .3f, .6f, .4f}, Color{.2f, .7f, .4f, 1}, Color{.3f, .4f, 1, .02f}})
+                list.cmds.push_back({DrawCmd::Type::Circle, circle[0], circle[1], circle[2], 0, 0, color});
+        for (const auto& line : {std::array<float, 5>{2.5f, 3.5f, 60.25f, 41.75f, 3}, {10, 45, 10.4f, 2, .3f},
+                                 {50, 10, 8, 12, 7.5f}, {-5, 20, 80, 22, 1}})
+            list.cmds.push_back({DrawCmd::Type::Line, line[0], line[1], line[2], line[3], line[4],
+                                 Color{.95f, .85f, .2f, .8f}});
+        auto actual = std::make_shared<Image>(71, 53);
+        fill(*actual, Color{.2f, .4f, .6f, .7f});
+        Image expected = *actual;
+        drawList(expected, list, scale);
+        auto gpu = createGpuFrame();
+        ASSERT_TRUE(gpu->rasterize(actual, list, scale));
+        ASSERT_TRUE(gpu->finish(actual));
+        expectNear(*actual, expected, 2);
+    }
+}
+
 TEST_F(GpuRendering, UnsupportedGeneratorListsEncodeNoPartialRaster) {
     auto actual = pattern(13, 9);
     const Image expected = *actual;
     DrawList list;
     list.cmds.push_back({DrawCmd::Type::Clear, 0, 0, 0, 0, 0, Color{1, 0, 0, 1}});
-    list.cmds.push_back({DrawCmd::Type::Circle, 5, 5, 3, 0, 0, Color{0, 1, 0, 1}});
+    DrawCmd poly{DrawCmd::Type::Poly, 0, 0, 0, 0, 0, Color{0, 1, 0, 1}};
+    poly.points = {1, 1, 8, 2, 4, 7};
+    list.cmds.push_back(poly);
     auto gpu = createGpuFrame();
     EXPECT_FALSE(gpu->rasterize(actual, list, 1));
     ASSERT_TRUE(gpu->finish(actual));

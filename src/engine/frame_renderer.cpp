@@ -162,7 +162,7 @@ bool fullyOpaque(const Image& img) {
     return true;
 }
 
-// Small rectangles take less CPU time than a Metal dispatch. Estimate clipped
+// Small shapes take less CPU time than a Metal dispatch. Estimate clipped
 // pixels per command so generator offloading amortizes that fixed cost.
 bool gpuGeneratorWorthwhile(const DrawList& list, float scale, int w, int h) {
     uint64_t pixels = 0;
@@ -180,6 +180,19 @@ bool gpuGeneratorWorthwhile(const DrawList& list, float scale, int w, int h) {
             int y0 = int(std::clamp(std::floor(top), 0.0f, float(h)));
             int y1 = int(std::clamp(std::ceil(bottom), 0.0f, float(h)));
             pixels += uint64_t(x1 - x0) * (y1 - y0);
+        } else if (cmd.type == DrawCmd::Type::Circle || cmd.type == DrawCmd::Type::Line) {
+            if (cmd.color.a <= 0) continue;
+            auto pts = convexOutline(cmd, scale);
+            if (pts.empty()) continue;
+            float minx = pts[0].x, maxx = minx, miny = pts[0].y, maxy = miny;
+            for (auto p : pts) {
+                minx = std::min(minx, p.x), maxx = std::max(maxx, p.x);
+                miny = std::min(miny, p.y), maxy = std::max(maxy, p.y);
+            }
+            if (!std::isfinite(minx) || !std::isfinite(maxx) || !std::isfinite(miny) || !std::isfinite(maxy)) continue;
+            float x0 = std::clamp(std::floor(minx), 0.0f, float(w)), x1 = std::clamp(std::ceil(maxx) + 1, 0.0f, float(w));
+            float y0 = std::clamp(std::floor(miny), 0.0f, float(h)), y1 = std::clamp(std::ceil(maxy) + 1, 0.0f, float(h));
+            pixels += uint64_t(x1 - x0) * uint64_t(y1 - y0);
         } else return false;
     }
     return !list.cmds.empty() && pixels >= uint64_t(list.cmds.size()) * 65536;

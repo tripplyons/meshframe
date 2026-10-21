@@ -58,11 +58,13 @@ them; radii above 256 require 1,024-thread tiles. Unsupported radii and
 threshold cutoffs keep their CPU paths.
 Consecutive color, crop, and mask effects share a Metal dispatch while retaining
 the byte rounding between effects. Blur and shadow passes separate these batches.
-Generator lists containing clears and rectangles use Metal rasterization when
-their clipped work averages at least 65,536 pixels per command. Smaller lists,
-other drawing commands and CPU-only effect chains keep CPU rasterization.
+Generator lists containing clears, rectangles, circles, and lines use Metal
+rasterization when their clipped work averages at least 65,536 pixels per
+command. Circles and lines fill the same polygons as the CPU, with exact pixel
+coverage, and a list's shapes share one encoder. Smaller lists, text and
+polygon commands, and CPU-only effect chains keep CPU rasterization.
 GPU-generated content also stays on Metal when a shadow needs padded storage.
-Optional rectangle and shadow shaders initialize only when first needed.
+Optional generator and shadow shaders initialize only when first needed.
 Apple silicon shares image memory with Metal; other devices download the final
 canvas. A 64 MiB pool reuses page-backed image storage and lazily attached Metal
 views between frames. Other platforms, unavailable devices, and failed GPU

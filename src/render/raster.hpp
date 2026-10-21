@@ -45,6 +45,10 @@ TextBlock layoutTextBlock(Font& font, const std::string& text, const TextLayout&
 // pixels, and under them, into an image of the same size.
 Image outlineOf(const Image& src, float width, Color color);
 
+// The convex polygon that drawList fills for a Circle or Line command, in
+// image pixels. Empty for other commands.
+std::vector<Vec2> convexOutline(const DrawCmd& cmd, float scale);
+
 // Draws a generator's commands, scaling project coordinates by `scale`.
 void drawList(Image& dst, const DrawList& list, float scale);
 

@@ -2,6 +2,7 @@
 
 #include "core/work_counter.hpp"
 #include "render/draw_list.hpp"
+#include "render/raster.hpp"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -500,6 +501,58 @@ kernel void raster_rect(device uchar4* dst [[buffer(0)]], constant RectParams& p
     float4 source = float4(p.color.rgb * p.color.a, p.color.a) * cov * 255.0f;
     dst[index] = uchar4(min(255.0f, source + float4(dst[index]) * (1.0f - alpha) + 0.5f));
 }
+
+struct ConvexParams {
+    uint4 sizes;
+    float4 color;
+    float4 shape;
+    uint4 count;
+};
+
+// Area under f(x) = clamp(1 - x, 0, 1): the part of a unit pixel right of x.
+float rightArea(float x) { return x <= 0 ? x : x >= 1 ? 0.5f : x - 0.5f * x * x; }
+
+// Exact area of a pixel inside a polygon, as the CPU accumulates it: each
+// edge adds its signed height in the pixel's row times the mean part of the
+// pixel right of it. Pixels well inside or outside the radii skip the edges.
+kernel void raster_convex(device uchar4* dst [[buffer(0)]], constant ConvexParams& p [[buffer(1)]],
+                          constant float2* pts [[buffer(2)]], constant float2* blocks [[buffer(3)]],
+                          uint2 xy [[thread_position_in_grid]]) {
+    uint2 pos = xy + p.sizes.zw;
+    float2 origin = float2(pos);
+    float d = distance(origin + 0.5f, p.shape.xy);
+    if (d - 0.75f >= p.shape.w) return;
+    float cov = 1.0f;
+    if (d + 0.75f > p.shape.z) {
+        float sum = 0;
+        // Blocks of 16 edges with their y range skip edges outside this row.
+        for (uint block = 0; block * 16 < p.count.x; ++block) {
+            if (blocks[block].y <= origin.y || blocks[block].x >= origin.y + 1) continue;
+            for (uint e = block * 16; e < min(block * 16 + 16, p.count.x); ++e) {
+                float2 a = pts[e] - origin, b = pts[e + 1 == p.count.x ? 0 : e + 1] - origin;
+                float dir = 1;
+                if (a.y > b.y) {
+                    float2 t = a;
+                    a = b, b = t;
+                    dir = -1;
+                }
+                if (b.y <= 0 || a.y >= 1 || b.y - a.y <= 1e-6f) continue;
+                float dxdy = (b.x - a.x) / (b.y - a.y);
+                float top = max(a.y, 0.0f), bottom = min(b.y, 1.0f);
+                float xa = a.x + (top - a.y) * dxdy, xb = a.x + (bottom - a.y) * dxdy;
+                float mean = abs(xb - xa) < 1e-4f ? clamp(1 - 0.5f * (xa + xb), 0.0f, 1.0f)
+                                                  : (rightArea(xb) - rightArea(xa)) / (xb - xa);
+                sum += dir * (bottom - top) * mean;
+            }
+        }
+        cov = min(1.0f, abs(sum));
+    }
+    if (cov <= 0.002f) return;
+    uint index = pos.y * p.sizes.x + pos.x;
+    float alpha = p.color.a * cov;
+    float4 source = float4(p.color.rgb * p.color.a, p.color.a) * cov * 255.0f;
+    dst[index] = uchar4(min(255.0f, source + float4(dst[index]) * (1.0f - alpha) + 0.5f));
+}
 )METAL";
 
 
@@ -536,7 +589,7 @@ struct Device {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     id<MTLLibrary> coreLibrary;
-    id<MTLComputePipelineState> fill, draw, solid, rect, transition, blur, blurRows, blurRowsWide, transpose, effect;
+    id<MTLComputePipelineState> fill, draw, solid, rect, convex, transition, blur, blurRows, blurRowsWide, transpose, effect;
     std::string error;
     std::once_flag rectInit, shadowInit, largeBlurInit;
     id<MTLComputePipelineState> blurRowsLarge;
@@ -592,16 +645,23 @@ struct Device {
     id<MTLComputePipelineState> rectanglePipeline() {
         std::call_once(rectInit, [&] {
             @autoreleasepool {
-                // Most generators stay CPU-side. Compile this optional shader
-                // only when a sufficiently large rectangle list needs it.
+                // Most generators stay CPU-side. Compile these optional shaders
+                // only when a sufficiently large generator list needs them.
                 NSError* err = nil;
                 id<MTLLibrary> library = [device newLibraryWithSource:[NSString stringWithUTF8String:kRectShader]
                                                               options:nil error:&err];
                 id<MTLFunction> fn = [library newFunctionWithName:@"raster_rect"];
                 rect = fn ? [device newComputePipelineStateWithFunction:fn error:&err] : nil;
+                fn = [library newFunctionWithName:@"raster_convex"];
+                convex = fn ? [device newComputePipelineStateWithFunction:fn error:&err] : nil;
             }
         });
         return rect;
+    }
+
+    id<MTLComputePipelineState> convexPipeline() {
+        rectanglePipeline();
+        return convex;
     }
 
     bool shadowPipelinesAvailable() {
@@ -643,6 +703,12 @@ struct RectParams {
     float bounds[4];
     float color[4];
 };
+struct ConvexParams {
+    uint32_t sizes[4];
+    float color[4];
+    float shape[4];
+    uint32_t count[4];
+};
 struct ShadowParams {
     uint32_t sizes[4];
     int32_t shifts[4];
@@ -659,7 +725,7 @@ struct EffectParams {
     uint32_t sizes[4];
     float p0[4], p1[4], color[4];
 };
-static_assert(sizeof(DrawParams) == 96 && sizeof(RectParams) == 48 && sizeof(TransitionParams) == 64 &&
+static_assert(sizeof(DrawParams) == 96 && sizeof(RectParams) == 48 && sizeof(ConvexParams) == 64 && sizeof(TransitionParams) == 64 &&
               sizeof(EffectParams) == 64 && sizeof(ShadowParams) == 64);
 
 class MetalFrame final : public GpuFrame {
@@ -1108,43 +1174,107 @@ class MetalFrame final : public GpuFrame {
     }
 
     bool rasterize(const std::shared_ptr<Image>& dst, const DrawList& list, float scale) override {
-        bool hasRects = false;
+        bool hasShapes = false;
         for (const auto& cmd : list.cmds) {
-            if (cmd.type != DrawCmd::Type::Clear && cmd.type != DrawCmd::Type::Rect) return false;
-            hasRects |= cmd.type == DrawCmd::Type::Rect;
+            if (cmd.type != DrawCmd::Type::Clear && cmd.type != DrawCmd::Type::Rect &&
+                cmd.type != DrawCmd::Type::Circle && cmd.type != DrawCmd::Type::Line) return false;
+            hasShapes |= cmd.type != DrawCmd::Type::Clear;
         }
         @autoreleasepool {
             if (!valid_ || dst->empty()) return true;
-            id<MTLComputePipelineState> pipeline = hasRects ? device_.rectanglePipeline() : nil;
-            if (hasRects && !pipeline) return false;
+            if (hasShapes && (!device_.rectanglePipeline() || !device_.convexPipeline())) return false;
+            // Consecutive shapes share one serial encoder, so each dispatch
+            // still sees the pixels of the ones before it.
+            id<MTLComputeCommandEncoder> enc = nil;
+            auto encoder = [&]() -> id<MTLComputeCommandEncoder> {
+                if (enc) return enc;
+                id<MTLBuffer> out = buffer(dst);
+                if (!valid_) return nil;
+                enc = [commands_ computeCommandEncoder];
+                if (!enc) valid_ = false;
+                else [enc setBuffer:out offset:0 atIndex:0];
+                return enc;
+            };
             for (const auto& cmd : list.cmds) {
                 if (cmd.type == DrawCmd::Type::Clear) {
+                    if (enc) [enc endEncoding];
+                    enc = nil;
                     fill(dst, cmd.color);
                     continue;
                 }
                 if (cmd.color.a <= 0) continue;
-                float x = cmd.a * scale, y = cmd.b * scale, w = cmd.c * scale, h = cmd.d * scale;
-                float left = std::min(x, x + w), right = std::max(x, x + w);
-                float top = std::min(y, y + h), bottom = std::max(y, y + h);
-                if (!std::isfinite(left) || !std::isfinite(right) || !std::isfinite(top) || !std::isfinite(bottom) ||
-                    left >= right || top >= bottom) continue;
-                int x0 = int(std::clamp(std::floor(left), 0.0f, float(dst->w)));
-                int x1 = int(std::clamp(std::ceil(right), 0.0f, float(dst->w)));
-                int y0 = int(std::clamp(std::floor(top), 0.0f, float(dst->h)));
-                int y1 = int(std::clamp(std::ceil(bottom), 0.0f, float(dst->h)));
-                if (x0 >= x1 || y0 >= y1) continue;
-                RectParams p{{uint32_t(dst->w), uint32_t(dst->h), uint32_t(x0), uint32_t(y0)},
-                             {left, top, right, bottom}, {cmd.color.r, cmd.color.g, cmd.color.b, cmd.color.a}};
-                id<MTLBuffer> out = buffer(dst);
-                if (!valid_) return true;
-                id<MTLComputeCommandEncoder> enc = [commands_ computeCommandEncoder];
-                [enc setBuffer:out offset:0 atIndex:0];
-                [enc setBytes:&p length:sizeof p atIndex:1];
-                dispatch(enc, pipeline, x1 - x0, y1 - y0);
-                work::addRaster(uint64_t(x1 - x0) * (y1 - y0));
+                if (cmd.type != DrawCmd::Type::Rect) {
+                    rasterizeConvex(dst, convexOutline(cmd, scale), cmd.color, encoder);
+                } else {
+                    float x = cmd.a * scale, y = cmd.b * scale, w = cmd.c * scale, h = cmd.d * scale;
+                    float left = std::min(x, x + w), right = std::max(x, x + w);
+                    float top = std::min(y, y + h), bottom = std::max(y, y + h);
+                    if (!std::isfinite(left) || !std::isfinite(right) || !std::isfinite(top) ||
+                        !std::isfinite(bottom) || left >= right || top >= bottom) continue;
+                    int x0 = int(std::clamp(std::floor(left), 0.0f, float(dst->w)));
+                    int x1 = int(std::clamp(std::ceil(right), 0.0f, float(dst->w)));
+                    int y0 = int(std::clamp(std::floor(top), 0.0f, float(dst->h)));
+                    int y1 = int(std::clamp(std::ceil(bottom), 0.0f, float(dst->h)));
+                    if (x0 >= x1 || y0 >= y1) continue;
+                    RectParams p{{uint32_t(dst->w), uint32_t(dst->h), uint32_t(x0), uint32_t(y0)},
+                                 {left, top, right, bottom}, {cmd.color.r, cmd.color.g, cmd.color.b, cmd.color.a}};
+                    if (!encoder()) break;
+                    [enc setComputePipelineState:device_.rect];
+                    [enc setBytes:&p length:sizeof p atIndex:1];
+                    [enc dispatchThreads:MTLSizeMake(x1 - x0, y1 - y0, 1)
+                        threadsPerThreadgroup:threadgroupSize(device_.rect)];
+                    work::addRaster(uint64_t(x1 - x0) * (y1 - y0));
+                }
+                if (!valid_) break;
             }
+            if (enc) [enc endEncoding];
         }
         return true;
+    }
+
+    // Fills the same convex polygon and pixel box as the CPU's fillPolygon.
+    template <class Encoder>
+    void rasterizeConvex(const std::shared_ptr<Image>& dst, const std::vector<Vec2>& pts, Color color,
+                         Encoder& encoder) {
+        if (pts.size() < 3) return;
+        float minx = pts[0].x, maxx = minx, miny = pts[0].y, maxy = miny, cx = 0, cy = 0, area = 0;
+        for (size_t i = 0; i < pts.size(); ++i) {
+            Vec2 a = pts[i], b = pts[(i + 1) % pts.size()];
+            if (!std::isfinite(a.x) || !std::isfinite(a.y)) return;
+            minx = std::min(minx, a.x), maxx = std::max(maxx, a.x);
+            miny = std::min(miny, a.y), maxy = std::max(maxy, a.y);
+            cx += a.x, cy += a.y;
+            area += a.x * b.y - b.x * a.y;
+        }
+        if (area == 0) return;
+        int x0 = std::max(0, int(std::floor(minx))), y0 = std::max(0, int(std::floor(miny)));
+        int x1 = std::min(dst->w, int(std::ceil(maxx)) + 1), y1 = std::min(dst->h, int(std::ceil(maxy)) + 1);
+        if (x0 >= x1 || y0 >= y1) return;
+        // Radii around the vertex centroid: pixels within the inner one are
+        // fully covered, and pixels beyond the outer one are empty.
+        cx /= float(pts.size()), cy /= float(pts.size());
+        float orientation = area > 0 ? 1 : -1, inner = INFINITY, outer = 0;
+        std::vector<Vec2> blocks((pts.size() + 15) / 16, Vec2{INFINITY, -INFINITY});
+        for (size_t i = 0; i < pts.size(); ++i) {
+            Vec2 a = pts[i], b = pts[(i + 1) % pts.size()];
+            Vec2& block = blocks[i / 16];
+            block = {std::min({block.x, a.y, b.y}), std::max({block.y, a.y, b.y})};
+            float ex = b.x - a.x, ey = b.y - a.y, len = std::hypot(ex, ey);
+            if (len > 0) inner = std::min(inner, orientation * (ex * (cy - a.y) - ey * (cx - a.x)) / len);
+            outer = std::max(outer, std::hypot(a.x - cx, a.y - cy));
+        }
+        ConvexParams p{{uint32_t(dst->w), uint32_t(dst->h), uint32_t(x0), uint32_t(y0)},
+                       {color.r, color.g, color.b, color.a}, {cx, cy, inner, outer},
+                       {uint32_t(pts.size()), 0, 0, 0}};
+        id<MTLComputeCommandEncoder> enc = encoder();
+        if (!enc) return;
+        static_assert(sizeof(Vec2) == 2 * sizeof(float));
+        [enc setComputePipelineState:device_.convex];
+        [enc setBytes:&p length:sizeof p atIndex:1];
+        [enc setBytes:pts.data() length:pts.size() * sizeof(Vec2) atIndex:2];
+        [enc setBytes:blocks.data() length:blocks.size() * sizeof(Vec2) atIndex:3];
+        [enc dispatchThreads:MTLSizeMake(x1 - x0, y1 - y0, 1) threadsPerThreadgroup:threadgroupSize(device_.convex)];
+        work::addRaster(uint64_t(x1 - x0) * (y1 - y0));
     }
 
     void drawLayer(const std::shared_ptr<Image>& dst, ImagePtr src, const Placement& at, float opacity,

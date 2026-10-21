@@ -320,6 +320,28 @@ void drawText(Image& dst, Font& font, std::string_view text, float x, float y, f
     }
 }
 
+std::vector<Vec2> convexOutline(const DrawCmd& cmd, float s) {
+    if (cmd.type == DrawCmd::Type::Circle) {
+        float r = cmd.c * s;
+        int n = std::clamp(int(r * 0.75f), 16, 256);
+        std::vector<Vec2> pts(n);
+        for (int i = 0; i < n; ++i) {
+            float a = 2 * std::numbers::pi_v<float> * i / n;
+            pts[i] = {cmd.a * s + r * std::cos(a), cmd.b * s + r * std::sin(a)};
+        }
+        return pts;
+    }
+    if (cmd.type == DrawCmd::Type::Line) {
+        Vec2 p0{cmd.a * s, cmd.b * s}, p1{cmd.c * s, cmd.d * s};
+        float dx = p1.x - p0.x, dy = p1.y - p0.y, len = std::hypot(dx, dy);
+        if (len <= 0) return {};
+        float hw = std::max(0.5f, cmd.e * s * 0.5f);
+        float nx = -dy / len * hw, ny = dx / len * hw;
+        return {{p0.x + nx, p0.y + ny}, {p1.x + nx, p1.y + ny}, {p1.x - nx, p1.y - ny}, {p0.x - nx, p0.y - ny}};
+    }
+    return {};
+}
+
 void drawList(Image& dst, const DrawList& list, float s) {
     for (const auto& cmd : list.cmds) {
         switch (cmd.type) {
@@ -332,27 +354,8 @@ void drawList(Image& dst, const DrawList& list, float s) {
                 break;
             }
             case DrawCmd::Type::Rect: fillRect(dst, cmd.a * s, cmd.b * s, cmd.c * s, cmd.d * s, cmd.color); break;
-            case DrawCmd::Type::Circle: {
-                float r = cmd.c * s;
-                int n = std::clamp(int(r * 0.75f), 16, 256);
-                std::vector<Vec2> pts(n);
-                for (int i = 0; i < n; ++i) {
-                    float a = 2 * std::numbers::pi_v<float> * i / n;
-                    pts[i] = {cmd.a * s + r * std::cos(a), cmd.b * s + r * std::sin(a)};
-                }
-                fillPolygon(dst, pts, cmd.color);
-                break;
-            }
-            case DrawCmd::Type::Line: {
-                Vec2 p0{cmd.a * s, cmd.b * s}, p1{cmd.c * s, cmd.d * s};
-                float dx = p1.x - p0.x, dy = p1.y - p0.y, len = std::hypot(dx, dy);
-                if (len <= 0) break;
-                float hw = std::max(0.5f, cmd.e * s * 0.5f);
-                float nx = -dy / len * hw, ny = dx / len * hw;
-                Vec2 pts[4] = {{p0.x + nx, p0.y + ny}, {p1.x + nx, p1.y + ny}, {p1.x - nx, p1.y - ny}, {p0.x - nx, p0.y - ny}};
-                fillPolygon(dst, pts, cmd.color);
-                break;
-            }
+            case DrawCmd::Type::Circle:
+            case DrawCmd::Type::Line: fillPolygon(dst, convexOutline(cmd, s), cmd.color); break;
             case DrawCmd::Type::Text:
                 if (auto f = Font::sans()) drawText(dst, *f, cmd.text, cmd.a * s, cmd.b * s, cmd.c * s, cmd.color);
                 break;
