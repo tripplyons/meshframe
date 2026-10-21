@@ -45,6 +45,9 @@ bench/projects/make-projects.sh     # only when the projects need to change
 ./build/meshframe_bench --frames 60 --compare-cpu --json
 ```
 
+To profile a real project, put it (with its media) in a folder of its own and
+pass `--projects DIR --start SECONDS` to render frames from later in the video.
+
 The automatic backend uses Metal on macOS for frames of at least 262,144
 pixels and keeps smaller previews on the CPU. Metal composites a whole frame
 in one command buffer, including transition surfaces. Media, generator, text, and

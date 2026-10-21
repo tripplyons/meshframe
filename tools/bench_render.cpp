@@ -3,7 +3,7 @@
 // two runs of the same code report the same numbers no matter how the thread
 // pool split the work. Wall clock goes to stderr as a diagnostic only.
 //
-//   meshframe_bench [--projects DIR] [--frames N] [--expect FILE] [--write FILE]
+//   meshframe_bench [--projects DIR] [--frames N] [--start SECONDS] [--expect FILE] [--write FILE]
 //
 // With --expect FILE, the rendered frames must hash to the digests in FILE, and
 // the run fails when they do not. With --write FILE, it writes them instead.
@@ -32,6 +32,7 @@ using namespace mf;
 
 struct Options {
     int frames = 60;
+    double start = 0;
     std::string projects = "bench/projects";
     std::string expect;
     std::string write;
@@ -115,6 +116,7 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--frames") opt.frames = std::stoi(next());
+        else if (a == "--start") opt.start = std::stod(next());
         else if (a == "--projects") opt.projects = next();
         else if (a == "--expect") opt.expect = next();
         else if (a == "--write") opt.write = next();
@@ -173,7 +175,7 @@ int main(int argc, char** argv) {
         double renderBefore = renderSeconds;
         auto started = std::chrono::steady_clock::now();
         for (int i = 0; i < opt.frames; ++i) {
-            double t = (double(i) + 0.5) / fps;
+            double t = opt.start + (double(i) + 0.5) / fps;
             auto frameStarted = std::chrono::steady_clock::now();
             auto frame = renderer.render(ev, t, w, h);
             renderSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - frameStarted).count();
