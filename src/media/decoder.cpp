@@ -375,31 +375,53 @@ ImagePtr VideoDecoder::frameAt(double t) {
 }
 
 ImagePtr VideoDecoder::convert(AVFrame* f) {
-    sws_ = sws_getCachedContext(sws_, f->width, f->height, AVPixelFormat(f->format), outW_, outH_, AV_PIX_FMT_RGBA,
-                                SWS_BILINEAR, nullptr, nullptr, nullptr);
-    if (!sws_) return nullptr;
-    // Honor the frame's matrix and range; untagged HD is almost always BT.709.
-    int cs = SWS_CS_DEFAULT;
-    switch (f->colorspace) {
-        case AVCOL_SPC_BT709: cs = SWS_CS_ITU709; break;
-        case AVCOL_SPC_BT2020_NCL:
-        case AVCOL_SPC_BT2020_CL: cs = SWS_CS_BT2020; break;
-        case AVCOL_SPC_SMPTE170M:
-        case AVCOL_SPC_BT470BG: cs = SWS_CS_ITU601; break;
-        default: cs = f->height >= 720 ? SWS_CS_ITU709 : SWS_CS_DEFAULT;
+    // A dynamic context reads sizes and colors from the frames and splits the
+    // conversion across threads.
+    if (!sws_) {
+        sws_ = sws_alloc_context();
+        if (!sws_) return nullptr;
+        sws_->flags = SWS_BILINEAR;
+        sws_->threads = 0;
     }
+    AVFrame* src = av_frame_clone(f);
+    AVFrame* out = av_frame_alloc();
+    auto release = [&] {
+        av_frame_free(&src);
+        av_frame_free(&out);
+    };
+    if (!src || !out) {
+        release();
+        return nullptr;
+    }
+    // Honor the frame's matrix and range; untagged HD is almost always BT.709.
     const AVPixFmtDescriptor* fd = av_pix_fmt_desc_get(AVPixelFormat(f->format));
     bool rgb = fd && (fd->flags & AV_PIX_FMT_FLAG_RGB);
     if (!rgb) {
-        int srcFull = f->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
-        sws_setColorspaceDetails(sws_, sws_getCoefficients(cs), srcFull, sws_getCoefficients(SWS_CS_DEFAULT), 1, 0,
-                                 1 << 16, 1 << 16);
+        switch (f->colorspace) {
+            case AVCOL_SPC_BT709: break;
+            case AVCOL_SPC_BT2020_NCL:
+            case AVCOL_SPC_BT2020_CL: src->colorspace = AVCOL_SPC_BT2020_NCL; break;
+            case AVCOL_SPC_SMPTE170M:
+            case AVCOL_SPC_BT470BG: src->colorspace = AVCOL_SPC_SMPTE170M; break;
+            default: src->colorspace = f->height >= 720 ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+        }
+        if (src->color_range != AVCOL_RANGE_JPEG) src->color_range = AVCOL_RANGE_MPEG;
     }
+    // Same primaries and transfer on both sides: convert the matrix only.
+    out->format = AV_PIX_FMT_RGBA;
+    out->width = outW_;
+    out->height = outH_;
+    out->color_range = AVCOL_RANGE_JPEG;
+    out->colorspace = AVCOL_SPC_RGB;
+    out->color_primaries = src->color_primaries;
+    out->color_trc = src->color_trc;
     work::addScaled(uint64_t(outW_) * uint64_t(outH_));
     auto img = std::make_shared<Image>(Image::forOverwrite(outW_, outH_));
-    uint8_t* dst[4] = {img->px.data(), nullptr, nullptr, nullptr};
-    int stride[4] = {outW_ * 4, 0, 0, 0};
-    if (sws_scale(sws_, f->data, f->linesize, 0, f->height, dst, stride) != outH_) return nullptr;
+    out->data[0] = img->px.data();
+    out->linesize[0] = outW_ * 4;
+    int rc = sws_scale_frame(sws_, out, src);
+    release();
+    if (rc < 0) return nullptr;
     // Sources with alpha arrive straight; the compositor wants premultiplied.
     if (fd && (fd->flags & AV_PIX_FMT_FLAG_ALPHA)) {
         for (size_t i = 0; i < img->px.size(); i += 4) {

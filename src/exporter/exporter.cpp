@@ -86,6 +86,7 @@ class Mp4Writer {
 public:
     ~Mp4Writer() {
         sws_freeContext(sws_);
+        av_frame_free(&rgba_);
         av_frame_free(&vframe_);
         av_frame_free(&aframe_);
         av_packet_free(&pkt_);
@@ -164,10 +165,25 @@ public:
         av_channel_layout_copy(&aframe_->ch_layout, &aenc_->ch_layout);
         aframe_->nb_samples = audioFrameSize_;
         av_frame_get_buffer(aframe_, 0);
-        sws_ = sws_getContext(w, h, AV_PIX_FMT_RGBA, w, h, AV_PIX_FMT_YUV420P, SWS_BICUBIC, nullptr, nullptr, nullptr);
+        vframe_->colorspace = AVCOL_SPC_BT709;
+        vframe_->color_range = AVCOL_RANGE_MPEG;
+        vframe_->color_primaries = AVCOL_PRI_BT709;
+        vframe_->color_trc = AVCOL_TRC_BT709;
+        // A dynamic context takes formats and colors from the frames and
+        // splits the conversion across threads.
+        sws_ = sws_alloc_context();
+        rgba_ = av_frame_alloc();
+        if (!sws_ || !rgba_) return fail(err, "cannot allocate the color converter", 0);
+        sws_->flags = SWS_BICUBIC;
+        sws_->threads = 0;
         // Full-range RGB in, limited-range BT.709 out.
-        const int* coeffs = sws_getCoefficients(SWS_CS_ITU709);
-        sws_setColorspaceDetails(sws_, coeffs, 1, coeffs, 0, 0, 1 << 16, 1 << 16);
+        rgba_->format = AV_PIX_FMT_RGBA;
+        rgba_->width = w;
+        rgba_->height = h;
+        rgba_->colorspace = AVCOL_SPC_RGB;
+        rgba_->color_range = AVCOL_RANGE_JPEG;
+        rgba_->color_primaries = AVCOL_PRI_BT709;
+        rgba_->color_trc = AVCOL_TRC_BT709;
         return true;
     }
 
@@ -175,9 +191,10 @@ public:
 
     bool video(const Image& img, int64_t index, std::string* err) {
         av_frame_make_writable(vframe_);
-        const uint8_t* src[1] = {img.px.data()};
-        int stride[1] = {img.w * 4};
-        sws_scale(sws_, src, stride, 0, img.h, vframe_->data, vframe_->linesize);
+        rgba_->data[0] = const_cast<uint8_t*>(img.px.data());
+        rgba_->linesize[0] = img.w * 4;
+        int rc = sws_scale_frame(sws_, vframe_, rgba_);
+        if (rc < 0) return fail(err, "cannot convert frame colors", rc);
         vframe_->pts = index;
         return send(venc_, vst_, vframe_, err);
     }
@@ -226,7 +243,7 @@ private:
     AVFormatContext* oc_ = nullptr;
     AVCodecContext *venc_ = nullptr, *aenc_ = nullptr;
     AVStream *vst_ = nullptr, *ast_ = nullptr;
-    AVFrame *vframe_ = nullptr, *aframe_ = nullptr;
+    AVFrame *vframe_ = nullptr, *aframe_ = nullptr, *rgba_ = nullptr;
     AVPacket* pkt_ = nullptr;
     SwsContext* sws_ = nullptr;
     bool opened_ = false;
