@@ -18,10 +18,28 @@ find_package(fmt CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Freetype REQUIRED)
 find_package(Threads REQUIRED)
-pkg_check_modules(LUAJIT REQUIRED IMPORTED_TARGET luajit)
-pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-  libavformat libavcodec libavutil libswscale libswresample)
+# Homebrew keeps each package under a versioned path and removes the old one
+# on upgrade. Ask pkg-config again on every configure, and configure again when
+# a package's .pc file changes or disappears, so the cache never keeps a
+# removed path.
+macro(mf_pkg_check prefix)
+  unset(__pkg_config_checked_${prefix} CACHE)
+  get_cmake_property(_mf_cache CACHE_VARIABLES)
+  foreach(_mf_var IN LISTS _mf_cache)
+    if(_mf_var MATCHES "^pkgcfg_lib_${prefix}_")
+      unset(${_mf_var} CACHE)
+    endif()
+  endforeach()
+  pkg_check_modules(${prefix} REQUIRED IMPORTED_TARGET ${ARGN})
+  foreach(_mf_module IN ITEMS ${ARGN})
+    execute_process(COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=pcfiledir ${_mf_module}
+      OUTPUT_VARIABLE _mf_dir OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_mf_dir}/${_mf_module}.pc)
+  endforeach()
+endmacro()
+mf_pkg_check(LUAJIT luajit)
+mf_pkg_check(LIBXML2 libxml-2.0)
+mf_pkg_check(FFMPEG libavformat libavcodec libavutil libswscale libswresample)
 
 set(MF_WARNINGS -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 
