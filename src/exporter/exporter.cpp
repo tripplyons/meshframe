@@ -123,17 +123,16 @@ public:
         vst_->time_base = venc_->time_base;
         vst_->avg_frame_rate = rate;
 
-        const AVCodec* ac = avcodec_find_encoder(AV_CODEC_ID_AAC);
-        if (!ac) return fail(err, "no AAC encoder available", 0);
+        // AudioToolbox's AAC encoder is about three times faster than FFmpeg's,
+        // whose encoding took as long as color conversion in exports.
+        const AVCodec* ac = nullptr;
+        for (const AVCodec* c : {avcodec_find_encoder_by_name("aac_at"), avcodec_find_encoder(AV_CODEC_ID_AAC)})
+            if (c && openAudioEncoder(c, sampleRate, o.audioBitrate)) {
+                ac = c;
+                break;
+            }
+        if (!ac) return fail(err, "cannot open an AAC encoder", 0);
         ast_ = avformat_new_stream(oc_, nullptr);
-        aenc_ = avcodec_alloc_context3(ac);
-        aenc_->sample_fmt = AV_SAMPLE_FMT_FLTP;
-        aenc_->sample_rate = sampleRate;
-        aenc_->ch_layout = AV_CHANNEL_LAYOUT_STEREO;
-        aenc_->bit_rate = o.audioBitrate;
-        aenc_->time_base = AVRational{1, sampleRate};
-        if (oc_->oformat->flags & AVFMT_GLOBALHEADER) aenc_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        if ((rc = avcodec_open2(aenc_, ac, nullptr)) < 0) return fail(err, "cannot open audio encoder", rc);
         avcodec_parameters_from_context(ast_->codecpar, aenc_);
         ast_->time_base = aenc_->time_base;
         audioFrameSize_ = aenc_->frame_size > 0 ? aenc_->frame_size : 1024;
@@ -148,7 +147,7 @@ public:
         vframe_->height = h;
         av_frame_get_buffer(vframe_, 0);
         aframe_ = av_frame_alloc();
-        aframe_->format = AV_SAMPLE_FMT_FLTP;
+        aframe_->format = aenc_->sample_fmt;
         aframe_->sample_rate = sampleRate;
         av_channel_layout_copy(&aframe_->ch_layout, &aenc_->ch_layout);
         aframe_->nb_samples = audioFrameSize_;
@@ -190,11 +189,17 @@ public:
     bool audio(const float* stereo, int frames, std::string* err) {
         av_frame_make_writable(aframe_);
         aframe_->nb_samples = frames;
-        auto* l = reinterpret_cast<float*>(aframe_->data[0]);
-        auto* r = reinterpret_cast<float*>(aframe_->data[1]);
-        for (int i = 0; i < frames; ++i) {
-            l[i] = stereo[i * 2];
-            r[i] = stereo[i * 2 + 1];
+        if (aenc_->sample_fmt == AV_SAMPLE_FMT_S16) {
+            auto* out = reinterpret_cast<int16_t*>(aframe_->data[0]);
+            for (int i = 0; i < frames * 2; ++i)
+                out[i] = int16_t(std::lround(std::clamp(stereo[i], -1.0f, 1.0f) * 32767));
+        } else {
+            auto* l = reinterpret_cast<float*>(aframe_->data[0]);
+            auto* r = reinterpret_cast<float*>(aframe_->data[1]);
+            for (int i = 0; i < frames; ++i) {
+                l[i] = stereo[i * 2];
+                r[i] = stereo[i * 2 + 1];
+            }
         }
         aframe_->pts = audioPts_;
         audioPts_ += frames;
@@ -241,6 +246,26 @@ private:
         if (oc_->oformat->flags & AVFMT_GLOBALHEADER) venc_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         if (avcodec_open2(venc_, vc, nullptr) >= 0) return true;
         avcodec_free_context(&venc_);
+        return false;
+    }
+
+    // Leaves aenc_ open on success and freed on failure. Planar float when the
+    // encoder takes it, else interleaved 16-bit.
+    bool openAudioEncoder(const AVCodec* ac, int sampleRate, int bitrate) {
+        const void* formats = nullptr;
+        int count = 0;
+        aenc_ = avcodec_alloc_context3(ac);
+        avcodec_get_supported_config(aenc_, ac, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &formats, &count);
+        auto* fmts = static_cast<const AVSampleFormat*>(formats);
+        auto supports = [&](AVSampleFormat f) { return !fmts || std::find(fmts, fmts + count, f) != fmts + count; };
+        aenc_->sample_fmt = supports(AV_SAMPLE_FMT_FLTP) ? AV_SAMPLE_FMT_FLTP : AV_SAMPLE_FMT_S16;
+        aenc_->sample_rate = sampleRate;
+        aenc_->ch_layout = AV_CHANNEL_LAYOUT_STEREO;
+        aenc_->bit_rate = bitrate;
+        aenc_->time_base = AVRational{1, sampleRate};
+        if (oc_->oformat->flags & AVFMT_GLOBALHEADER) aenc_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        if (supports(aenc_->sample_fmt) && avcodec_open2(aenc_, ac, nullptr) >= 0) return true;
+        avcodec_free_context(&aenc_);
         return false;
     }
 
