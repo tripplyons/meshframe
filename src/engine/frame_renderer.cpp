@@ -91,9 +91,10 @@ std::string layerKey(Evaluator& ev, const Clip& c, double unit, int w, int h, do
     appendNumber(key, p.settings.height);
     appendNumber(key, p.settings.fps);
     // A generator reads the clock from its script, so it never reuses a layer.
-    // A media clip picks its source frame from the clock.
-    if (c.kind == ClipKind::Media) appendNumber(key, t);
-    if (const MediaSource* m = p.findMedia(c.media)) {
+    // A video clip picks its source frame from the clock; a still image does not.
+    const MediaSource* m = p.findMedia(c.media);
+    if (c.kind == ClipKind::Media && !(m && m->kind == MediaKind::Image)) appendNumber(key, t);
+    if (m) {
         key += m->path;
         key.push_back('\x1f');
         appendNumber(key, m->width);
@@ -145,14 +146,22 @@ std::vector<CachedLayer>& layerCache() {
     return cache;
 }
 
-constexpr size_t kLayerCacheSize = 16;
+// A frame can draw dozens of reusable layers, so the cache is bounded by
+// memory rather than count. Layers drawn every frame stay near the front.
+constexpr size_t kLayerCacheMinEntries = 16;
+constexpr size_t kLayerCacheBytes = size_t(256) << 20;
 
 void cacheLayer(CachedLayer layer) {
     std::lock_guard lock(layerCacheMutex());
     auto& cache = layerCache();
     std::erase_if(cache, [&](const CachedLayer& entry) { return entry.clip == layer.clip; });
     cache.insert(cache.begin(), std::move(layer));
-    if (cache.size() > kLayerCacheSize) cache.resize(kLayerCacheSize);
+    size_t bytes = 0, keep = 0;
+    for (; keep < cache.size(); ++keep) {
+        bytes += cache[keep].image ? cache[keep].image->bytes() : 0;
+        if (keep >= kLayerCacheMinEntries && bytes > kLayerCacheBytes) break;
+    }
+    cache.resize(keep);
 }
 
 // Whether every pixel of img has alpha 255.
@@ -500,7 +509,9 @@ bool FrameRenderer::drawClip(Evaluator& ev, const std::shared_ptr<Image>& target
     }  // rebuilt from scratch
     if (layer.image && layer.image->empty()) return false;
     // GPU-produced bytes remain pending until finish; cache CPU-ready images.
-    const bool cacheGpuEffects = gpuEffects && (c.kind == ClipKind::Text || c.kind == ClipKind::Path);
+    const MediaSource* still = c.kind == ClipKind::Media ? ev.project().findMedia(c.media) : nullptr;
+    if (still && still->kind != MediaKind::Image) still = nullptr;
+    const bool cacheGpuEffects = gpuEffects && (c.kind == ClipKind::Text || c.kind == ClipKind::Path || still);
     if (reusable && !hit && layer.image && !layer.gpuPixels && !cacheGpuEffects) {
         cacheLayer(CachedLayer{c.id, std::move(key), layer.image, layer.offsetX, layer.offsetY,
                               layer.displayW, layer.displayH, alphaKept, layer.effectContent});
