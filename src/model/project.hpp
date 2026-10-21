@@ -136,6 +136,7 @@ struct Marker {
     Id id = 0;
     std::string name;
     double time = 0;
+    std::string title;  // when set, the marker starts a chapter in exports
 
     bool operator==(const Marker&) const = default;
 };

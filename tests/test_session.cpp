@@ -573,6 +573,31 @@ TEST(Commands, TextMeasureMatchesTheRenderedBlock) {
     EXPECT_NE(fails(c, {"text.measure", "x", "font=/nope.ttf"}).find("nope"), std::string::npos);
 }
 
+TEST(Commands, TitledMarkersListAsYouTubeChapters) {
+    Session s;
+    Commands c(s);
+    ok(c, {"clip.add", "solid", "V1", "0", "75"});
+    ok(c, {"marker.add", "intro", "0", "title=Why it matters"});
+    ok(c, {"marker.add", "aside", "20"});
+    json m = ok(c, {"marker.add", "demo", "30", "title=Demo"});
+    EXPECT_EQ(m["title"], "Demo");
+    ok(c, {"marker.add", "end", "70", "title=Wrap-up"});
+    auto path = (fixtures::dir() / "chapters.txt").string();
+    json r = ok(c, {"chapters", path});
+    EXPECT_EQ(r["text"], "0:00 Why it matters\n0:30 Demo\n1:10 Wrap-up\n");
+    std::ifstream f(path);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(f), {}), r["text"].get<std::string>());
+    ASSERT_EQ(r["problems"].size(), 1u);  // Wrap-up lasts 5 s
+    EXPECT_NE(r["problems"][0].get<std::string>().find("Wrap-up"), std::string::npos);
+
+    ok(c, {"marker.title", "end", ""});
+    r = ok(c, {"chapters"});
+    EXPECT_EQ(r["text"], "0:00 Why it matters\n0:30 Demo\n");
+    EXPECT_FALSE(ok(c, {"show", "markers"})[3].contains("title"));
+    ok(c, {"undo"});
+    EXPECT_EQ(ok(c, {"show", "markers"})[3]["title"], "Wrap-up");
+}
+
 TEST(Commands, CheckFindsEachKindOfProblem) {
     if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg is not installed";
     auto dir = fixtures::dir() / "check";

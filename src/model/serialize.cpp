@@ -255,7 +255,11 @@ Transcript transcriptFromJson(const json& j) {
     return {j.value("model", ""), spans(j.value("segments", json::array())), spans(j.value("words", json::array()))};
 }
 
-json markerToJson(const Marker& m) { return {{"id", m.id}, {"name", m.name}, {"time", m.time}}; }
+json markerToJson(const Marker& m) {
+    json j = {{"id", m.id}, {"name", m.name}, {"time", m.time}};
+    if (!m.title.empty()) j["title"] = m.title;
+    return j;
+}
 
 json projectToJson(const Project& p) {
     json j;
@@ -362,7 +366,7 @@ Project projectFromJson(const json& j) {
         p.signals.push_back(std::move(s));
     }
     for (const auto& jm : j.value("markers", json::array()))
-        p.markers.push_back({jm.at("id").get<Id>(), jm.at("name").get<std::string>(), jm.value("time", 0.0)});
+        p.markers.push_back({jm.at("id").get<Id>(), jm.at("name").get<std::string>(), jm.value("time", 0.0), jm.value("title", "")});
     std::ranges::stable_sort(p.markers, {}, &Marker::time);
     for (const auto& je : j.value("masterAudio", json::array())) p.masterAudio.push_back(effectFromJson(je, true));
     p.script = j.value("script", "");

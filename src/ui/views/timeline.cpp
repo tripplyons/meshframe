@@ -425,9 +425,10 @@ private:
             float r = ui.dp(4);
             ui.painter.triangle({x - r, ruler_.b() - r}, {x + r + 1, ruler_.b() - r}, {x, ruler_.b()}, line);
             ui.painter.vline(x, ruler_.b(), lanes_.b(), faint);
-            Rect tag{x, lanes_.y, ui.painter.measure(m.name) + ui.dp(8), ui.rowHeight() * 0.8f};
+            const std::string& label = m.title.empty() ? m.name : m.title;  // chapters show their title
+            Rect tag{x, lanes_.y, ui.painter.measure(label) + ui.dp(8), ui.rowHeight() * 0.8f};
             ui.painter.fill(tag, line);
-            ui.painter.textIn(tag.inset(ui.dp(4), 0), m.name, ui.col(Slot::Panel));
+            ui.painter.textIn(tag.inset(ui.dp(4), 0), label, ui.col(Slot::Panel));
         }
         ui.painter.popClip();
     }

@@ -707,12 +707,12 @@ void setTranscript(Project& p, Id media, std::shared_ptr<const Transcript> trans
     m->transcript = std::move(transcript);
 }
 
-Id addMarker(Project& p, std::string name, double time) {
+Id addMarker(Project& p, std::string name, double time, std::string title) {
     if (time < 0) fail("marker time must be 0 or later");
     if (name.empty())
         for (int n = 1; name.empty() || p.findMarkerByName(name); ++n) name = fmt::format("M{}", n);
     checkMarkerName(p, name, 0);
-    Marker m{p.newId(), std::move(name), time};
+    Marker m{p.newId(), std::move(name), time, std::move(title)};
     p.markers.push_back(m);
     sortMarkers(p);
     return m.id;
@@ -728,6 +728,8 @@ void renameMarker(Project& p, Id marker, const std::string& name) {
     checkMarkerName(p, name, marker);
     markerOrFail(p, marker).name = name;
 }
+
+void setMarkerTitle(Project& p, Id marker, std::string title) { markerOrFail(p, marker).title = std::move(title); }
 
 void removeMarker(Project& p, Id marker) {
     markerOrFail(p, marker);

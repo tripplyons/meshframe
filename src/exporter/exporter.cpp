@@ -2,6 +2,7 @@
 
 #include "audio/mixer.hpp"
 #include "engine/frame_renderer.hpp"
+#include "model/chapters.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -100,7 +101,7 @@ public:
     }
 
     bool open(const std::string& path, int w, int h, double fps, int sampleRate, const ExportOptions& o,
-              std::string* err) {
+              const std::vector<Chapter>& chapters, std::string* err) {
         int rc = avformat_alloc_output_context2(&oc_, nullptr, "mp4", path.c_str());
         if (rc < 0 || !oc_) return fail(err, "cannot create mp4 container", rc);
         pkt_ = av_packet_alloc();
@@ -137,6 +138,19 @@ public:
         ast_->time_base = aenc_->time_base;
         audioFrameSize_ = aenc_->frame_size > 0 ? aenc_->frame_size : 1024;
 
+        // The mp4 muxer writes these as a QuickTime chapter track and a Nero
+        // chpl box; avformat_free_context frees them.
+        for (const Chapter& c : chapters) {
+            auto* ch = static_cast<AVChapter*>(av_mallocz(sizeof(AVChapter)));
+            ch->id = oc_->nb_chapters + 1;
+            ch->time_base = {1, 1000};
+            ch->start = std::llround(c.start * 1000);
+            ch->end = std::llround(c.end * 1000);
+            av_dict_set(&ch->metadata, "title", c.title.c_str(), 0);
+            int count = int(oc_->nb_chapters);
+            av_dynarray_add(&oc_->chapters, &count, ch);
+            oc_->nb_chapters = unsigned(count);
+        }
         if ((rc = avio_open(&oc_->pb, path.c_str(), AVIO_FLAG_WRITE)) < 0) return fail(err, "cannot write " + path, rc);
         opened_ = true;
         if ((rc = avformat_write_header(oc_, nullptr)) < 0) return fail(err, "cannot write mp4 header", rc);
@@ -309,7 +323,7 @@ bool writeMp4(Evaluator& ev, MediaCache& cache, AudioMixer& mixer, Range r, cons
     double fps = p.settings.fps;
     int sr = p.settings.sampleRate;
     Mp4Writer out;
-    if (!out.open(o.path, w, h, fps, sr, o, err)) return false;
+    if (!out.open(o.path, w, h, fps, sr, o, chaptersIn(p, r.start, r.end), err)) return false;
     FrameRenderer renderer(cache);
     int64_t frames = std::max<int64_t>(1, int64_t(std::llround((r.end - r.start) * fps)));
     int64_t audioTotal = int64_t(std::llround(double(frames) / fps * sr));

@@ -252,7 +252,9 @@ from the same specs the editor uses, so read it instead of guessing names.
   and are unique. Add markers for beats, sections, and cue points, then
   place clips and keys at `@name` and read `marker.NAME` in expressions and
   the script. Moving a marker updates everything that reads it through
-  `marker.NAME`; clips placed with `@name` keep their time.
+  `marker.NAME`; clips placed with `@name` keep their time. A marker with a
+  `title` starts a chapter: MP4 exports carry the chapters, and `chapters`
+  lists them as YouTube description lines.
 - **Eases** shape keyframe segments and transition curves. A key's ease
   shapes the segment that starts at that key.
 - Colors are `#rrggbb` or `#rrggbbaa`. In Lua, use `rgb()`, `gray()`, or `hsv()`.
@@ -272,7 +274,7 @@ Run `meshframe-cli help NAME` for exact arguments.
 | Properties | `prop.set TARGET NAME VALUE`, `prop.key TARGET NAME TIME VALUE [EASE]`, `prop.unkey TARGET NAME TIME`, `prop.expr TARGET NAME EXPR`, `prop.get TARGET NAME [TIME]` |
 | Effects | `effect.add TARGET TYPE [INDEX]`, `effect.enable EFFECT [ENABLED]`, `effect.move EFFECT DELTA`, `effect.remove EFFECT` |
 | Transitions | `transition.add A B [TYPE] [DURATION]`, `transition.set TR [TYPE] [DURATION]`, `transition.curve TR CURVE`, `transition.remove TR` |
-| Markers | `marker.add [NAME] [TIME]`, `marker.move MARKER TIME`, `marker.rename MARKER NAME`, `marker.remove MARKER`, `show markers` |
+| Markers | `marker.add [NAME] [TIME] [title]`, `marker.move MARKER TIME`, `marker.rename MARKER NAME`, `marker.title MARKER TITLE`, `marker.remove MARKER`, `show markers`, `chapters [PATH]` |
 | Reactive | `signal.set NAME value=V` or `expr=E`, `signal.remove NAME`, `script.get`, `script.set [SOURCE] [file=PATH]`, `eval CODE [TIME]`, `graph [TIME]`, `errors` |
 | Transport | `play`, `pause`, `toggle`, `seek TIME`, `time` |
 | History | `undo`, `redo`, `history`, `batch COMMANDS [LABEL]`, `diff SINCE`, `wait [since] [timeout]` |
@@ -303,7 +305,12 @@ Notes:
   runs in the background. Use `wait=true` to reply when it finishes, or poll
   `export.status`. `crf` is 0 to 51, and lower means higher quality. On macOS
   it sets VideoToolbox's constant quality, so the default of 18 gives files
-  about 1.5 times as large as x264 would at the same quality.
+  about 1.5 times as large as x264 would at the same quality. Titled markers
+  in the exported range become MP4 chapters.
+- `chapters [PATH]` lists the chapters as `M:SS Title` lines for a YouTube
+  description, writes them to PATH when given, and reports `problems` that
+  keep YouTube from showing them: the first must start at 0:00, there must
+  be at least three, and each must last at least 10 seconds.
 - `select` changes what the GUI's inspector, curves, and effects views show.
 - Each change raises the `revision` in `status`. `diff SINCE` lists the
   objects added, removed, and changed since that revision, with the old and

@@ -5,6 +5,10 @@
 
 #include <gtest/gtest.h>
 
+extern "C" {
+#include <libavformat/avformat.h>
+}
+
 #include <filesystem>
 #include <numbers>
 #include <chrono>
@@ -71,6 +75,37 @@ TEST(Export, Mp4HasExpectedStreamsDurationAndPixels) {
     float peak = 0;
     for (size_t i = 4800; i < audio->samples.size() - 4800; ++i) peak = std::max(peak, std::abs(audio->samples[i]));
     EXPECT_NEAR(peak, 0.25, 0.03);
+}
+
+TEST(Export, Mp4HasChaptersFromTitledMarkers) {
+    Project p = exportProjectFixture();
+    edit::addMarker(p, "intro", 0, "Intro");
+    edit::addMarker(p, "plain", 0.3);
+    edit::addMarker(p, "middle", 0.5, "The middle");
+    ExportOptions o;
+    o.path = outPath("export-chapters.mp4");
+    o.start = 0.25;  // the export starts inside the first chapter
+    std::string err;
+    ASSERT_TRUE(exportProject(p, o, nullptr, &err)) << err;
+
+    AVFormatContext* fc = nullptr;
+    ASSERT_EQ(avformat_open_input(&fc, o.path.c_str(), nullptr, nullptr), 0);
+    ASSERT_EQ(fc->nb_chapters, 2u);
+    auto at = [&](unsigned i, int64_t ts) { return double(ts) * av_q2d(fc->chapters[i]->time_base); };
+    EXPECT_STREQ(av_dict_get(fc->chapters[0]->metadata, "title", nullptr, 0)->value, "Intro");
+    EXPECT_NEAR(at(0, fc->chapters[0]->start), 0, 1e-3);
+    EXPECT_STREQ(av_dict_get(fc->chapters[1]->metadata, "title", nullptr, 0)->value, "The middle");
+    EXPECT_NEAR(at(1, fc->chapters[1]->start), 0.25, 1e-3);
+    avformat_close_input(&fc);
+
+    // The chapter track doesn't get in the way of reading the video back.
+    MediaSource m;
+    ASSERT_TRUE(probeMedia(o.path, m, &err)) << err;
+    EXPECT_TRUE(m.hasVideo);
+    EXPECT_TRUE(m.hasAudio);
+    VideoDecoder dec;
+    ASSERT_TRUE(dec.open(o.path, 64, 32, &err)) << err;
+    ASSERT_TRUE(dec.frameAt(0.5));
 }
 
 // VideoToolbox stops at 4096 pixels wide, so wider exports fall back to x264.

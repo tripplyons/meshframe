@@ -94,10 +94,12 @@ void removeSignal(Project& p, const std::string& name);
 void setTranscript(Project& p, Id media, std::shared_ptr<const Transcript> transcript);
 
 // Marker names are Lua identifiers, so expressions can read marker.NAME.
-// An empty name picks the next free M1, M2, ...
-Id addMarker(Project& p, std::string name, double time);
+// An empty name picks the next free M1, M2, ... A title makes the marker
+// start a chapter; an empty title makes it a plain marker again.
+Id addMarker(Project& p, std::string name, double time, std::string title = "");
 void moveMarker(Project& p, Id marker, double time);
 void renameMarker(Project& p, Id marker, const std::string& name);
+void setMarkerTitle(Project& p, Id marker, std::string title);
 void removeMarker(Project& p, Id marker);
 
 void setScript(Project& p, std::string source);

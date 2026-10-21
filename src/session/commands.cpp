@@ -1,5 +1,6 @@
 #include "session/commands.hpp"
 
+#include "model/chapters.hpp"
 #include "model/edit.hpp"
 #include "model/path_edit.hpp"
 #include "model/schema.hpp"
@@ -34,6 +35,11 @@ namespace mf {
 namespace {
 
 namespace fs = std::filesystem;
+
+void writeTextFile(const std::string& path, const std::string& text) {
+    std::ofstream f(path, std::ios::binary);
+    if (!(f << text) || !f.flush()) throw EditError("cannot write " + path);
+}
 
 std::optional<double> parseNumber(std::string_view s) {
     double d = 0;
@@ -1247,11 +1253,14 @@ void Commands::registerBuiltins() {
              return {{"errors", errorsJson(c.session, c.session.time())}};
          }});
     add({"marker.add", "Add a timeline marker (at the playhead by default); returns it",
-         {opt("name", "string", "letters, digits, and _; default M1, M2, ..."), opt("time", "time")},
+         {opt("name", "string", "letters, digits, and _; default M1, M2, ..."), opt("time", "time"),
+          opt("title", "string", "chapter title; titled markers become chapters in exports")},
          [edit](A a, C c) -> json {
              Id id = 0;
              double t = get<double>(a, "time", c.session.time());
-             edit(c.session, "add marker", [&](Project& p) { id = edit::addMarker(p, get<std::string>(a, "name", ""), t); });
+             edit(c.session, "add marker", [&](Project& p) {
+                 id = edit::addMarker(p, get<std::string>(a, "name", ""), t, get<std::string>(a, "title", ""));
+             });
              return markerToJson(*c.session.project().findMarker(id));
          }});
     add({"marker.move", "Move a marker to a time", {req("marker", "id"), req("time", "time")}, [edit](A a, C c) -> json {
@@ -1263,6 +1272,22 @@ void Commands::registerBuiltins() {
              Id id = resolveMarker(c.session.project(), a["marker"]);
              edit(c.session, "rename marker", [&](Project& p) { edit::renameMarker(p, id, a["name"]); });
              return markerToJson(*c.session.project().findMarker(id));
+         }});
+    add({"marker.title", "Set a marker's chapter title; an empty title makes it a plain marker",
+         {req("marker", "id"), req("title", "string")}, [edit](A a, C c) -> json {
+             Id id = resolveMarker(c.session.project(), a["marker"]);
+             edit(c.session, "title marker", [&](Project& p) { edit::setMarkerTitle(p, id, a["title"]); });
+             return markerToJson(*c.session.project().findMarker(id));
+         }});
+    add({"chapters", "List the chapters that titled markers make, as YouTube description lines",
+         {opt("path", "path", "also write the lines to this file")}, [](A a, C c) -> json {
+             const Project& p = c.session.project();
+             auto chapters = chaptersIn(p, 0, p.duration());
+             std::string text = youtubeChapterList(chapters);
+             if (a.contains("path")) writeTextFile(a["path"], text);
+             json list = json::array();
+             for (const Chapter& ch : chapters) list.push_back({{"title", ch.title}, {"start", ch.start}, {"end", ch.end}});
+             return {{"chapters", list}, {"text", text}, {"problems", youtubeChapterProblems(chapters)}};
          }});
     add({"marker.remove", "Remove a marker", {req("marker", "id")}, [edit](A a, C c) -> json {
              Id id = resolveMarker(c.session.project(), a["marker"]);
