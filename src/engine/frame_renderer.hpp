@@ -20,6 +20,18 @@ public:
     // Output is w x h; smaller than the project size gives a scaled preview.
     // Must run on the evaluator's thread.
     std::shared_ptr<Image> render(Evaluator& ev, double t, int w, int h);
+    // A frame whose GPU commands may still be running. render() is
+    // finish(begin()). Beginning the next frame before finishing this one lets
+    // the CPU prepare it while the GPU draws. Both must run on the evaluator's thread.
+    struct PendingFrame {
+        double t = 0;
+        int w = 0, h = 0;
+        std::unique_ptr<GpuFrame> gpu;
+        std::shared_ptr<Image> canvas;
+        std::vector<std::function<void()>> publish;
+    };
+    PendingFrame begin(Evaluator& ev, double t, int w, int h);
+    std::shared_ptr<Image> finish(Evaluator& ev, PendingFrame frame);
     // Renders one video clip alone over transparency at project size times
     // `scale`, with `pad` pixels of margin on each side so content beyond the
     // frame shows.

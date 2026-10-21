@@ -40,6 +40,9 @@ class GpuFrame {
     // A layer's immutable source identifies its chain for this frame. Repeated
     // calls reuse the processed GPU result without changing the CPU pixels.
     virtual void applyEffects(ImagePtr image, const std::vector<GpuEffect>& effects, double unit, PixelBox content) = 0;
+    // Starts the GPU on the frame's commands without waiting, so the caller
+    // can prepare other work. Nothing may be encoded afterwards; finish waits.
+    virtual void submit(const std::shared_ptr<Image>& dst) = 0;
     // Synchronizes shared pixels or downloads the final canvas. On failure,
     // discard dst and retry on the CPU because GPU writes may be partial.
     virtual bool finish(const std::shared_ptr<Image>& dst) = 0;

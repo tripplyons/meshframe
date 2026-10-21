@@ -618,3 +618,56 @@ TEST_F(GpuRendering, TextAndOffsetPathEffectsReuseCompletedPixels) {
         expectNear(*metal.render(evaluator, 1, 512, 256), *cpu.render(evaluator, 1, 512, 256), 2);
     }
 }
+
+TEST_F(GpuRendering, OverlappedFramesMatchSequentialRenders) {
+    if (!fixtures::haveFfmpeg()) GTEST_SKIP() << "ffmpeg CLI not installed";
+    Project project = Project::makeDefault();
+    project.settings.width = 512;
+    project.settings.height = 256;
+    project.script = R"(mf.generator("glow", function(g)
+        g:rect(0, 0, g.w, g.h, rgb(0.05, 0.07, 0.2))
+        for k = 1, 6 do g:circle(120 + g.t * 90, 150, 260 - k * 30, rgb(0.2, 0.3, 1, 0.08)) end
+    end))";
+    Clip background;
+    background.kind = ClipKind::Generator;
+    background.track = project.findTrackByName("V1")->id;
+    background.duration = 3;
+    Id generator = edit::addClip(project, background);
+    edit::setPropConstant(project, generator, "generator", std::string("glow"));
+    MediaSource source;
+    std::string error;
+    ASSERT_TRUE(probeMedia(fixtures::redImage(), source, &error)) << error;
+    Clip still;
+    still.kind = ClipKind::Media;
+    still.media = edit::addMedia(project, source);
+    still.track = project.findTrackByName("V2")->id;
+    still.duration = 3;
+    Id image = edit::addClip(project, still);
+    edit::setPropConstant(project, image, "scale", .3);
+    edit::setPropConstant(project, edit::addEffect(project, image, false, "drop_shadow"), "blur", 12.0);
+    Clip label;
+    label.kind = ClipKind::Text;
+    label.track = project.findTrackByName("V3")->id;
+    label.duration = 3;
+    Id text = edit::addClip(project, label);
+    edit::setPropConstant(project, text, "text", std::string("Overlap"));
+    edit::setPropConstant(project, text, "size", 48.0);
+    edit::setPropConstant(project, edit::addEffect(project, text, false, "drop_shadow"), "blur", 9.0);
+
+    MediaCache sequentialCache, overlappedCache;
+    FrameRenderer sequential(sequentialCache, RenderBackend::Metal), overlapped(overlappedCache, RenderBackend::Metal);
+    Evaluator sequentialEv, overlappedEv;
+    sequentialEv.setProject(project);
+    overlappedEv.setProject(project);
+    std::vector<std::shared_ptr<Image>> expected, actual;
+    for (int n = 0; n < 6; ++n) expected.push_back(sequential.render(sequentialEv, n * .4, 512, 256));
+    auto pending = overlapped.begin(overlappedEv, 0, 512, 256);
+    for (int n = 0; n < 6; ++n) {
+        auto next = overlapped.begin(overlappedEv, (n + 1) * .4, 512, 256);
+        actual.push_back(overlapped.finish(overlappedEv, std::move(pending)));
+        ASSERT_TRUE(overlapped.usedGpuLastFrame());
+        pending = std::move(next);
+    }
+    overlapped.finish(overlappedEv, std::move(pending));
+    for (int n = 0; n < 6; ++n) EXPECT_EQ(actual[n]->px, expected[n]->px) << "frame " << n;
+}

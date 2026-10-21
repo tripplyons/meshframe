@@ -747,6 +747,8 @@ class MetalFrame final : public GpuFrame {
     // Release the command buffer before the image owners behind no-copy buffers.
     id<MTLCommandBuffer> commands_;
     bool valid_ = true;
+    bool submitted_ = false;
+    id<MTLBuffer> output_ = nil;
     double elapsedSeconds_ = 0;
 
     id<MTLBuffer> buffer(ImagePtr image, bool initialize = true) {
@@ -1339,12 +1341,21 @@ class MetalFrame final : public GpuFrame {
         }
     }
 
+    void submit(const std::shared_ptr<Image>& dst) override {
+        @autoreleasepool {
+            if (!valid_ || submitted_) return;
+            output_ = buffer(dst);
+            if (!valid_) return;
+            [commands_ commit];
+            submitted_ = true;
+        }
+    }
+
     bool finish(const std::shared_ptr<Image>& dst) override {
         @autoreleasepool {
+            submit(dst);
             if (!valid_) return false;
-            id<MTLBuffer> out = buffer(dst);
-            if (!valid_) return false;
-            [commands_ commit];
+            id<MTLBuffer> out = output_;
             [commands_ waitUntilCompleted];
             if (commands_.status != MTLCommandBufferStatusCompleted) return false;
             elapsedSeconds_ = std::max(0.0, commands_.GPUEndTime - commands_.GPUStartTime);

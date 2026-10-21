@@ -626,15 +626,26 @@ std::shared_ptr<Image> FrameRenderer::renderClip(Evaluator& ev, const Clip& c, d
 }
 
 std::shared_ptr<Image> FrameRenderer::render(Evaluator& ev, double t, int w, int h) {
+    return finish(ev, begin(ev, t, w, h));
+}
+
+FrameRenderer::PendingFrame FrameRenderer::begin(Evaluator& ev, double t, int w, int h) {
     pendingGpuLayers_.clear();
-    auto gpu = backend_ != RenderBackend::Cpu && (backend_ == RenderBackend::Metal || int64_t(w) * h >= 262144)
-                   ? createGpuFrame() : nullptr;
-    auto canvas = renderFrame(ev, t, w, h, gpu.get());
-    usedGpu_ = gpu && gpu->finish(canvas);
-    gpuSeconds_ = usedGpu_ ? gpu->elapsedSeconds() : 0;
-    if (usedGpu_) for (auto& publish : pendingGpuLayers_) publish();
+    PendingFrame frame{t, w, h};
+    if (backend_ != RenderBackend::Cpu && (backend_ == RenderBackend::Metal || int64_t(w) * h >= 262144))
+        frame.gpu = createGpuFrame();
+    frame.canvas = renderFrame(ev, t, w, h, frame.gpu.get());
+    if (frame.gpu) frame.gpu->submit(frame.canvas);
+    frame.publish = std::move(pendingGpuLayers_);
     pendingGpuLayers_.clear();
-    return gpu && !usedGpu_ ? renderFrame(ev, t, w, h, nullptr) : canvas;
+    return frame;
+}
+
+std::shared_ptr<Image> FrameRenderer::finish(Evaluator& ev, PendingFrame frame) {
+    usedGpu_ = frame.gpu && frame.gpu->finish(frame.canvas);
+    gpuSeconds_ = usedGpu_ ? frame.gpu->elapsedSeconds() : 0;
+    if (usedGpu_) for (auto& publish : frame.publish) publish();
+    return frame.gpu && !usedGpu_ ? renderFrame(ev, frame.t, frame.w, frame.h, nullptr) : frame.canvas;
 }
 
 std::shared_ptr<Image> FrameRenderer::renderFrame(Evaluator& ev, double t, int w, int h, GpuFrame* gpu) {

@@ -18,6 +18,7 @@ extern "C" {
 #include <filesystem>
 #include <condition_variable>
 #include <deque>
+#include <optional>
 
 namespace mf {
 
@@ -308,12 +309,18 @@ bool writeMp4(Evaluator& ev, MediaCache& cache, AudioMixer& mixer, Range r, cons
         std::string error;
         if (!out.finish(&error)) fail(std::move(error));
     });
+    // Begin each frame before finishing the one before it, so the CPU
+    // prepares the next frame while the GPU draws the current one.
+    std::optional<FrameRenderer::PendingFrame> pending = renderer.begin(ev, r.start, w, h);
     for (int64_t n = 0; n < frames; ++n) {
         if (prog && prog->cancel) {
             *err = "export canceled";
             return false;
         }
-        Frame frame{renderer.render(ev, r.start + n / fps, w, h), n, {}};
+        std::optional<FrameRenderer::PendingFrame> next;
+        if (n + 1 < frames) next = renderer.begin(ev, r.start + double(n + 1) / fps, w, h);
+        Frame frame{renderer.finish(ev, std::move(*pending)), n, {}};
+        pending = std::move(next);
         // Keep audio up to the end of this video frame.
         int64_t audioTarget = std::min(audioTotal, int64_t(std::llround(double(n + 1) / fps * sr)));
         while (audioDone < audioTarget) {

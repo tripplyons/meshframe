@@ -116,7 +116,10 @@ same decoded frame size. `sheet` composes twelve translucent thumbnail frames.
 Measure export through `meshframe-cli export ... wait=true` with a fixed
 project, range, dimensions, and CRF. Export overlaps encoding with rendering
 using one queued frame; evaluation and media access stay on their original
-thread. The x264 preset and CRF are unchanged. Compare decoded video and audio
+thread. It also begins each frame before finishing the previous one, so the CPU
+prepares a frame while the GPU draws the one before it. Color conversion before
+encoding and after decoding uses swscale's threads. The x264 preset and CRF are
+unchanged. Compare decoded video and audio
 as well as elapsed time, and test cancellation while encoding is active.
 
 Compare medians from alternating before/after runs. Feature results describe
