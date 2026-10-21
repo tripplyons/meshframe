@@ -124,7 +124,14 @@ encoding and after decoding uses swscale's threads. On macOS, H.264 encoding
 uses VideoToolbox in constant-quality mode, with q = 116 - 2 * CRF. At CRF 18
 that matches x264 `medium` in PSNR (52.9 against 52.6 dB on a 60 s screen
 recording) and halves the export time, with files about 1.5 times larger.
-libx264 is the fallback when VideoToolbox cannot open. Compare decoded video and audio
+libx264 is the fallback when VideoToolbox cannot open.
+Audio uses AudioToolbox's AAC encoder, about three times faster than FFmpeg's.
+On an M4 Pro, VideoToolbox encodes 1080p H.264 at about 225 frames per second
+whatever its options, and two sessions share that rate. A screen-recording
+export runs within about 10% of it, so faster rendering or color conversion
+barely shortens exports; vImage conversion cut CPU time by 16% with no change in
+wall time. x264 `veryfast` encodes three times faster on idle cores but
+competes with rendering for them and made the export slower. Compare decoded video and audio
 as well as elapsed time, and test cancellation while encoding is active.
 
 Compare medians from alternating before/after runs. Feature results describe
