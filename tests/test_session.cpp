@@ -616,6 +616,8 @@ TEST(Commands, CheckFindsEachKindOfProblem) {
     EXPECT_EQ(byKind["hidden"][0]["name"], "buried");
     EXPECT_EQ(byKind["off-frame"][0]["name"], "edge");
     EXPECT_EQ(byKind["title-safe"][0]["name"], "high");
+    EXPECT_EQ(byKind["title-safe"][0]["message"], "text \"High\" (high) is outside the title-safe area");
+    EXPECT_EQ(byKind["text-overlap"][0]["message"], "text \"Same\" (a) overlaps text \"Place\" (b)");
     // The gap before the black clip renders black too.
     EXPECT_LE(byKind["black"][0]["start"].get<double>(), 5);
     EXPECT_GE(byKind["black"][0]["end"].get<double>(), 6);

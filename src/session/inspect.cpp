@@ -174,6 +174,15 @@ bool onVisibleVideoTrack(const Project& p, const Clip& c) {
     return t && t->kind == TrackKind::Video && !t->hidden;
 }
 
+// Text on one line, cut to about 40 bytes on a UTF-8 character boundary.
+std::string quoteText(std::string text) {
+    std::ranges::replace(text, '\n', ' ');
+    if (text.size() <= 40) return text;
+    size_t cut = 37;
+    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) --cut;
+    return text.substr(0, cut) + "...";
+}
+
 }  // namespace
 
 json checkProject(Session& s, const CheckOptions& o) {
@@ -287,26 +296,32 @@ json checkProject(Session& s, const CheckOptions& o) {
             hit("error:" + e.key + e.message, i, {"error", "expression", 0, 0, clip, fmt::format("{}: {}", e.key, e.message)});
         }
 
-        std::vector<std::pair<const Clip*, ClipBounds>> texts;
+        // Text clips by what they say at this time, then their name: "Fixed after release" (text).
+        struct Shown {
+            const Clip* clip;
+            ClipBounds bounds;
+            std::string label;
+        };
+        std::vector<Shown> texts;
         for (const Clip& c : p.clips) {
             if (c.kind != ClipKind::Text || !onVisibleVideoTrack(p, c) || !ev.clipVisibleAt(c, t)) continue;
             ClipBounds b = measureClip(s, c, t, 0.25);
             if (!b.visible) continue;
-            std::string name = clipName(c.id);
+            std::string label = fmt::format("text \"{}\" ({})", quoteText(ev.str(c, "text")), clipName(c.id));
             if (b.inFrame < 0.999)
                 hit(fmt::format("off-frame:{}", c.id), i,
-                    {"warning", "off-frame", 0, 0, c.id, fmt::format("text '{}' is {:.0f}% outside the frame", name, (1 - b.inFrame) * 100)});
+                    {"warning", "off-frame", 0, 0, c.id, fmt::format("{} is {:.0f}% outside the frame", label, (1 - b.inFrame) * 100)});
             else if (!b.titleSafe(st))
-                hit(fmt::format("title-safe:{}", c.id), i, {"warning", "title-safe", 0, 0, c.id, fmt::format("text '{}' is outside the title-safe area", name)});
-            texts.push_back({&c, b});
+                hit(fmt::format("title-safe:{}", c.id), i, {"warning", "title-safe", 0, 0, c.id, fmt::format("{} is outside the title-safe area", label)});
+            texts.push_back({&c, b, std::move(label)});
         }
         for (size_t a = 0; a < texts.size(); ++a)
             for (size_t b = a + 1; b < texts.size(); ++b) {
-                const ClipBounds &x = texts[a].second, &y = texts[b].second;
+                const ClipBounds &x = texts[a].bounds, &y = texts[b].bounds;
                 if (std::min(x.right, y.right) <= std::max(x.left, y.left) || std::min(x.bottom, y.bottom) <= std::max(x.top, y.top)) continue;
-                Id ia = texts[a].first->id, ib = texts[b].first->id;
+                Id ia = texts[a].clip->id, ib = texts[b].clip->id;
                 hit(fmt::format("text-overlap:{}:{}", ia, ib), i,
-                    {"warning", "text-overlap", 0, 0, ia, fmt::format("text '{}' overlaps text '{}'", clipName(ia), clipName(ib))});
+                    {"warning", "text-overlap", 0, 0, ia, fmt::format("{} overlaps {}", texts[a].label, texts[b].label)});
             }
     }
     for (auto& [key, f] : found) {
